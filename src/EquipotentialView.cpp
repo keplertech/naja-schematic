@@ -24,6 +24,15 @@ static constexpr float kPortSpacing = 18.0f;
 static constexpr float kLeftMargin  = 20.0f;
 static constexpr float kNetVGap     = 80.0f;
 
+// Pin click/hit-test radius, in screen pixels (converted to world units by
+// dividing by the current zoom scale where it's used). A pin now renders as
+// a short tick line (see SchematicView.cpp's drawPorts) reaching a few
+// pixels out from the port's anchor point rather than a filled dot sitting
+// right on it, so the hit area needs to comfortably cover the whole tick
+// (and the start of its label) -- not just the anchor -- or double-click/
+// right-click on a pin becomes very hard to land.
+static constexpr float kPortHitRadiusPx = 18.0f;
+
 // Hierarchy embedding (nested boxes) geometry.
 static constexpr float kHierChildW    = 110.0f;
 static constexpr float kHierChildH    = 44.0f;
@@ -311,7 +320,6 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         cs.modelName     = modelNameFromLeaf(c.name);
         cs.w             = kHierChildW;
         cs.h             = kHierChildH;
-        cs.color         = IM_COL32(90, 120, 170, 255);
         cs.parentShapeId = parent.id;
         cs.hasChildren   = c.hasInstances;
         cs.hierExpanded  = c.hasInstances && g_hierExpanded.count(cs.name) > 0;
@@ -353,6 +361,8 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
             }
         }
         if (ends.size() < 2) continue;
+        std::string netLabel = net.name;
+        if (net.bit.has_value()) netLabel += "[" + std::to_string(*net.bit) + "]";
         for (size_t i = 1; i < ends.size(); ++i) {
             NetWire nw;
             nw.id               = int(result.nets.size()) + 1;
@@ -361,6 +371,7 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
             nw.dstInstance      = ends[i].first;
             nw.dstPortId        = ends[i].second;
             nw.containerShapeId = parent.id;
+            nw.netName          = netLabel;
             result.nets.push_back(nw);
         }
     }
@@ -510,7 +521,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         {
             // Same hit radius as the double-click pin test further down.
             const float sc  = std::max(0.01f, g_schematic.transform.scale);
-            const float hr2 = (10.f / sc) * (10.f / sc);
+            const float hr2 = (kPortHitRadiusPx / sc) * (kPortHitRadiusPx / sc);
             for (const auto& inst : g_schematic.instances) {
                 for (const auto& port : inst.ports) {
                     ImVec2 pw = g_schematic.portWorldPos(inst, port);
@@ -613,7 +624,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                    - g_schematic.transform.screenOrigin.x / s;
         float wy = (m.y - cpos.y) / s + g_schematic.transform.offset.y
                    - g_schematic.transform.screenOrigin.y / s;
-        const float hr2 = (10.f / std::max(0.01f, s)) * (10.f / std::max(0.01f, s));
+        const float hr2 = (kPortHitRadiusPx / std::max(0.01f, s)) * (kPortHitRadiusPx / std::max(0.01f, s));
         bool hit = false;
 
         for (const auto& inst : g_schematic.instances) {
@@ -712,6 +723,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // Per-equip wire endpoints: {key, portId}
     struct WireEnd { std::string key; int portId; };
     std::vector<std::vector<WireEnd>> equiEnds(equipotentials.size());
+    // Best-effort net-name label per equipotential, shown next to a merged
+    // bus wire's slash mark in pass 4 below -- the driving pin's name is the
+    // closest thing this view has to a net name (nets aren't otherwise
+    // identified in the equipotential wire format).
+    std::vector<std::string> netLabelByEi(equipotentials.size());
 
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
@@ -720,6 +736,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         std::vector<Item> drivers, receivers;
         buildItems(eq, drivers, receivers);
         totalItems += int(drivers.size() + receivers.size());
+        if (!drivers.empty()) netLabelByEi[ei] = drivers[0].label;
 
         for (int pass = 0; pass < 2; ++pass) {
             const auto& items = pass == 0 ? drivers : receivers;
@@ -782,7 +799,6 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.w     = kInstW;
         inst.name      = key;
         inst.modelName = modelNameFromLeaf(leafSegment(key));
-        inst.color     = IM_COL32(100, 140, 200, 255);
         inst.diagOutline = DiagnosisStore::instanceColor(key);
         g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.sourceLoc };
         keyToInstId[key] = inst.id;
@@ -1042,8 +1058,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 inst.x  = isInput ? termLx : termRx;
                 inst.y  = ty;
                 inst.w  = 0.f; inst.h = 0.f;
-                inst.color = IM_COL32(0, 0, 0, 0);
                 inst.partialInterface = false;
+                // Draws as a schematic-style boundary-port flag (see
+                // drawBoundaryPortInstance in SchematicView.cpp) rather than
+                // a generic box -- this pseudo-instance only exists to give
+                // the top-level design port a wire anchor point.
+                inst.modelName = "port";
 
                 Port p;
                 p.id = pid; p.name = item.label;
@@ -1090,7 +1110,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             n.srcPortId   = wrs[0].portId;
             n.dstInstance = wrs[i].instId;
             n.dstPortId   = wrs[i].portId;
-            n.color       = IM_COL32(200, 200, 100, 255);
+            n.netName     = netLabelByEi[ei];
 
             // A flagged endpoint pin colors the whole wire so a diagnosed
             // net stands out even when the flagged pin is off-screen.

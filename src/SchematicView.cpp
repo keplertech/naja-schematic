@@ -23,22 +23,49 @@ inline float clampf(float v, float lo, float hi) {
 // no label); above a cap it stops growing so heavy zoom-in doesn't blow up
 // glyphs into blurry blocks.
 //
-// Pin dots (which is what a top-level term renders as -- see
-// EquipotentialView's zero-size term stubs) and wires follow the same
-// shrink-then-vanish policy instead of being held at an artificial minimum
-// pixel size forever: at extreme zoom-out they fade out of existence just
-// like their labels already do, rather than persisting as a fixed-size
-// clutter of dots/lines under illegible text.
+// Pin ticks, boundary-port flags (what a top-level term renders as -- see
+// EquipotentialView's zero-size term stubs and drawBoundaryPortInstance
+// below) and wires follow the same shrink-then-vanish policy instead of
+// being held at an artificial minimum pixel size forever: at extreme
+// zoom-out they fade out of existence just like their labels already do,
+// rather than persisting as a fixed-size clutter of ticks/lines under
+// illegible text.
 // ---------------------------------------------------------------------------
 constexpr float kInstanceLabelBaseSize = 13.0f; // world-space "1x zoom" size
 constexpr float kPortLabelBaseSize     = 11.0f;
 constexpr float kMinLabelFontSize      = 7.0f;
 constexpr float kMaxLabelFontSize      = 30.0f;
 
-constexpr float kPortDotBaseSize  = 3.5f; // world-space "1x zoom" pin dot radius
-constexpr float kMinPortDotSize   = 1.5f;
+// Schematic-style pin: a short tick line flush with the box edge rather than a
+// filled dot -- direction is read from position/wire, not from a red/green
+// fill, matching the "color is reserved for highlighting" convention below.
+constexpr float kPortTickBaseLen  = 10.0f; // world-space "1x zoom" tick length
+constexpr float kMinPortTickLen   = 2.5f;
 constexpr float kWireBaseThickness = 2.0f; // world-space "1x zoom" wire thickness
 constexpr float kMinWireThickness  = 0.75f;
+
+// Schematic-style junction dot: a filled circle marks a real electrical branch
+// (one driver pin feeding more than one receiver) -- two wires that merely
+// cross on screen without sharing a pin get no dot, so a dot always means
+// "connected here" and a bare crossing always means "not connected."
+constexpr float kJunctionDotBaseR = 3.0f;
+constexpr float kMinJunctionDotR  = 1.25f;
+
+// Top-level design port "flag" half-height (see drawBoundaryPortInstance).
+constexpr float kBoundaryPortHalfHBase = 8.0f;
+constexpr float kMinBoundaryPortHalfH  = 3.0f;
+
+// Schematic-style near-monochrome palette: every instance shares the same flat
+// neutral "paper" fill rather than an arbitrary per-category color, so color
+// stays reserved for diagnosis/selection highlighting rather than decorating
+// every box. The canvas itself is the same convention taken one step
+// further -- a plain white sheet rather than a dark viewport, so the
+// near-black lines/fills above read as ink on paper instead of needing to
+// fight a dark backdrop.
+constexpr ImU32 kCanvasBgColor      = IM_COL32(255, 255, 255, 255);
+constexpr ImU32 kInstanceFillColor  = IM_COL32(214, 216, 220, 255);
+constexpr ImU32 kInstanceLineColor  = IM_COL32(35, 35, 38, 235);
+constexpr ImU32 kPinLineColor       = IM_COL32(40, 40, 40, 235);
 
 // Returns 0.0f when the label would render too small to read -- callers
 // should skip drawing (and any backing rect) in that case.
@@ -159,22 +186,30 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
                       const SchematicView& sv,
                       const ImVec2& canvasPos, const ImVec2& canvasSize) {
     for (const auto& p : inst.ports) {
-        float dotR = zoomedSizeOrHidden(kPortDotBaseSize, sv.transform.scale, kMinPortDotSize);
-        if (dotR <= 0.0f) continue; // too small to matter at this zoom -- same fade policy as labels
+        float tickLen = zoomedSizeOrHidden(kPortTickBaseLen, sv.transform.scale, kMinPortTickLen);
+        if (tickLen <= 0.0f) continue; // too small to matter at this zoom -- same fade policy as labels
 
         ImVec2 worldP  = sv.portWorldPos(inst, p);
         ImVec2 screenP = sv.worldToScreen(worldP, canvasPos, canvasSize);
         bool   isLeft  = p.lx < 0.0f;
 
-        ImU32 portColor = p.color != 0 ? p.color
-            : (p.isInput ? IM_COL32(200, 80, 80, 255)
-                         : IM_COL32(80, 200, 80, 255));
+        // No direction color by default -- direction reads from the pin's
+        // side of the box, not a red/green fill. p.color (diagnosis/
+        // selection override) is the one case color is still used here.
+        ImU32 portColor = p.color != 0 ? p.color : kPinLineColor;
+        float tickThickness = std::max(1.0f, 1.5f * sv.transform.scale);
 
-        dl->AddCircleFilled(screenP, dotR, portColor);
-        // A merged bus pin gets an extra ring so it reads as "thicker" than
-        // a scalar/single-bit pin, in addition to its "[hi:lo]" label.
-        if (p.isBus)
-            dl->AddCircle(screenP, dotR + 2.5f, portColor, 12, 2.0f);
+        ImVec2 tickEnd = ImVec2(screenP.x + (isLeft ? -tickLen : tickLen), screenP.y);
+        dl->AddLine(screenP, tickEnd, portColor, tickThickness);
+        // A merged bus pin gets the classic diagonal bus slash across its
+        // tick instead of a plain line, in addition to its "[hi:lo]" label.
+        if (p.isBus) {
+            ImVec2 mid = ImVec2((screenP.x + tickEnd.x) * 0.5f, screenP.y);
+            float slashLen = std::max(4.0f, tickLen * 0.6f);
+            dl->AddLine(ImVec2(mid.x, mid.y + slashLen * 0.5f),
+                        ImVec2(mid.x + slashLen * 0.35f, mid.y - slashLen * 0.5f),
+                        portColor, tickThickness);
+        }
 
         float fontSize = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
         if (!p.name.empty() && fontSize > 0.0f) {
@@ -186,14 +221,16 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
                                                  kPortLabelMaxWorldWidth * sv.transform.scale);
             if (!label.empty()) {
                 ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str());
+                // Anchored past the tick's tip (not the box edge) so the
+                // label doesn't sit on top of the pin's own tick line.
                 ImVec2 lblPos   = isLeft
-                    ? ImVec2(screenP.x - 4.0f - textSize.x, screenP.y - textSize.y * 0.5f)
-                    : ImVec2(screenP.x + 4.0f,              screenP.y - textSize.y * 0.5f);
+                    ? ImVec2(tickEnd.x - 3.0f - textSize.x, tickEnd.y - textSize.y * 0.5f)
+                    : ImVec2(tickEnd.x + 3.0f,               tickEnd.y - textSize.y * 0.5f);
                 dl->AddRectFilled(
                     ImVec2(lblPos.x - 2.0f, lblPos.y - 1.0f),
                     ImVec2(lblPos.x + textSize.x + 2.0f, lblPos.y + textSize.y + 1.0f),
-                    IM_COL32(30, 30, 30, 210));
-                dl->AddText(font, fontSize, lblPos, IM_COL32(220, 220, 220, 230), label.c_str());
+                    IM_COL32(30, 30, 30, 190));
+                dl->AddText(font, fontSize, lblPos, IM_COL32(225, 225, 225, 235), label.c_str());
             }
         }
     }
@@ -208,18 +245,26 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
     ImVec2 rmin, rmax;
     sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
 
-    if (inst.w > 0.0f && inst.h > 0.0f && ((inst.color >> 24) & 0xFF) > 0) {
-        dl->AddRectFilled(rmin, rmax, inst.color, 4.0f);
+    if (inst.w > 0.0f && inst.h > 0.0f) {
+        // Schematic-style flat fill: a neutral "paper" tone shared by every
+        // box, not a per-category color -- color stays reserved for
+        // diagnosis/selection highlighting rather than decorating every
+        // instance. Sharp corners (no rounding).
+        dl->AddRectFilled(rmin, rmax, kInstanceFillColor, 0.0f);
 
         if (inst.partialInterface)
-            addDashedRect(dl, rmin, rmax, IM_COL32(210, 175, 55, 240), 2.0f);
+            // Schematic-style: dashing alone (not a color) signals "only a
+            // subset of the interface is shown" -- same ink as a fully
+            // expanded box's solid border, since color stays reserved for
+            // diagnosis/selection highlighting.
+            addDashedRect(dl, rmin, rmax, kInstanceLineColor, 1.25f);
         else
-            dl->AddRect(rmin, rmax, IM_COL32(0, 0, 0, 200), 4.0f, 0, 2.0f);
+            dl->AddRect(rmin, rmax, kInstanceLineColor, 0.0f, 0, 1.25f);
 
         // Diagnosis outline drawn on top so it stays visible regardless of
         // the partialInterface dashed border above.
         if (inst.diagOutline != 0)
-            dl->AddRect(rmin, rmax, inst.diagOutline, 4.0f, 0, 3.5f);
+            dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, 3.5f);
 
         float instFontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
         if (!inst.name.empty() && instFontSize > 0.0f) {
@@ -231,7 +276,7 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
                 ImVec2 textSize = font->CalcTextSizeA(instFontSize, FLT_MAX, 0.0f, label.c_str());
                 ImVec2 textPos  = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f,
                                          rmin.y + padding);
-                dl->AddText(font, instFontSize, textPos, contrastingTextColor(inst.color), label.c_str());
+                dl->AddText(font, instFontSize, textPos, contrastingTextColor(kInstanceFillColor), label.c_str());
             }
         }
 
@@ -242,10 +287,9 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
                 const float spacing = 7.0f;
                 const float dotY    = rmax.y - dotR - 5.0f;
                 const float dotX    = (rmin.x + rmax.x) * 0.5f;
-                const ImU32 dotCol  = IM_COL32(210, 175, 55, 220);
-                dl->AddCircleFilled({dotX - spacing, dotY}, dotR, dotCol);
-                dl->AddCircleFilled({dotX,           dotY}, dotR, dotCol);
-                dl->AddCircleFilled({dotX + spacing, dotY}, dotR, dotCol);
+                dl->AddCircleFilled({dotX - spacing, dotY}, dotR, kInstanceLineColor);
+                dl->AddCircleFilled({dotX,           dotY}, dotR, kInstanceLineColor);
+                dl->AddCircleFilled({dotX + spacing, dotY}, dotR, kInstanceLineColor);
             }
         }
 
@@ -279,18 +323,78 @@ static void drawAssignInstance(ImDrawList* dl, const InstanceShape& inst,
     ImVec2 bl = sv.worldToScreen(ImVec2(inst.x,          inst.y + inst.h), canvasPos, canvasSize);
     ImVec2 mr = sv.worldToScreen(ImVec2(inst.x + inst.w, inst.y + inst.h * 0.5f), canvasPos, canvasSize);
 
-    // Filled triangle body
-    dl->AddTriangleFilled(tl, bl, mr, IM_COL32(80, 160, 220, 220));
-    // Outline
-    dl->AddTriangle(tl, bl, mr, IM_COL32(0, 0, 0, 200), 1.5f);
+    // Symbol shape (not fill color) carries the gate identity, schematic-style:
+    // same flat neutral fill as every other box.
+    dl->AddTriangleFilled(tl, bl, mr, kInstanceFillColor);
+    dl->AddTriangle(tl, bl, mr, kInstanceLineColor, 1.25f);
     if (inst.diagOutline != 0)
         dl->AddTriangle(tl, bl, mr, inst.diagOutline, 3.0f);
 
     // Label ("assign") near top-left of the bounding box, small and subtle
     ImVec2 lblPos = ImVec2(tl.x + 4.0f, tl.y + 4.0f);
-    dl->AddText(lblPos, IM_COL32(255, 255, 255, 180), "=");
+    dl->AddText(lblPos, contrastingTextColor(kInstanceFillColor, 180), "=");
 
     drawPorts(dl, inst, sv, canvasPos, canvasSize);
+}
+
+// ---------------------------------------------------------------------------
+// Top-level design port — schematic-style "flag": a small pentagon sized to its
+// name, flat base toward the design (where the net wire attaches, at the
+// pseudo-instance's own x/y -- see the zero-size term box built in
+// EquipotentialView.cpp), pointed tip facing outward, off the edge of the
+// design. Replaces the generic tick-line pin drawn by drawPorts() for every
+// other kind of port: a boundary port isn't a pin on a box, it *is* the box.
+// ---------------------------------------------------------------------------
+static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
+                                     const SchematicView& sv,
+                                     const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    if (inst.ports.empty()) return;
+    const Port& p = inst.ports[0];
+
+    float halfH = zoomedSizeOrHidden(kBoundaryPortHalfHBase, sv.transform.scale, kMinBoundaryPortHalfH);
+    if (halfH <= 0.0f) return; // too small to matter at this zoom -- same fade policy as pin ticks
+
+    ImVec2 anchor = sv.worldToScreen(ImVec2(inst.x, inst.y), canvasPos, canvasSize);
+    // This layout is a fixed left-to-right flow (see EquipotentialView.cpp's
+    // termLx/termRx placement: primary inputs sit left of the design,
+    // primary outputs sit right of it). Every boundary port's tip points
+    // rightward -- the direction signal continues past this port, whether
+    // that's on into the design (an input) or on off the sheet's right edge
+    // (an output) -- flat base toward `anchor`, where the wire attaches.
+    float outDir = 1.0f;
+
+    ImU32 outline = p.color != 0 ? p.color : kInstanceLineColor;
+    float lineThickness = std::max(1.0f, 1.25f * sv.transform.scale);
+
+    float fontSize = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
+    ImFont* font = ImGui::GetFont();
+    ImVec2 textSize = (fontSize > 0.0f && !p.name.empty())
+        ? font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p.name.c_str())
+        : ImVec2(0.0f, 0.0f);
+
+    float bodyLen = std::max(halfH * 2.0f, textSize.x + 10.0f);
+    float tipLen  = halfH;
+
+    float baseX = anchor.x;
+    float bodyX = anchor.x + outDir * bodyLen;
+    float tipX  = bodyX + outDir * tipLen;
+
+    ImVec2 pts[5] = {
+        { baseX, anchor.y - halfH },
+        { bodyX, anchor.y - halfH },
+        { tipX,  anchor.y },
+        { bodyX, anchor.y + halfH },
+        { baseX, anchor.y + halfH },
+    };
+    dl->AddConvexPolyFilled(pts, 5, kInstanceFillColor);
+    dl->AddPolyline(pts, 5, outline, lineThickness, ImDrawFlags_Closed);
+    if (inst.diagOutline != 0)
+        dl->AddPolyline(pts, 5, inst.diagOutline, 3.0f, ImDrawFlags_Closed);
+
+    if (fontSize > 0.0f && !p.name.empty()) {
+        ImVec2 textPos((baseX + bodyX) * 0.5f - textSize.x * 0.5f, anchor.y - textSize.y * 0.5f);
+        dl->AddText(font, fontSize, textPos, contrastingTextColor(kInstanceFillColor), p.name.c_str());
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +408,8 @@ void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst,
                                  const ImVec2& canvasPos, const ImVec2& canvasSize) const {
     if (inst.modelName == "assign") {
         drawAssignInstance(dl, inst, *this, canvasPos, canvasSize);
+    } else if (inst.modelName == "port") {
+        drawBoundaryPortInstance(dl, inst, *this, canvasPos, canvasSize);
     }
     // else if (inst.modelName == "and2")  { drawAnd2Instance (...); }
     // else if (inst.modelName == "or2")   { drawOr2Instance  (...); }
@@ -336,6 +442,7 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
     if (net.isBus) thickness *= 2.0f;
 
     const float stub = std::max(12.0f, 18.0f * transform.scale);
+    ImU32 col = net.color;
 
     // Depart/arrive with a short stub so the wire leaves the box orthogonally.
     ImVec2 p0 = srcScreen;
@@ -347,12 +454,48 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
     ImVec2 p5 = dstScreen;
 
     std::array<ImVec2, 6> points = {p0, p1, p2, p3, p4, p5};
-    ImU32 col = net.color;
 
     // Draw segments individually to keep thickness consistent at joints.
     for (size_t i = 0; i + 1 < points.size(); ++i) {
         dl->AddLine(points[i], points[i + 1], IM_COL32(0,0,0,80), thickness + 2.0f);
         dl->AddLine(points[i], points[i + 1], col, thickness);
+    }
+
+    // Junction dot at the source pin when more than one NetWire departs from
+    // it (one driver, several receivers) -- see kJunctionDotBaseR above.
+    // Every receiver's NetWire recomputes and redraws the same dot at the
+    // same point, which is harmless (identical draws just overlap).
+    {
+        int fanoutFromSrc = 0;
+        for (const auto& other : nets)
+            if (other.srcInstance == net.srcInstance && other.srcPortId == net.srcPortId)
+                ++fanoutFromSrc;
+        if (fanoutFromSrc > 1) {
+            float dotR = zoomedSizeOrHidden(kJunctionDotBaseR, transform.scale, kMinJunctionDotR);
+            if (dotR > 0.0f) dl->AddCircleFilled(p0, dotR, col);
+        }
+    }
+
+    // Bus slash mark across the horizontal run, schematic-style, plus the net
+    // name if we have one.
+    if (net.isBus) {
+        ImVec2 mid = ImVec2(midX, (p1.y + p4.y) * 0.5f);
+        float slashLen = std::max(6.0f, 9.0f * transform.scale);
+        dl->AddLine(ImVec2(mid.x - slashLen * 0.35f, mid.y + slashLen * 0.5f),
+                    ImVec2(mid.x + slashLen * 0.35f, mid.y - slashLen * 0.5f),
+                    col, thickness);
+        if (!net.netName.empty()) {
+            float fontSize = labelFontSize(kPortLabelBaseSize, transform.scale);
+            if (fontSize > 0.0f) {
+                ImFont* font = ImGui::GetFont();
+                ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, net.netName.c_str());
+                ImVec2 lp = ImVec2(mid.x + 6.0f, mid.y - ts.y - 4.0f);
+                dl->AddRectFilled(ImVec2(lp.x - 2.0f, lp.y - 1.0f),
+                                  ImVec2(lp.x + ts.x + 2.0f, lp.y + ts.y + 1.0f),
+                                  IM_COL32(30, 30, 30, 190));
+                dl->AddText(font, fontSize, lp, col, net.netName.c_str());
+            }
+        }
     }
 }
 
@@ -491,27 +634,8 @@ void SchematicView::handleInteraction(const ImVec2& canvasPos, const ImVec2& /*c
 void SchematicView::render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2& canvasSize) {
     dl->PushClipRect(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), true);
 
-    // Draw background grid
-    if (showGrid) {
-        const ImU32 gridCol = IM_COL32(60, 60, 60, 80);
-        const float gridSpacingWorld = 50.0f; // world units between grid lines
-        // Convert spacing to screen pixels
-        float spacingPx = gridSpacingWorld * transform.scale;
-        if (spacingPx >= 6.0f) {
-            // find top-left world coordinate of canvas
-            ImVec2 topLeftWorld = ImVec2(transform.offset.x - transform.screenOrigin.x / transform.scale,
-                                         transform.offset.y - transform.screenOrigin.y / transform.scale);
-            // compute first grid line in screen coords
-            float startX = canvasPos.x - fmodf((topLeftWorld.x * transform.scale), spacingPx);
-            float startY = canvasPos.y - fmodf((topLeftWorld.y * transform.scale), spacingPx);
-            for (float x = startX; x < canvasPos.x + canvasSize.x; x += spacingPx) {
-                dl->AddLine(ImVec2(x, canvasPos.y), ImVec2(x, canvasPos.y + canvasSize.y), gridCol, 1.0f);
-            }
-            for (float y = startY; y < canvasPos.y + canvasSize.y; y += spacingPx) {
-                dl->AddLine(ImVec2(canvasPos.x, y), ImVec2(canvasPos.x + canvasSize.x, y), gridCol, 1.0f);
-            }
-        }
-    }
+    // Schematic-style white "paper" canvas -- see kCanvasBgColor.
+    dl->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), kCanvasBgColor);
 
     // Top-level nets draw first (so top-level instances render on top), as
     // before. A net nested inside an expanded instance (containerShapeId set)

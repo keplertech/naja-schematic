@@ -241,7 +241,6 @@ struct InstanceShape {
     float y = 0.0f;  // world coords (top-left)
     float w = 100.0f;
     float h = 50.0f;  // size in world units
-    ImU32 color = IM_COL32(120,120,120,255);
     // When true, only a subset of ports is shown (e.g. only those on the
     // current net).  The renderer draws a dashed border so the user knows
     // the instance can be expanded to reveal its full interface.
@@ -271,9 +270,13 @@ struct NetWire {
     int srcPortId = 0;
     int dstInstance = 0;
     int dstPortId = 0;
-    ImU32 color = IM_COL32(200,200,100,255);
+    // Schematic-style default: near-monochrome. Color is reserved for
+    // highlighting (diagnosis severity, selection) via an explicit override
+    // further down the pipeline -- see EquipotentialView.cpp's srcPort/
+    // dstPort->color checks -- rather than being a per-net decoration.
+    ImU32 color = IM_COL32(150,150,150,255);
     // True when this wire represents multiple merged bus-bit nets between
-    // the same two (merged) pins — drawn thicker.
+    // the same two (merged) pins — drawn thicker, with a diagonal bus slash.
     bool isBus = false;
     // -1 = a top-level net (drawn under all instances, as before). Otherwise
     // the id of the InstanceShape whose internals this net belongs to — drawn
@@ -281,6 +284,11 @@ struct NetWire {
     // wiring nested inside it, but before that instance's children so the
     // children still render on top.
     int containerShapeId = -1;
+
+    // Best-effort display name for the underlying net (driver pin/port name,
+    // or the InternalNet name for hierarchy-embedded nets), shown next to
+    // the bus slash mark on a merged bus wire -- see SchematicView::drawNet.
+    std::string netName;
 };
 
 // World-space rect of an instance's hierarchy expand/collapse glyph

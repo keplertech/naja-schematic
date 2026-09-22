@@ -28,7 +28,7 @@ inline std::string getVersionPart(const std::string& version, int index) {
 
 } // namespace detail
 
-const std::string VERSION { "0.0.4" };
+const std::string VERSION { "0.0.6" };
 const std::string VERSION_MAJOR { detail::getVersionPart(VERSION, 0) };
 const std::string VERSION_MINOR { detail::getVersionPart(VERSION, 1) };
 const std::string VERSION_PATCH { detail::getVersionPart(VERSION, 2) };

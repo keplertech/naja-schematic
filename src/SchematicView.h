@@ -20,7 +20,6 @@ public:
 
     float minScale = 0.1f;
     float maxScale = 6.0f;
-    bool showGrid = true;
 
     // Coordinate conversions
     ImVec2 worldToScreen(const ImVec2& world, const ImVec2& canvasPos, const ImVec2& canvasSize) const;
