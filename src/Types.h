@@ -88,6 +88,10 @@ struct InstTermOccurrence {
   // True when the tail instance's own model has sub-instances worth showing
   // in a nested schematic — drives the hierarchy expand/collapse glyph.
   bool has_instances = false;
+  // Total bit-term count of the tail instance's model (bus terms counted per
+  // bit), if the provider sent it -- used to tell a fully-shown interface
+  // from a partial one.
+  std::optional<size_t> bit_term_count;
   // RTL source location of the tail instance itself, if available.
   std::optional<SourceLoc> source_loc;
 };

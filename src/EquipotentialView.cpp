@@ -56,6 +56,8 @@ struct Item {
     // this instance's model has sub-instances worth expanding into a nested
     // schematic box.
     bool                   hasInstances = false;
+    // Total bit-term count of the instance's model, if known.
+    std::optional<size_t>  bitTermCount;
     // RTL source location of the instance itself, if available.
     std::optional<SourceLoc> sourceLoc;
 
@@ -179,6 +181,7 @@ static void buildItems(const Equipotential* eq,
         item.termBit     = occ.term.bit;
         item.pathIds     = occ.pathIds;
         item.hasInstances = occ.has_instances;
+        item.bitTermCount = occ.bit_term_count;
         item.sourceLoc    = occ.source_loc;
         std::string joined;
         bool first = true;
@@ -715,6 +718,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         bool                  initialized = false;
         DesignRef             designRef{};
         bool                  hasInstances = false;
+        std::optional<size_t> bitTermCount;
         std::optional<SourceLoc> sourceLoc;
         std::vector<PortSlot> ports;
     };
@@ -752,6 +756,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     mi.initialized   = true;
                     mi.designRef     = item.designRef;
                     mi.hasInstances  = item.hasInstances;
+                    mi.bitTermCount  = item.bitTermCount;
                     mi.sourceLoc     = item.sourceLoc;
                     auto pit = g_placedPositions.find(item.key());
                     mi.pos = pit != g_placedPositions.end()
@@ -906,7 +911,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 inst.ports.push_back(p);
             }
         } else {
-            inst.partialInterface = true;
+            // Only a subset of the interface is shown -- unless the loaded
+            // equipotentials already happen to touch every bit term of the
+            // model, in which case there's nothing left to expand. Unknown
+            // count (older server) keeps the conservative "partial" look.
+            inst.partialInterface = !mi.bitTermCount.has_value()
+                                 || mi.ports.size() < *mi.bitTermCount;
 
             // Group the per-bit PortSlots accumulated in pass 1 by (direction,
             // bus base name) so a bus with >=2 loaded bits collapses to one

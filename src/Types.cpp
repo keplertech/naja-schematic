@@ -179,6 +179,8 @@ void from_json(const json& j, Equipotential& e) {
         occurrence.designRef = occJson["design_ref"].get<DesignRef>();
 
       occurrence.has_instances = occJson.value("has_instances", false);
+      if (occJson.contains("bit_term_count") && occJson["bit_term_count"].is_number_unsigned())
+        occurrence.bit_term_count = occJson["bit_term_count"].get<size_t>();
       occurrence.source_loc    = parseSourceLoc(occJson);
 
       e.occurrences.push_back(std::move(occurrence));
