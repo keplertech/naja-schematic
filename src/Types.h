@@ -83,6 +83,7 @@ using Path = std::vector<std::string>;
 struct InstTermOccurrence {
   Path path;                       // instance names (display)
   std::vector<unsigned> pathIds;   // instance child_ids (used to send load_equipotential)
+  std::vector<std::string> pathModels; // model name per path entry ("" when the provider omits it)
   BitTerm term;
   DesignRef designRef;             // model of the tail instance — used to fetch its full interface
   // True when the tail instance's own model has sub-instances worth showing
@@ -236,6 +237,10 @@ struct Port {
 struct InstanceShape {
     int id = 0;
     std::string name;       // instance path (display label)
+    // Optional display label overriding `name` on the box (e.g. just the
+    // leaf name when a hierarchy frame around the box already shows the
+    // rest of the path); `name` stays the identity key either way.
+    std::string label;
     std::string modelName;  // gate/cell type — drives the icon dispatcher in drawInstance()
     float x = 0.0f;
     float y = 0.0f;  // world coords (top-left)
@@ -262,6 +267,18 @@ struct InstanceShape {
     // -1 = top-level box; otherwise the id of the InstanceShape this box is
     // nested inside of.
     int parentShapeId = -1;
+
+    // --- Hierarchy grouping (driver traces) ---
+    // True for a frame standing for a hierarchical module that encloses some
+    // of the traced leaf instances (see EquipotentialView's hierarchy
+    // grouping). Drawn as a translucent labeled frame *under* the nets rather
+    // than an opaque box, has no ports, and is never a parentShapeId target:
+    // the leaves it surrounds stay top-level shapes so the existing wiring/
+    // hit-test code is unaffected.
+    bool isHierGroup = false;
+    // Nesting depth of a hierarchy group frame (1 = directly under the top
+    // design), used to shade nested frames progressively.
+    int  hierDepth = 0;
 };
 
 struct NetWire {

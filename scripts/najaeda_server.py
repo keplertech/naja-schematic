@@ -196,8 +196,13 @@ def equipotential_to_json(equipotential, sinks=None):
                 and instTerm.getDirection() == naja.SNLTerm.Direction.Input
                 and occurrence_key(occ) not in sinks):
             continue
-        path = [[inst.getName(), inst.getID()] for inst in occ.getPath().getInstances()]
-        path.append([instTerm.getInstance().getName(), instTerm.getInstance().getID()])
+        # Each path entry is [name, child_id, model_name]: the model name lets
+        # the schematic label the hierarchical module boxes it draws around a
+        # driver trace (see EquipotentialView's hierarchy grouping).
+        path = [[inst.getName(), inst.getID(), inst.getModel().getName()]
+                for inst in occ.getPath().getInstances()]
+        path.append([instTerm.getInstance().getName(), instTerm.getInstance().getID(),
+                     instTerm.getInstance().getModel().getName()])
         term = instTerm.getBitTerm()
         inst_model = instTerm.getInstance().getModel()
         has_instances = (inst_model.hasNonPrimitiveInstances() or

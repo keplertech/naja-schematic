@@ -1,5 +1,6 @@
 #include "AppLogic.h"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 
@@ -190,6 +191,7 @@ void setupProvider(AppState& state) {
     } else if (resp == "equipotential_response") {
       Console::Log("Equipotential data received");
       state.guiData->addEquipotential(new Equipotential(j.get<Equipotential>()));
+      state.tableEquipotentialCount = 1;
     } else if (resp == "trace_driver_response") {
       // Nets arrive breadth-first from the traced net toward the drivers, so
       // adding them in order lets the layout chain each one off an instance
@@ -201,6 +203,7 @@ void setupProvider(AppState& state) {
           ++n;
         }
       }
+      state.tableEquipotentialCount = std::max<size_t>(n, 1);
       Console::Log("Driver trace received: " + std::to_string(n) + " net(s)" +
                    (j.value("truncated", false) ? " (truncated)" : ""));
     } else if (resp == "expanded_instance_terms") {
@@ -384,6 +387,8 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Zoom In",    "Ctrl++")) EquipotentialView::zoomIn();
       if (ImGui::MenuItem("Zoom Out",   "Ctrl+-")) EquipotentialView::zoomOut();
       if (ImGui::MenuItem("Fit",        "Ctrl+0")) EquipotentialView::fitView();
+      if (ImGui::MenuItem("Show Hierarchy", "", EquipotentialView::showHierarchy()))
+        EquipotentialView::setShowHierarchy(!EquipotentialView::showHierarchy());
       ImGui::Separator();
       if (ImGui::MenuItem("Clear nets", "Ctrl+K")) state.guiData->clearEquipotentials();
       // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
@@ -619,8 +624,8 @@ bool appFrame(AppState& state) {
         if (ImGui::BeginTabBar("##BottomTabs")) {
           if (ImGui::BeginTabItem("Equipotential")) {
             const auto& eqs = state.guiData->equipotentials_;
-            std::vector<Equipotential*> lastEquip;
-            if (!eqs.empty()) lastEquip.push_back(eqs.back());
+            size_t n = std::min(state.tableEquipotentialCount, eqs.size());
+            std::vector<Equipotential*> lastEquip(eqs.end() - n, eqs.end());
             EquipotentialView::renderTable(lastEquip);
             ImGui::EndTabItem();
           }

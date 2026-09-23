@@ -229,6 +229,24 @@ to Driver"; both clear the view first, like "Show Equipotential") and from the
 schematic (right-click a pin -> "Trace to Driver"; this one *adds* to the view
 instead of clearing it).
 
+Occurrence `path` entries (in `equipotential_response` and each
+`trace_driver_response` net) are `[name, child_id, model_name]`; the third
+element is optional on parse (`InstTermOccurrence::pathModels`, `""` when
+absent). It lets the schematic keep the design hierarchy of whatever it
+shows (**View > Show Hierarchy**, on by default, also in the canvas context
+menu): `layoutHierarchyGroups()` in `EquipotentialView.cpp` draws every
+module enclosing a displayed leaf as a nested translucent frame labelled
+`instance (Model)`, re-laying the leaves out inside it — each leaf keeps the
+logic column the incremental layout gave it, and inside a frame its leaves
+and sub-frames are bucketed into columns by that column. Frames are
+`InstanceShape`s with `isHierGroup` set, inserted at the front of
+`SchematicView::instances` and drawn before the nets
+(`SchematicView::render()`); the leaves stay top-level shapes, so wiring and
+hit-testing are unchanged. Right-clicking a frame offers Show Properties and
+"Zoom to Module". The bottom "Equipotential" table lists every net of the
+last trace (not just the last net) with a "Hierarchy" column giving each
+occurrence's enclosing modules.
+
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*
 the already-loaded netlist rather than loading anything:

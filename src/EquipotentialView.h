@@ -56,6 +56,11 @@ class EquipotentialView {
     // Use this when the equipotentials vector is also being cleared synchronously.
     static void resetLayout();
 
+    // Hierarchy grouping: draw the hierarchical modules containing the
+    // displayed leaf instances as nested frames around them (default on).
+    static bool showHierarchy();
+    static void setShowHierarchy(bool on);
+
     // Called once during app setup so the view can send expansion requests.
     static void setProvider(INetlistProvider* provider);
 

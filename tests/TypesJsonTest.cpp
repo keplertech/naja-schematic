@@ -173,6 +173,27 @@ TEST(EquipotentialJson, ParsesTermsAndOccurrences) {
   EXPECT_EQ(occ.pathIds, (std::vector<unsigned>{4u, 9u}));
   EXPECT_EQ(occ.term.name, "d");
   EXPECT_TRUE(occ.has_instances);
+  // Two-element path entries (no model name) still line up with path.
+  EXPECT_EQ(occ.pathModels, (std::vector<std::string>{"", ""}));
+}
+
+TEST(EquipotentialJson, ParsesPathModelNames) {
+  json j = {
+    {"terms", json::array()},
+    {"occurrences", json::array({
+      {
+        {"path", json::array({json::array({"core", 1, "m_jtag_tap"}),
+                              json::array({"u2", 9, "AND2"})})},
+        {"name", "A"},
+        {"child_id", 0},
+        {"direction", 0},
+      },
+    })},
+  };
+  Equipotential e = j.get<Equipotential>();
+  ASSERT_EQ(e.occurrences.size(), 1u);
+  EXPECT_EQ(e.occurrences[0].path, (std::vector<std::string>{"core", "u2"}));
+  EXPECT_EQ(e.occurrences[0].pathModels, (std::vector<std::string>{"m_jtag_tap", "AND2"}));
 }
 
 // Documents current behavior: occurrences parsing is nested inside the

@@ -21,6 +21,10 @@ struct AppState {
   bool              focusSourceTab     {false};
   bool              focusDiagnosisTab  {false};
   bool              focusPropertiesTab {false};
+  // How many of the most recently added equipotentials the bottom
+  // "Equipotential" table lists: 1 after a single load_equipotential, every
+  // net of the cone after a trace_driver_response.
+  size_t            tableEquipotentialCount {1};
 };
 
 // Wire all provider callbacks (on_open, on_message, on_close, on_error)
