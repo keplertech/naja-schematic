@@ -23,9 +23,7 @@ inline float clampf(float v, float lo, float hi) {
 // no label); above a cap it stops growing so heavy zoom-in doesn't blow up
 // glyphs into blurry blocks.
 //
-// Pin ticks, boundary-port flags (what a top-level term renders as -- see
-// EquipotentialView's zero-size term stubs and drawBoundaryPortInstance
-// below) and wires follow the same shrink-then-vanish policy instead of
+// Pin ticks and wires follow the same shrink-then-vanish policy instead of
 // being held at an artificial minimum pixel size forever: at extreme
 // zoom-out they fade out of existence just like their labels already do,
 // rather than persisting as a fixed-size clutter of ticks/lines under
@@ -52,6 +50,9 @@ constexpr float kJunctionDotBaseR = 3.0f;
 constexpr float kMinJunctionDotR  = 1.25f;
 
 // Top-level design port "flag" half-height (see drawBoundaryPortInstance).
+// Unlike pin ticks, a flag never vanishes on zoom-out: it follows its
+// neighboring instance boxes (which are always drawn) and is only floored at
+// a minimum screen size, so the design boundary stays readable at any zoom.
 constexpr float kBoundaryPortHalfHBase = 8.0f;
 constexpr float kMinBoundaryPortHalfH  = 3.0f;
 
@@ -66,6 +67,11 @@ constexpr ImU32 kCanvasBgColor      = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kInstanceFillColor  = IM_COL32(214, 216, 220, 255);
 constexpr ImU32 kInstanceLineColor  = IM_COL32(35, 35, 38, 235);
 constexpr ImU32 kPinLineColor       = IM_COL32(40, 40, 40, 235);
+// Top-level design ports get their own tint so they can't be mistaken for an
+// instance pin or a small instance box. Green on purpose: diagnosis severities
+// use red/amber/blue (DiagnosisStore.cpp), so it doesn't read as a finding.
+constexpr ImU32 kBoundaryPortFillColor = IM_COL32(196, 232, 204, 255);
+constexpr ImU32 kBoundaryPortLineColor = IM_COL32(28, 110, 60, 255);
 
 // Returns 0.0f when the label would render too small to read -- callers
 // should skip drawing (and any backing rect) in that case.
@@ -352,8 +358,9 @@ static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
     if (inst.ports.empty()) return;
     const Port& p = inst.ports[0];
 
-    float halfH = zoomedSizeOrHidden(kBoundaryPortHalfHBase, sv.transform.scale, kMinBoundaryPortHalfH);
-    if (halfH <= 0.0f) return; // too small to matter at this zoom -- same fade policy as pin ticks
+    // Floored, not hidden: top-level ports stay visible as long as instances
+    // do (see kBoundaryPortHalfHBase).
+    float halfH = std::max(kBoundaryPortHalfHBase * sv.transform.scale, kMinBoundaryPortHalfH);
 
     ImVec2 anchor = sv.worldToScreen(ImVec2(inst.x, inst.y), canvasPos, canvasSize);
     // This layout is a fixed left-to-right flow (see EquipotentialView.cpp's
@@ -364,10 +371,14 @@ static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
     // (an output) -- flat base toward `anchor`, where the wire attaches.
     float outDir = 1.0f;
 
-    ImU32 outline = p.color != 0 ? p.color : kInstanceLineColor;
+    ImU32 outline = p.color != 0 ? p.color : kBoundaryPortLineColor;
     float lineThickness = std::max(1.0f, 1.25f * sv.transform.scale);
 
-    float fontSize = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
+    // Name shown whenever instance names are (same visibility threshold),
+    // drawn at pin-label size but never below the legible minimum.
+    float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale) > 0.0f
+        ? std::max(kMinLabelFontSize, labelFontSize(kPortLabelBaseSize, sv.transform.scale))
+        : 0.0f;
     ImFont* font = ImGui::GetFont();
     ImVec2 textSize = (fontSize > 0.0f && !p.name.empty())
         ? font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p.name.c_str())
@@ -387,14 +398,14 @@ static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
         { bodyX, anchor.y + halfH },
         { baseX, anchor.y + halfH },
     };
-    dl->AddConvexPolyFilled(pts, 5, kInstanceFillColor);
+    dl->AddConvexPolyFilled(pts, 5, kBoundaryPortFillColor);
     dl->AddPolyline(pts, 5, outline, lineThickness, ImDrawFlags_Closed);
     if (inst.diagOutline != 0)
         dl->AddPolyline(pts, 5, inst.diagOutline, 3.0f, ImDrawFlags_Closed);
 
     if (fontSize > 0.0f && !p.name.empty()) {
         ImVec2 textPos((baseX + bodyX) * 0.5f - textSize.x * 0.5f, anchor.y - textSize.y * 0.5f);
-        dl->AddText(font, fontSize, textPos, contrastingTextColor(kInstanceFillColor), p.name.c_str());
+        dl->AddText(font, fontSize, textPos, contrastingTextColor(kBoundaryPortFillColor), p.name.c_str());
     }
 }
 

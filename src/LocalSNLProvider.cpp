@@ -626,6 +626,10 @@ static json equipotentialJson(const SNLEquipotential& equi,
       };
     }
     entry["has_instances"] = hasAnySubInstances(theInst->getModel());
+    // Lets the view tell whether every pin of this instance is already on
+    // screen (solid box) or only a subset (dashed, double-click to expand).
+    if (auto* model = theInst->getModel())
+      entry["bit_term_count"] = model->getBitTerms().size();
     entry["source_loc"]    = sourceLocJson(theInst);
     occs.push_back(std::move(entry));
   }

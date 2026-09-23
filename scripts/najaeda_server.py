@@ -219,6 +219,9 @@ def equipotential_to_json(equipotential, sinks=None):
                 "design_id": inst_model.getID(),
             },
             "has_instances": has_instances,
+            # Lets the view tell whether every pin of this instance is already
+            # on screen (solid box) or only a subset (dashed, expandable).
+            "bit_term_count": sum(1 for _ in inst_model.getBitTerms()),
             "source_loc": get_source_loc(instTerm.getInstance())
         })
     for term in equipotential.getTerms():
