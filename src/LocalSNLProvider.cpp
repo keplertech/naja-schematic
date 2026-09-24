@@ -594,7 +594,11 @@ static json equipotentialJson(const SNLEquipotential& equi,
     // A top-level output is a receiver of the net; an input/inout drives it.
     if (sinks && bt->getDirection() == SNLTerm::Direction::Output &&
         !sinks->count(SNLOccurrence(bt))) continue;
-    terms.push_back(bitTermJson(bt));
+    auto t = bitTermJson(bt);
+    // Name of the net this pin sits on, in the pin's containing design (the
+    // top design here) -- shown in the schematic's pin hover tooltip.
+    if (auto* net = bt->getNet()) t["net"] = net->getString();
+    terms.push_back(std::move(t));
   }
 
   json occs = json::array();
@@ -618,6 +622,9 @@ static json equipotentialJson(const SNLEquipotential& equi,
                                    designName(theInst->getModel())}));
     auto entry = bitTermJson(bt);
     entry["path"] = std::move(pathArr);
+    // Net on this inst term inside the instance's parent design (the one
+    // the occurrence path points to).
+    if (auto* net = it->getNet()) entry["net"] = net->getString();
     if (auto* model = theInst->getModel()) {
       entry["design_ref"] = {
         {"db_id",      static_cast<unsigned>(model->getDB()->getID())},

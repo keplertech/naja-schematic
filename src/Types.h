@@ -66,6 +66,10 @@ struct BitTerm {
   unsigned child_id;
   Direction direction;
   std::optional<int> bit;
+  // Name of the (bit) net this pin is connected to in its containing design
+  // ("name" or "name[bit]"); "" when the provider omits it or the pin is
+  // unconnected. Only filled from equipotential occurrences/terms.
+  std::string net;
 
   std::string getString() const {
     return name + (bit.has_value() ? ("[" + std::to_string(bit.value()) + "]") : "");

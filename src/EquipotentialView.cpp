@@ -70,6 +70,9 @@ struct Item {
     // the full hierarchical path (the last entry is the instance itself).
     std::vector<std::string> path;
     std::vector<std::string> pathModels;
+    // Hierarchical name of the net on this pin ("u1/u2/n42"; bare net name
+    // for a top-level term), "" when the provider didn't send one.
+    std::string            netName;
 
     const std::string& key() const { return fullName.empty() ? label : fullName; }
 };
@@ -93,7 +96,12 @@ static int                g_ctxInstanceId    = -1;
 // box the pin sits on. -1 = none.
 static int                g_ctxPortId        = -1;
 
-struct OccurrenceInfo { std::string pathKey; DesignRef designRef; std::optional<SourceLoc> sourceLoc; };
+struct OccurrenceInfo {
+    std::string pathKey; DesignRef designRef; std::optional<SourceLoc> sourceLoc;
+    // Model of this instance and of each enclosing instance along pathKey
+    // ("" when the provider omits it) -- only used by the hover tooltip.
+    std::string model; std::vector<std::string> pathModels;
+};
 struct PortEquiRequest {
     std::vector<unsigned> pathIds;
     unsigned              termId = 0;
@@ -101,6 +109,9 @@ struct PortEquiRequest {
 };
 static std::map<int, OccurrenceInfo>  g_occInfoByShapeId;
 static std::map<int, PortEquiRequest> g_portEquiByPortId;
+// Rendered port id -> hierarchical names of the net(s) on that pin (several
+// for a merged bus pin), shown in the pin hover tooltip. Rebuilt every frame.
+static std::map<int, std::vector<std::string>> g_portNetsByPortId;
 // Merged bus-pin port id -> the bus-group key it expands on double-click.
 // Checked before g_portEquiByPortId. Rebuilt every frame.
 static std::map<int, std::string> g_busGroupByPortId;
@@ -195,6 +206,7 @@ static void buildItems(const Equipotential* eq,
         item.isTerm      = true;
         item.termChildId = bt.child_id;
         item.termBit     = bt.bit;
+        item.netName     = bt.net;
         (bt.direction == Direction::Input ? drivers : receivers).push_back(std::move(item));
     }
     for (const auto& occ : eq->occurrences) {
@@ -217,6 +229,13 @@ static void buildItems(const Equipotential* eq,
             joined += seg;
             first = false;
         }
+        // The net lives in the instance's parent: the path minus its last
+        // segment (the instance itself).
+        if (!occ.term.net.empty()) {
+            for (size_t i = 0; i + 1 < occ.path.size(); ++i)
+                item.netName += occ.path[i] + '/';
+            item.netName += occ.term.net;
+        }
         item.fullName  = std::move(joined);
         item.direction = occ.term.direction;
         (occ.term.direction == Direction::Output ? drivers : receivers).push_back(std::move(item));
@@ -234,6 +253,56 @@ static ImVec2 mouseWorldPos(const SchematicView& sv, const ImVec2& cpos) {
     return ImVec2(
         (m.x - cpos.x) / s + sv.transform.offset.x - sv.transform.screenOrigin.x / s,
         (m.y - cpos.y) / s + sv.transform.offset.y - sv.transform.screenOrigin.y / s);
+}
+
+// Hover tooltip for an instance box or module frame: identity, source
+// location, diagnoses, and the mouse actions it offers.
+static void renderInstanceTooltip(const InstanceShape& inst, const OccurrenceInfo& occ) {
+    const std::vector<std::string> path = splitPathKey(occ.pathKey);
+    const std::string leaf = path.empty() ? occ.pathKey : path.back();
+
+    ImGui::BeginTooltip();
+    ImGui::TextUnformatted(leaf.empty() ? "(top)" : leaf.c_str());
+    if (!occ.model.empty()) { ImGui::SameLine(); ImGui::TextDisabled("(%s)", occ.model.c_str()); }
+    ImGui::Separator();
+
+    if (ImGui::BeginTable("##instTip", 2, ImGuiTableFlags_SizingFixedFit)) {
+        auto row = [](const char* name, const std::string& value) {
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0); ImGui::TextDisabled("%s", name);
+            ImGui::TableSetColumnIndex(1); ImGui::TextUnformatted(value.c_str());
+        };
+        row("Path", occ.pathKey.empty() ? "(top)" : occ.pathKey);
+        if (!inst.isHierGroup && inst.hasChildren)
+            row("Internals", inst.hierExpanded ? "shown" : "hidden");
+        if (occ.sourceLoc.has_value()) {
+            const auto& loc = *occ.sourceLoc;
+            std::string src = loc.file + ":" + std::to_string(loc.line);
+            if (loc.endLine > loc.line) src += "-" + std::to_string(loc.endLine);
+            row("Source", src);
+        }
+        ImGui::EndTable();
+    }
+
+    auto diagnostics = DiagnosisStore::instanceDiagnostics(occ.pathKey);
+    if (!diagnostics.empty()) {
+        ImGui::Separator();
+        for (const auto* d : diagnostics) {
+            ImGui::TextColored(ImColor(DiagnosisStore::colorForSeverity(d->severity)).Value,
+                               "[%s] %s", toString(d->severity), d->message.c_str());
+            if (!d->source.empty()) ImGui::TextDisabled("source: %s", d->source.c_str());
+        }
+    }
+
+    ImGui::Separator();
+    if (inst.partialInterface) ImGui::TextDisabled("Double-click: show all pins");
+    if (canShowHierToggle(inst))
+        ImGui::TextDisabled("Click the +/- glyph: %s internals", inst.hierExpanded ? "hide" : "show");
+    if (inst.isHierGroup)
+        ImGui::TextDisabled("Right-click: properties, zoom to module");
+    else
+        ImGui::TextDisabled("Right-click: properties%s", occ.sourceLoc.has_value() ? ", RTL source" : "");
+    ImGui::EndTooltip();
 }
 
 // ---------------------------------------------------------------------------
@@ -380,7 +449,14 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         for (const auto& pin : net.pins) {
             if (pin.instChildId.has_value()) {
                 auto e = findOrAddChildPort(*pin.instChildId, pin.name, pin.direction);
-                if (e.first >= 0) ends.push_back(e);
+                if (e.first >= 0) {
+                    ends.push_back(e);
+                    std::string netName = parent.name + '/' + net.name;
+                    if (net.bit.has_value()) netName += "[" + std::to_string(*net.bit) + "]";
+                    auto& nets = g_portNetsByPortId[e.second];
+                    if (std::find(nets.begin(), nets.end(), netName) == nets.end())
+                        nets.push_back(std::move(netName));
+                }
             } else {
                 for (auto& pp : parent.ports) {
                     if (stripBusIndex(pp.name) == stripBusIndex(pin.name) && pp.direction == pin.direction) {
@@ -476,6 +552,7 @@ namespace {
 struct GroupNode {
     std::string pathKey;
     std::string label;
+    std::string model;
     int         depth = 0;
     std::vector<std::unique_ptr<GroupNode>> groups;
     std::map<std::string, GroupNode*>       groupByName;
@@ -549,7 +626,7 @@ void placeGroup(const GroupNode& node, ImVec2 origin, bool isRoot,
         f.isHierGroup = true;
         f.hierDepth   = node.depth;
         f.diagOutline = DiagnosisStore::instanceColor(node.pathKey);
-        g_occInfoByShapeId[f.id] = { node.pathKey, DesignRef{}, std::nullopt };
+        g_occInfoByShapeId[f.id] = { node.pathKey, DesignRef{}, std::nullopt, node.model, {} };
         frames.push_back(std::move(f));
     }
     for (const auto& [leaf, rel] : node.leafRel) {
@@ -587,6 +664,7 @@ static bool layoutHierarchyGroups(const std::map<std::string, LeafHier>& leafHie
                 child->pathKey = node->pathKey.empty() ? seg : node->pathKey + "/" + seg;
                 child->depth   = node->depth + 1;
                 const std::string model = i < lh.pathModels.size() ? lh.pathModels[i] : "";
+                child->model   = model;
                 child->label   = model.empty() ? seg : seg + " (" + model + ")";
                 git = node->groupByName.emplace(seg, child.get()).first;
                 node->groups.push_back(std::move(child));
@@ -911,6 +989,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     g_schematic.nets.clear();
     g_occInfoByShapeId.clear();
     g_portEquiByPortId.clear();
+    g_portNetsByPortId.clear();
     g_busGroupByPortId.clear();
     g_expandedBusGroupByPortId.clear();
 
@@ -946,6 +1025,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // closest thing this view has to a net name (nets aren't otherwise
     // identified in the equipotential wire format).
     std::vector<std::string> netLabelByEi(equipotentials.size());
+    // Pass-1 (logical, per-bit) port id -> hierarchical net name; folded
+    // onto the rendered (possibly merged bus) port ids after pass 2.
+    std::map<int, std::string> netByLogicalPid;
 
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
@@ -963,6 +1045,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     int pid = nextPortId++;
                     equiEnds[ei].push_back({ "term:" + item.label, pid });
                     g_portEquiByPortId[pid] = { item.pathIds, item.termChildId, item.termBit };
+                    if (!item.netName.empty()) netByLogicalPid[pid] = item.netName;
                     continue;
                 }
                 auto& mi = minsts[item.key()];
@@ -996,6 +1079,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     mi.ports.push_back(std::move(ps));
                     g_portEquiByPortId[pid] = { item.pathIds, item.termChildId, item.termBit };
                 }
+                if (!item.netName.empty()) netByLogicalPid.emplace(pid, item.netName);
                 equiEnds[ei].push_back({ item.key(), pid });
             }
         }
@@ -1021,7 +1105,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.name      = key;
         inst.modelName = modelNameFromLeaf(leafSegment(key));
         inst.diagOutline = DiagnosisStore::instanceColor(key);
-        g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.sourceLoc };
+        g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.sourceLoc,
+                                        mi.pathModels.empty() ? "" : mi.pathModels.back(), mi.pathModels };
         keyToInstId[key] = inst.id;
 
         // Hierarchy embedding: this box's model has sub-instances, so it can
@@ -1344,6 +1429,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         auto it = logicalToRenderedPortId.find(pid);
         return it != logicalToRenderedPortId.end() ? it->second : pid;
     };
+    for (const auto& [pid, netName] : netByLogicalPid) {
+        auto& nets = g_portNetsByPortId[renderedPort(pid)];
+        if (std::find(nets.begin(), nets.end(), netName) == nets.end())
+            nets.push_back(netName);
+    }
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         const auto& ends = equiEnds[ei];
         if (ends.size() < 2) continue;
@@ -1416,13 +1506,60 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
     g_schematic.updateFitIfNeeded(cpos, inner, 60.f);
 
-    // Hover tooltip: show diagnosis messages for the instance under the cursor.
-    if (ImGui::IsMouseHoveringRect(cpos, ImVec2(cpos.x + inner.x, cpos.y + inner.y))) {
+    // Hover tooltip: a pin under the cursor gets a hint listing its mouse
+    // actions (pins only react to double-click / right-click, which isn't
+    // discoverable otherwise); else the innermost instance box / module
+    // frame under the cursor gets its detailed tooltip.
+    if (ImGui::IsMouseHoveringRect(cpos, ImVec2(cpos.x + inner.x, cpos.y + inner.y)) &&
+        !ImGui::IsPopupOpen("", ImGuiPopupFlags_AnyPopupId)) {
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
+        // Same hit radius as the double-click / right-click pin tests above.
+        const float sc  = std::max(0.01f, g_schematic.transform.scale);
+        const float hr2 = (kPortHitRadiusPx / sc) * (kPortHitRadiusPx / sc);
+        const Port* hoveredPort = nullptr;
+        float bestD2 = hr2;
+        for (const auto& inst : g_schematic.instances) {
+            for (const auto& port : inst.ports) {
+                ImVec2 pw = g_schematic.portWorldPos(inst, port);
+                float dx = wp.x - pw.x, dy = wp.y - pw.y;
+                float d2 = dx*dx + dy*dy;
+                if (d2 > bestD2) continue;
+                if (!g_busGroupByPortId.count(port.id) && !g_portEquiByPortId.count(port.id) &&
+                    !g_portNetsByPortId.count(port.id)) continue;
+                hoveredPort = &port;
+                bestD2 = d2;
+            }
+        }
+        if (hoveredPort) {
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(hoveredPort->name.c_str());
+            auto netsIt = g_portNetsByPortId.find(hoveredPort->id);
+            if (netsIt != g_portNetsByPortId.end() && !netsIt->second.empty()) {
+                const auto& nets = netsIt->second;
+                constexpr size_t kMaxListed = 8;
+                if (nets.size() == 1) {
+                    ImGui::Text("Net: %s", nets[0].c_str());
+                } else {
+                    ImGui::Text("Nets (%zu):", nets.size());
+                    for (size_t i = 0; i < nets.size() && i < kMaxListed; ++i)
+                        ImGui::BulletText("%s", nets[i].c_str());
+                    if (nets.size() > kMaxListed)
+                        ImGui::TextDisabled("... %zu more", nets.size() - kMaxListed);
+                }
+            }
+            if (g_busGroupByPortId.count(hoveredPort->id)) {
+                ImGui::TextDisabled("Double-click: expand bus");
+            } else if (g_portEquiByPortId.count(hoveredPort->id)) {
+                ImGui::TextDisabled("Double-click: show net");
+                ImGui::TextDisabled("Right-click: trace to driver");
+            }
+            ImGui::EndTooltip();
+        }
         // Reverse scan: a nested child's rect sits inside its parent's, so
         // the innermost (most specific) box under the cursor is whichever
         // one was appended last -- see the same reasoning on the
         // partialInterface double-click handler above.
+        if (!hoveredPort)
         for (auto rit = g_schematic.instances.rbegin(); rit != g_schematic.instances.rend(); ++rit) {
             const auto& inst = *rit;
             if (inst.w <= 0.0f || inst.h <= 0.0f) continue; // skip zero-size term stubs
@@ -1430,16 +1567,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (wp.y < inst.y || wp.y > inst.y + inst.h) continue;
             auto it = g_occInfoByShapeId.find(inst.id);
             if (it == g_occInfoByShapeId.end()) break;
-            auto diagnostics = DiagnosisStore::instanceDiagnostics(it->second.pathKey);
-            if (!diagnostics.empty()) {
-                ImGui::BeginTooltip();
-                for (const auto* d : diagnostics) {
-                    ImGui::TextColored(ImColor(DiagnosisStore::colorForSeverity(d->severity)).Value,
-                                       "[%s] %s", toString(d->severity), d->message.c_str());
-                    if (!d->source.empty()) ImGui::TextDisabled("source: %s", d->source.c_str());
-                }
-                ImGui::EndTooltip();
-            }
+            renderInstanceTooltip(inst, it->second);
             break;
         }
     }

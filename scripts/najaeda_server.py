@@ -182,6 +182,16 @@ def occurrence_key(occ):
             term_key(inst_term.getBitTerm()))
 
 
+def net_display_name(net):
+    # "name" for a scalar net, "name[bit]" for a bus-net bit; None when the
+    # pin is unconnected.
+    if net is None:
+        return None
+    if isinstance(net, naja.SNLBusNetBit):
+        return f"{net.getName()}[{net.getBit()}]"
+    return net.getName()
+
+
 def equipotential_to_json(equipotential, sinks=None):
     # Wire-format body of an equipotential (no "response" key): its top-level
     # terms plus every leaf inst-term occurrence on the net.
@@ -222,7 +232,10 @@ def equipotential_to_json(equipotential, sinks=None):
             # Lets the view tell whether every pin of this instance is already
             # on screen (solid box) or only a subset (dashed, expandable).
             "bit_term_count": sum(1 for _ in inst_model.getBitTerms()),
-            "source_loc": get_source_loc(instTerm.getInstance())
+            "source_loc": get_source_loc(instTerm.getInstance()),
+            # Net on this inst term inside the instance's parent design --
+            # shown in the schematic's pin hover tooltip.
+            "net": net_display_name(instTerm.getNet())
         })
     for term in equipotential.getTerms():
         # A top-level output is a receiver of the net; an input/inout drives it.
@@ -234,7 +247,8 @@ def equipotential_to_json(equipotential, sinks=None):
             "name": term.getName(),
             "child_id": term.getID(),
             "direction": direction_to_int(term.getDirection()),
-            "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None
+            "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
+            "net": net_display_name(term.getNet())
         })
     return {"occurrences": occurrences, "terms": terms}
 

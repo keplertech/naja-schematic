@@ -247,7 +247,11 @@ instead of clearing it).
 Occurrence `path` entries (in `equipotential_response` and each
 `trace_driver_response` net) are `[name, child_id, model_name]`; the third
 element is optional on parse (`InstTermOccurrence::pathModels`, `""` when
-absent). It lets the schematic keep the design hierarchy of whatever it
+absent). Each occurrence and top-level term entry also carries an optional
+`"net"` string — the bit net on that pin in its containing design (`name` or
+`name[bit]`; `BitTerm::net`) — which the schematic prefixes with the
+occurrence's parent path and shows in the pin hover tooltip. The path also
+lets the schematic keep the design hierarchy of whatever it
 shows (**View > Show Hierarchy**, on by default, also in the canvas context
 menu): `layoutHierarchyGroups()` in `EquipotentialView.cpp` draws every
 module enclosing a displayed leaf as a nested translucent frame labelled

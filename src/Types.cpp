@@ -127,6 +127,12 @@ void from_json(const json& j, Equipotential& e) {
       if (termJson.contains("name") && !termJson["name"].is_null()) {
         term.name = termJson["name"].get<std::string>();
       }
+      if (termJson.contains("child_id") && !termJson["child_id"].is_null()) {
+        term.child_id = termJson["child_id"].get<unsigned>();
+      }
+      if (termJson.contains("net") && termJson["net"].is_string()) {
+        term.net = termJson["net"].get<std::string>();
+      }
       if (termJson.contains("direction") && !termJson["direction"].is_null()) {
         term.direction = intToDirection(termJson["direction"].get<int>());
       }
@@ -165,6 +171,9 @@ void from_json(const json& j, Equipotential& e) {
       }
       if (occJson.contains("child_id") && !occJson["child_id"].is_null()) {
         term.child_id = occJson["child_id"].get<unsigned>();
+      }
+      if (occJson.contains("net") && occJson["net"].is_string()) {
+        term.net = occJson["net"].get<std::string>();
       }
       if (occJson.contains("direction") && !occJson["direction"].is_null()) {
         term.direction = intToDirection(occJson["direction"].get<int>());
