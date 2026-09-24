@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <map>
+#include <memory>
 #include <set>
 #include <tuple>
 #include <imgui.h>
@@ -40,6 +41,11 @@ static constexpr float kHierGap       = 14.0f;
 static constexpr float kHierMargin    = 16.0f;
 static constexpr float kHierHeaderGap = 26.0f; // room below the box's own label/ports
 
+// Hierarchy grouping (module frames around traced leaves) geometry.
+static constexpr float kGroupHeader = 30.0f; // room for the frame's label
+static constexpr float kGroupPad    = 18.0f; // inner padding of a frame
+static constexpr float kGroupColGap = 90.0f; // gap between columns inside a frame
+
 // ---------------------------------------------------------------------------
 // Internal item type
 // ---------------------------------------------------------------------------
@@ -60,6 +66,10 @@ struct Item {
     std::optional<size_t>  bitTermCount;
     // RTL source location of the instance itself, if available.
     std::optional<SourceLoc> sourceLoc;
+    // Instance occurrences only: per-segment instance names / model names of
+    // the full hierarchical path (the last entry is the instance itself).
+    std::vector<std::string> path;
+    std::vector<std::string> pathModels;
 
     const std::string& key() const { return fullName.empty() ? label : fullName; }
 };
@@ -71,6 +81,10 @@ static SchematicView      g_schematic;
 static int                g_pendingZoomSteps = 0;
 static bool               g_pendingFit       = false;
 static bool               g_pendingClear     = false;
+// Set when a pin double-click requests a net: the view it extends keeps the
+// user's current pan/zoom instead of re-fitting to the whole drawing once
+// the net arrives. Consumed by the next item-count change.
+static bool               g_skipNextAutoFit  = false;
 static INetlistProvider*  g_provider         = nullptr;
 // Which instance box (if any) the canvas right-click popup currently
 // targets; -1 = the canvas-level menu (Clear all nets / Fit view).
@@ -87,10 +101,13 @@ struct PortEquiRequest {
 };
 static std::map<int, OccurrenceInfo>  g_occInfoByShapeId;
 static std::map<int, PortEquiRequest> g_portEquiByPortId;
-// Merged bus-pin port id (or the topmost bit's port id when a bus is shown
-// expanded) -> the bus-group key it toggles. Checked before
-// g_portEquiByPortId on double-click. Rebuilt every frame.
+// Merged bus-pin port id -> the bus-group key it expands on double-click.
+// Checked before g_portEquiByPortId. Rebuilt every frame.
 static std::map<int, std::string> g_busGroupByPortId;
+// Bit port id of a bus shown expanded -> its bus-group key, for the pin
+// context menu's "Collapse Bus". Double-clicking these bits loads their net
+// like any scalar pin. Rebuilt every frame.
+static std::map<int, std::string> g_expandedBusGroupByPortId;
 
 static std::map<std::string, std::vector<EquipotentialView::ExpandedPort>> g_expandedInstances;
 static std::set<std::string> g_pendingExpansions;
@@ -106,6 +123,14 @@ static std::set<std::string> g_hierExpanded;
 static std::set<std::string> g_hierPending;
 // pathKeys whose internals have been loaded (children + internal nets).
 static std::map<std::string, EquipotentialView::InstanceInternals> g_instanceInternals;
+
+// Hierarchy grouping: when on, the leaf instances shown are laid out inside
+// nested frames standing for the hierarchical modules that contain them
+// (see layoutHierarchyGroups) instead of the flat column layout.
+static bool g_showHierarchy = true;
+// A "Zoom to Module" request from the canvas context menu: the pathKey of the
+// frame to fit the view to once this frame's layout is known.
+static std::string g_pendingZoomGroup;
 
 // Persistent layout state
 static std::map<std::string, ImVec2>  g_placedPositions;  // key → world top-left
@@ -183,6 +208,8 @@ static void buildItems(const Equipotential* eq,
         item.hasInstances = occ.has_instances;
         item.bitTermCount = occ.bit_term_count;
         item.sourceLoc    = occ.source_loc;
+        item.path         = occ.path;
+        item.pathModels   = occ.pathModels;
         std::string joined;
         bool first = true;
         for (const auto& seg : occ.path) {
@@ -421,6 +448,165 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
     return result;
 }
 
+
+// ---------------------------------------------------------------------------
+// Hierarchy grouping: nested frames for the hierarchical modules containing
+// the displayed leaf instances. A driver trace (or any equipotential) spans
+// leaf cells anywhere in the design; without this, they're shown as one flat
+// sea of boxes and the module structure is lost.
+//
+// Each leaf keeps the logic column the incremental layout gave it
+// (layoutEquipotential's g_placedPositions x, i.e. its distance from the
+// traced net), and the modules become a tree of frames laid out bottom-up:
+// inside a frame, its own leaves and sub-frames are bucketed into columns by
+// the (average) logic column of their contents, left to right, and stacked
+// by their original vertical order. That keeps the left-to-right signal
+// flow while guaranteeing frames nest cleanly and never overlap.
+//
+// Frames are separate InstanceShapes (isHierGroup) inserted at the front of
+// g_schematic.instances; the leaves stay top-level shapes, so wiring, pins
+// and hit-testing work exactly as in the flat layout.
+// ---------------------------------------------------------------------------
+struct LeafHier {
+    std::vector<std::string> path;        // full instance-name path, leaf last
+    std::vector<std::string> pathModels;  // matching model names ("" if unknown)
+};
+
+namespace {
+struct GroupNode {
+    std::string pathKey;
+    std::string label;
+    int         depth = 0;
+    std::vector<std::unique_ptr<GroupNode>> groups;
+    std::map<std::string, GroupNode*>       groupByName;
+    std::vector<InstanceShape*>             leaves;
+    // Filled by measureGroup().
+    float  levelMin = 0.f, levelMax = 0.f, sortY = 0.f;
+    float  w = 0.f, h = 0.f;
+    ImVec2 rel{};                                  // top-left, relative to the parent frame
+    std::vector<std::pair<InstanceShape*, ImVec2>> leafRel;
+};
+
+float leafLevel(const InstanceShape& s) {
+    return (s.x - kLeftMargin) / (kInstW + kColGap);
+}
+
+void measureGroup(GroupNode& node, bool isRoot) {
+    struct Elem { GroupNode* g; InstanceShape* leaf; float center, sortY, w, h; };
+    std::vector<Elem> elems;
+    node.levelMin = 1e9f; node.levelMax = -1e9f; node.sortY = 1e9f;
+    for (auto& g : node.groups) {
+        measureGroup(*g, false);
+        elems.push_back({ g.get(), nullptr, 0.5f * (g->levelMin + g->levelMax), g->sortY, g->w, g->h });
+        node.levelMin = std::min(node.levelMin, g->levelMin);
+        node.levelMax = std::max(node.levelMax, g->levelMax);
+        node.sortY    = std::min(node.sortY, g->sortY);
+    }
+    for (auto* leaf : node.leaves) {
+        float lv = leafLevel(*leaf);
+        elems.push_back({ nullptr, leaf, lv, leaf->y, leaf->w, leaf->h });
+        node.levelMin = std::min(node.levelMin, lv);
+        node.levelMax = std::max(node.levelMax, lv);
+        node.sortY    = std::min(node.sortY, leaf->y);
+    }
+
+    // Bucket into columns by half-level so a module spanning an odd number
+    // of logic columns doesn't get forced into the same column as a leaf.
+    std::map<long, std::vector<Elem*>> columns;
+    for (auto& e : elems) columns[std::lround(e.center * 2.0f)].push_back(&e);
+
+    const float pad    = isRoot ? 0.f : kGroupPad;
+    const float top    = isRoot ? 0.f : kGroupHeader;
+    const float colGap = isRoot ? kColGap : kGroupColGap;
+    float x = pad, maxBottom = top;
+    for (auto& [col, members] : columns) {
+        std::stable_sort(members.begin(), members.end(),
+                         [](const Elem* a, const Elem* b) { return a->sortY < b->sortY; });
+        float y = top, colW = 0.f;
+        for (auto* e : members) {
+            if (e->g) e->g->rel = ImVec2(x, y);
+            else      node.leafRel.push_back({ e->leaf, ImVec2(x, y) });
+            y   += e->h + kRowSpacing;
+            colW = std::max(colW, e->w);
+        }
+        maxBottom = std::max(maxBottom, y - kRowSpacing);
+        x += colW + colGap;
+    }
+    node.w = std::max(x - colGap + pad, 2.f * pad + kInstW);
+    node.h = maxBottom + pad;
+}
+
+void placeGroup(const GroupNode& node, ImVec2 origin, bool isRoot,
+                int& nextInstId, std::vector<InstanceShape>& frames) {
+    if (!isRoot) {
+        InstanceShape f;
+        f.id          = nextInstId++;
+        f.name        = node.label;
+        f.x           = origin.x;
+        f.y           = origin.y;
+        f.w           = node.w;
+        f.h           = node.h;
+        f.isHierGroup = true;
+        f.hierDepth   = node.depth;
+        f.diagOutline = DiagnosisStore::instanceColor(node.pathKey);
+        g_occInfoByShapeId[f.id] = { node.pathKey, DesignRef{}, std::nullopt };
+        frames.push_back(std::move(f));
+    }
+    for (const auto& [leaf, rel] : node.leafRel) {
+        leaf->x = origin.x + rel.x;
+        leaf->y = origin.y + rel.y;
+        if (!isRoot) leaf->label = leafSegment(leaf->name);
+    }
+    for (const auto& g : node.groups)
+        placeGroup(*g, ImVec2(origin.x + g->rel.x, origin.y + g->rel.y), false, nextInstId, frames);
+}
+} // namespace
+
+// Returns false (leaving every shape untouched) when no displayed leaf sits
+// below the top design, i.e. there's no hierarchy to show.
+static bool layoutHierarchyGroups(const std::map<std::string, LeafHier>& leafHier,
+                                  const std::map<std::string, int>& keyToInstId,
+                                  int& nextInstId) {
+    bool anyNested = false;
+    for (const auto& [key, lh] : leafHier)
+        if (lh.path.size() >= 2 && keyToInstId.count(key)) { anyNested = true; break; }
+    if (!anyNested) return false;
+
+    GroupNode root;
+    for (const auto& [key, lh] : leafHier) {
+        auto kit = keyToInstId.find(key);
+        if (kit == keyToInstId.end()) continue;
+        InstanceShape* leaf = g_schematic.findInstanceById(kit->second);
+        if (!leaf) continue;
+        GroupNode* node = &root;
+        for (size_t i = 0; i + 1 < lh.path.size(); ++i) {
+            const std::string& seg = lh.path[i];
+            auto git = node->groupByName.find(seg);
+            if (git == node->groupByName.end()) {
+                auto child = std::make_unique<GroupNode>();
+                child->pathKey = node->pathKey.empty() ? seg : node->pathKey + "/" + seg;
+                child->depth   = node->depth + 1;
+                const std::string model = i < lh.pathModels.size() ? lh.pathModels[i] : "";
+                child->label   = model.empty() ? seg : seg + " (" + model + ")";
+                git = node->groupByName.emplace(seg, child.get()).first;
+                node->groups.push_back(std::move(child));
+            }
+            node = git->second;
+        }
+        node->leaves.push_back(leaf);
+    }
+
+    measureGroup(root, true);
+    std::vector<InstanceShape> frames;
+    placeGroup(root, ImVec2(kLeftMargin, 0.f), true, nextInstId, frames);
+    // Parent-first order at the front: drawn under everything, and reverse
+    // hit-test scans still find a leaf before the frame around it.
+    g_schematic.instances.insert(g_schematic.instances.begin(),
+                                 std::make_move_iterator(frames.begin()),
+                                 std::make_move_iterator(frames.end()));
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -439,6 +625,7 @@ void EquipotentialView::resetLayout() {
     g_hierPending.clear();
     g_instanceInternals.clear();
     g_layoutNextY = 0.f;
+    g_skipNextAutoFit = false;
     g_pendingFit   = true;
 }
 
@@ -450,6 +637,14 @@ bool EquipotentialView::takePendingClear() {
 }
 
 void EquipotentialView::setProvider(INetlistProvider* p) { g_provider = p; }
+
+bool EquipotentialView::showHierarchy() { return g_showHierarchy; }
+
+void EquipotentialView::setShowHierarchy(bool on) {
+    if (g_showHierarchy == on) return;
+    g_showHierarchy = on;
+    g_pendingFit    = true;
+}
 
 void EquipotentialView::applyInstanceExpansion(
         const std::string& pathKey,
@@ -544,6 +739,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         if (g_ctxPortId >= 0) g_ctxInstanceId = -1;
         ImGui::OpenPopup("##ctx");
     }
+    auto canvasMenuItems = [] {
+        if (ImGui::MenuItem("Clear all nets")) g_pendingClear = true;
+        if (ImGui::MenuItem("Fit view"))       g_schematic.requestFit(true);
+        ImGui::Separator();
+        if (ImGui::MenuItem("Show Hierarchy", nullptr, g_showHierarchy)) setShowHierarchy(!g_showHierarchy);
+    };
     if (ImGui::BeginPopup("##ctx")) {
         auto occIt = g_ctxInstanceId >= 0 ? g_occInfoByShapeId.find(g_ctxInstanceId)
                                           : g_occInfoByShapeId.end();
@@ -560,6 +761,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 if (portIt->second.bit.has_value()) req["bit"] = portIt->second.bit.value();
                 g_provider->send(req.dump());
             }
+            auto busIt = g_expandedBusGroupByPortId.find(g_ctxPortId);
+            if (busIt != g_expandedBusGroupByPortId.end() && ImGui::MenuItem("Collapse Bus"))
+                g_expandedBuses.erase(busIt->second);
         } else if (occIt != g_occInfoByShapeId.end()) {
             if (occIt->second.sourceLoc.has_value()) {
                 if (ImGui::MenuItem("Show RTL Source") && g_provider) {
@@ -578,9 +782,16 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 req["path"]    = splitPathKey(occIt->second.pathKey);
                 g_provider->send(req.dump());
             }
+            // A module frame covers a lot of canvas, so right-clicking its
+            // empty area also offers the canvas-level entries.
+            auto* shape = g_schematic.findInstanceById(g_ctxInstanceId);
+            if (shape && shape->isHierGroup) {
+                if (ImGui::MenuItem("Zoom to Module")) g_pendingZoomGroup = occIt->second.pathKey;
+                ImGui::Separator();
+                canvasMenuItems();
+            }
         } else {
-            if (ImGui::MenuItem("Clear all nets")) g_pendingClear = true;
-            if (ImGui::MenuItem("Fit view"))       g_schematic.requestFit(true);
+            canvasMenuItems();
         }
         ImGui::EndPopup();
     }
@@ -637,11 +848,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 if (dx*dx + dy*dy > hr2) continue;
                 auto busIt = g_busGroupByPortId.find(port.id);
                 if (busIt != g_busGroupByPortId.end()) {
-                    // Merged bus pin, or the topmost bit of an expanded bus:
-                    // toggle expand/collapse instead of requesting a net.
+                    // Merged bus pin: expand it instead of requesting a net.
                     // All bits are already loaded, so no request is needed.
-                    if (!g_expandedBuses.erase(busIt->second))
-                        g_expandedBuses.insert(busIt->second);
+                    // Collapsing is done from a bit pin's context menu.
+                    g_expandedBuses.insert(busIt->second);
                     hit = true; break;
                 }
                 auto it = g_portEquiByPortId.find(port.id);
@@ -652,6 +862,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 j["term_id"] = it->second.termId;
                 if (it->second.bit.has_value()) j["bit"] = it->second.bit.value();
                 g_provider->send(j.dump());
+                g_skipNextAutoFit = true;
                 hit = true; break;
             }
             if (hit) break;
@@ -701,6 +912,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     g_occInfoByShapeId.clear();
     g_portEquiByPortId.clear();
     g_busGroupByPortId.clear();
+    g_expandedBusGroupByPortId.clear();
 
     int nextInstId = 1, nextPortId = 1, totalItems = 0;
 
@@ -720,6 +932,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         bool                  hasInstances = false;
         std::optional<size_t> bitTermCount;
         std::optional<SourceLoc> sourceLoc;
+        std::vector<std::string> path;
+        std::vector<std::string> pathModels;
         std::vector<PortSlot> ports;
     };
     std::map<std::string, MInst> minsts;
@@ -758,6 +972,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     mi.hasInstances  = item.hasInstances;
                     mi.bitTermCount  = item.bitTermCount;
                     mi.sourceLoc     = item.sourceLoc;
+                    mi.path          = item.path;
+                    mi.pathModels    = item.pathModels;
                     auto pit = g_placedPositions.find(item.key());
                     mi.pos = pit != g_placedPositions.end()
                         ? pit->second : ImVec2{kLeftMargin, 0.f};
@@ -856,7 +1072,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
 
             struct Row { std::vector<const ResolvedPort*> members; bool merged = false;
-                         std::string busBase; bool isExpandedBusTop = false; std::string groupKey; };
+                         std::string busBase; bool isExpandedBusBit = false; std::string groupKey; };
             std::vector<Row> rows;
             std::set<std::string> seenGroup;
             for (const auto& rp : resolved) {
@@ -874,7 +1090,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 bool expandedBus = members.size() == 1 || g_expandedBuses.count(gk);
                 if (expandedBus) {
                     for (size_t i = 0; i < members.size(); ++i)
-                        rows.push_back({ { members[i] }, false, "", i == 0 && members.size() > 1, gk });
+                        rows.push_back({ { members[i] }, false, "", members.size() > 1, gk });
                 } else {
                     rows.push_back({ members, true, base, false, gk });
                 }
@@ -902,7 +1118,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     p.id   = row.members[0]->pid;
                     p.name = row.members[0]->ep->name;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->ep->name));
-                    if (row.isExpandedBusTop) g_busGroupByPortId[p.id] = row.groupKey;
+                    if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
                 }
                 p.lx = isIn ? -0.5f : 0.5f;
                 p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
@@ -922,7 +1138,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             // bus base name) so a bus with >=2 loaded bits collapses to one
             // pin instead of one row per bit.
             struct Row { std::vector<const PortSlot*> members; bool merged = false;
-                         std::string busBase; bool isExpandedBusTop = false; std::string groupKey; };
+                         std::string busBase; bool isExpandedBusBit = false; std::string groupKey; };
             std::vector<Row> rows;
             std::set<std::string> seenGroup;
             for (const auto& ps : mi.ports) {
@@ -940,7 +1156,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 bool expandedBus = members.size() == 1 || g_expandedBuses.count(gk);
                 if (expandedBus) {
                     for (size_t i = 0; i < members.size(); ++i)
-                        rows.push_back({ { members[i] }, false, "", i == 0 && members.size() > 1, gk });
+                        rows.push_back({ { members[i] }, false, "", members.size() > 1, gk });
                 } else {
                     rows.push_back({ members, true, base, false, gk });
                 }
@@ -968,7 +1184,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     p.id   = row.members[0]->portId;
                     p.name = row.members[0]->name;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->name));
-                    if (row.isExpandedBusTop) g_busGroupByPortId[p.id] = row.groupKey;
+                    if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
                 }
                 p.lx = isIn ? -0.5f : 0.5f;
                 p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
@@ -987,7 +1203,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // later instances down within each column and persist the correction
     // to g_placedPositions so future layout/anchor placement and Pass 3's
     // term-column bandY stay consistent with what's actually drawn.
-    {
+    bool grouped = false;
+    if (g_showHierarchy) {
+        std::map<std::string, LeafHier> leafHier;
+        for (const auto& [key, mi] : minsts) leafHier[key] = { mi.path, mi.pathModels };
+        grouped = layoutHierarchyGroups(leafHier, keyToInstId, nextInstId);
+    }
+    if (!grouped) {
         std::map<int, std::vector<InstanceShape*>> byColumn;
         for (auto& inst : g_schematic.instances)
             if (inst.w > 0.f) byColumn[std::lround(inst.x)].push_back(&inst);
@@ -1025,6 +1247,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
 
     // Pass 3: build term InstanceShapes per equip (not merged)
+    // Port flags already placed, so two nets whose band lands on the same
+    // spot (e.g. two inputs feeding the same cell) stack instead of overlap.
+    std::vector<ImVec2> placedTermPos;
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
         if (!eq) continue;
@@ -1037,15 +1262,26 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         float bandY = 0.f; int nBand = 0;
         auto accInst = [&](const Item& item) {
             if (item.isTerm) return;
-            auto pit = g_placedPositions.find(item.key());
-            if (pit == g_placedPositions.end()) return;
-            lx = std::min(lx, pit->second.x);
-            rx = std::max(rx, pit->second.x + kInstW);
-            bandY += pit->second.y; ++nBand;
+            auto kit = keyToInstId.find(item.key());
+            const InstanceShape* shape =
+                kit != keyToInstId.end() ? g_schematic.findInstanceById(kit->second) : nullptr;
+            if (!shape) return;
+            lx = std::min(lx, shape->x);
+            rx = std::max(rx, shape->x + shape->w);
+            bandY += shape->y; ++nBand;
         };
         for (const auto& d : drivers)   accInst(d);
         for (const auto& r : receivers) accInst(r);
         if (nBand) bandY /= float(nBand);
+        // With module frames drawn, top-level ports belong outside the
+        // outermost frame, not next to a leaf that sits deep inside one.
+        if (grouped) {
+            for (const auto& inst : g_schematic.instances) {
+                if (!inst.isHierGroup) continue;
+                lx = std::min(lx, inst.x);
+                rx = std::max(rx, inst.x + inst.w);
+            }
+        }
 
         float termLx = lx  - 40.f;
         float termRx = rx  + 20.f;
@@ -1063,9 +1299,17 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 if (pid < 0) continue;
 
                 bool isInput = (item.direction == Direction::Input);
+                const float tx = isInput ? termLx : termRx;
+                for (bool moved = true; moved; ) {
+                    moved = false;
+                    for (const auto& p : placedTermPos)
+                        if (std::abs(p.x - tx) < 1.f && std::abs(p.y - ty) < 24.f)
+                            { ty = p.y + 30.f; moved = true; }
+                }
+                placedTermPos.push_back(ImVec2(tx, ty));
                 InstanceShape inst;
                 inst.id = nextInstId++;
-                inst.x  = isInput ? termLx : termRx;
+                inst.x  = tx;
                 inst.y  = ty;
                 inst.w  = 0.f; inst.h = 0.f;
                 inst.partialInterface = false;
@@ -1155,7 +1399,21 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
 
     static int lastTotal = -1;
-    if (totalItems != lastTotal) { g_schematic.requestFit(true); lastTotal = totalItems; }
+    if (totalItems != lastTotal) {
+        if (g_skipNextAutoFit) g_skipNextAutoFit = false;
+        else                   g_schematic.requestFit(true);
+        lastTotal = totalItems;
+    }
+    if (!g_pendingZoomGroup.empty()) {
+        for (const auto& inst : g_schematic.instances) {
+            if (!inst.isHierGroup) continue;
+            auto it = g_occInfoByShapeId.find(inst.id);
+            if (it == g_occInfoByShapeId.end() || it->second.pathKey != g_pendingZoomGroup) continue;
+            g_schematic.requestFitRect(ImVec2(inst.x, inst.y), ImVec2(inst.x + inst.w, inst.y + inst.h));
+            break;
+        }
+        g_pendingZoomGroup.clear();
+    }
     g_schematic.updateFitIfNeeded(cpos, inner, 60.f);
 
     // Hover tooltip: show diagnosis messages for the instance under the cursor.
@@ -1212,11 +1470,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
 // renderTable
 // ---------------------------------------------------------------------------
 void EquipotentialView::renderTable(const std::vector<Equipotential*>& equipotentials) {
-    if (!ImGui::BeginTable("eq_table", 2,
+    if (!ImGui::BeginTable("eq_table", 3,
         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable))
         return;
 
     ImGui::TableSetupColumn("Element",   ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("Hierarchy", ImGuiTableColumnFlags_WidthStretch);
     ImGui::TableSetupColumn("Direction", ImGuiTableColumnFlags_WidthFixed, 70);
     ImGui::TableHeadersRow();
 
@@ -1225,14 +1484,15 @@ void EquipotentialView::renderTable(const std::vector<Equipotential*>& equipoten
         if (!eq) continue;
         if (i > 0) {
             ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0); ImGui::Separator();
-            ImGui::TableSetColumnIndex(1); ImGui::Separator();
+            for (int c = 0; c < 3; ++c) { ImGui::TableSetColumnIndex(c); ImGui::Separator(); }
         }
         for (const auto& t : eq->terms) {
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::Text("%s", t.getString().c_str());
             ImGui::TableSetColumnIndex(1);
+            ImGui::TextDisabled("(top)");
+            ImGui::TableSetColumnIndex(2);
             auto c = topTermColor(t.direction);
             ImGui::PushStyleColor(ImGuiCol_Text,
                 ImVec4(c.Value.x, c.Value.y, c.Value.z, c.Value.w));
@@ -1243,10 +1503,22 @@ void EquipotentialView::renderTable(const std::vector<Equipotential*>& equipoten
             std::string label;
             for (const auto& seg : occ.path) { label += seg; label += '/'; }
             label += occ.term.getString();
+            // The modules enclosing the instance, outermost first, each with
+            // its model name when the provider sent one.
+            std::string context;
+            for (size_t k = 0; k + 1 < occ.path.size(); ++k) {
+                if (k) context += " > ";
+                context += occ.path[k];
+                if (k < occ.pathModels.size() && !occ.pathModels[k].empty())
+                    context += " (" + occ.pathModels[k] + ")";
+            }
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             ImGui::Text("%s", label.c_str());
             ImGui::TableSetColumnIndex(1);
+            if (context.empty()) ImGui::TextDisabled("(top)");
+            else                 ImGui::Text("%s", context.c_str());
+            ImGui::TableSetColumnIndex(2);
             auto c = occTermColor(occ.term.direction);
             ImGui::PushStyleColor(ImGuiCol_Text,
                 ImVec4(c.Value.x, c.Value.y, c.Value.z, c.Value.w));

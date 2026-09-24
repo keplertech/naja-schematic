@@ -38,6 +38,9 @@ public:
     void handleInteraction(const ImVec2& canvasPos, const ImVec2& canvasSize);
     void requestFit(bool resetInteraction = false);
     void updateFitIfNeeded(const ImVec2& canvasPos, const ImVec2& canvasSize, float padding = 40.0f);
+    // Like requestFit(true), but fits the given world-space rect instead of
+    // the whole contents (e.g. zooming onto one hierarchy frame).
+    void requestFitRect(const ImVec2& worldMin, const ImVec2& worldMax);
 
     // Draw helpers (const)
     void drawInstance(ImDrawList* dl, const InstanceShape& inst,
@@ -53,6 +56,9 @@ public:
 private:
     bool needsFit_ = true;
     bool hasUserInteraction_ = false;
+    bool hasFitRect_ = false;
+    ImVec2 fitRectMin_{}, fitRectMax_{};
 
     void fitToContents(const ImVec2& canvasPos, const ImVec2& canvasSize, float padding);
+    void fitToRect(ImVec2 boundsMin, ImVec2 boundsMax, const ImVec2& canvasSize, float padding);
 };

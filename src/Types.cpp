@@ -152,6 +152,10 @@ void from_json(const json& j, Equipotential& e) {
           const auto& child_id = pathElem[1].get<unsigned>();
           occurrence.path.push_back(name);
           occurrence.pathIds.push_back(child_id);
+          // Optional third element: the instance's model name.
+          occurrence.pathModels.push_back(
+              pathElem.size() > 2 && pathElem[2].is_string() ? pathElem[2].get<std::string>()
+                                                             : std::string());
         }
       }
 

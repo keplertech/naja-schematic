@@ -124,7 +124,22 @@ python3 scripts/najaeda_server.py   # serves ws://localhost:8081/ws
 
 # gate-level Verilog + Liberty example:
 python3 scripts/najaeda_server.py --verilog design.v --liberty cells.lib
+
+# SystemVerilog (elaborated with slang) example:
+python3 scripts/najaeda_server.py --systemverilog a.sv b.sv --top top -D SYNTHESIS
+
+# SystemVerilog from a slang command file (sources, +incdir+, +define+, ...):
+python3 scripts/najaeda_server.py --flist design.f --top top
 ```
+
+A design is required: either `--verilog`, or SystemVerilog via
+`--systemverilog`/`--sv <path>...` and/or `--flist`/`-f <file>` (the two SV
+inputs can be combined; `--flist` maps to `SystemVerilogConfig.flist`).
+Verilog and SV are mutually exclusive. `--top`/`--define`/`-D` apply only to
+SystemVerilog, and `--liberty` is rejected with SV — same restriction as the
+native CLI, since the SV loader has no liberty hook.
+`--allow_unknown_designs` maps to `SystemVerilogConfig.blackbox_unknown_modules`
+for SV.
 
 Note the flag shapes are *not* symmetric with the native CLI above: the
 server takes `--verilog <path>` (singular) + `--liberty <path>...` (one flag,
@@ -228,6 +243,24 @@ earlier one) to chain the cone right-to-left. Reachable from the tree
 to Driver"; both clear the view first, like "Show Equipotential") and from the
 schematic (right-click a pin -> "Trace to Driver"; this one *adds* to the view
 instead of clearing it).
+
+Occurrence `path` entries (in `equipotential_response` and each
+`trace_driver_response` net) are `[name, child_id, model_name]`; the third
+element is optional on parse (`InstTermOccurrence::pathModels`, `""` when
+absent). It lets the schematic keep the design hierarchy of whatever it
+shows (**View > Show Hierarchy**, on by default, also in the canvas context
+menu): `layoutHierarchyGroups()` in `EquipotentialView.cpp` draws every
+module enclosing a displayed leaf as a nested translucent frame labelled
+`instance (Model)`, re-laying the leaves out inside it — each leaf keeps the
+logic column the incremental layout gave it, and inside a frame its leaves
+and sub-frames are bucketed into columns by that column. Frames are
+`InstanceShape`s with `isHierGroup` set, inserted at the front of
+`SchematicView::instances` and drawn before the nets
+(`SchematicView::render()`); the leaves stay top-level shapes, so wiring and
+hit-testing are unchanged. Right-clicking a frame offers Show Properties and
+"Zoom to Module". The bottom "Equipotential" table lists every net of the
+last trace (not just the last net) with a "Hierarchy" column giving each
+occurrence's enclosing modules.
 
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*

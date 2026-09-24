@@ -273,11 +273,12 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
             dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, 3.5f);
 
         float instFontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
-        if (!inst.name.empty() && instFontSize > 0.0f) {
+        const std::string& shown = inst.label.empty() ? inst.name : inst.label;
+        if (!shown.empty() && instFontSize > 0.0f) {
             ImFont* font = ImGui::GetFont();
             float padding = std::max(2.0f, 6.0f * sv.transform.scale);
             float maxWidth = (rmax.x - rmin.x) - 2.0f * padding;
-            std::string label = truncateToWidth(font, instFontSize, inst.name, maxWidth);
+            std::string label = truncateToWidth(font, instFontSize, shown, maxWidth);
             if (!label.empty()) {
                 ImVec2 textSize = font->CalcTextSizeA(instFontSize, FLT_MAX, 0.0f, label.c_str());
                 ImVec2 textPos  = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f,
@@ -409,6 +410,36 @@ static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
 }
 
 // ---------------------------------------------------------------------------
+// Hierarchy group frame — a hierarchical module enclosing some traced leaf
+// instances (see EquipotentialView's hierarchy grouping). Drawn under the
+// nets with a translucent fill, so wires crossing the frame stay visible and
+// nested frames read as progressively darker layers. Label at the top-left
+// corner, clear of the leaf boxes laid out below it.
+// ---------------------------------------------------------------------------
+static void drawHierGroupInstance(ImDrawList* dl, const InstanceShape& inst,
+                                  const SchematicView& sv,
+                                  const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    int alpha = std::min(90, 22 + 14 * std::max(0, inst.hierDepth - 1));
+    dl->AddRectFilled(rmin, rmax, IM_COL32(110, 125, 175, alpha), 0.0f);
+    dl->AddRect(rmin, rmax, IM_COL32(70, 80, 115, 220), 0.0f, 0, 1.25f);
+    if (inst.diagOutline != 0)
+        dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, 3.5f);
+
+    float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
+    if (!inst.name.empty() && fontSize > 0.0f) {
+        ImFont* font = ImGui::GetFont();
+        float padding = std::max(2.0f, 5.0f * sv.transform.scale);
+        std::string label = truncateToWidth(font, fontSize, inst.name,
+                                            (rmax.x - rmin.x) - 2.0f * padding);
+        if (!label.empty())
+            dl->AddText(font, fontSize, ImVec2(rmin.x + padding, rmin.y + padding),
+                        IM_COL32(35, 40, 60, 235), label.c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Gate dispatcher — add new model names here as the library grows
 // ---------------------------------------------------------------------------
 // To add a new gate type:
@@ -417,7 +448,9 @@ static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
 // ---------------------------------------------------------------------------
 void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst,
                                  const ImVec2& canvasPos, const ImVec2& canvasSize) const {
-    if (inst.modelName == "assign") {
+    if (inst.isHierGroup) {
+        drawHierGroupInstance(dl, inst, *this, canvasPos, canvasSize);
+    } else if (inst.modelName == "assign") {
         drawAssignInstance(dl, inst, *this, canvasPos, canvasSize);
     } else if (inst.modelName == "port") {
         drawBoundaryPortInstance(dl, inst, *this, canvasPos, canvasSize);
@@ -531,7 +564,10 @@ bool SchematicView::computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const {
 void SchematicView::fitToContents(const ImVec2& /*canvasPos*/, const ImVec2& canvasSize, float padding) {
     ImVec2 boundsMin, boundsMax;
     if (!computeWorldBounds(boundsMin, boundsMax)) return;
+    fitToRect(boundsMin, boundsMax, canvasSize, padding);
+}
 
+void SchematicView::fitToRect(ImVec2 boundsMin, ImVec2 boundsMax, const ImVec2& canvasSize, float padding) {
     float width = std::max(1.0f, boundsMax.x - boundsMin.x);
     float height = std::max(1.0f, boundsMax.y - boundsMin.y);
 
@@ -562,9 +598,18 @@ void SchematicView::requestFit(bool resetInteraction) {
     }
 }
 
+void SchematicView::requestFitRect(const ImVec2& worldMin, const ImVec2& worldMax) {
+    requestFit(true);
+    hasFitRect_ = true;
+    fitRectMin_ = worldMin;
+    fitRectMax_ = worldMax;
+}
+
 void SchematicView::updateFitIfNeeded(const ImVec2& canvasPos, const ImVec2& canvasSize, float padding) {
     if (!needsFit_ || hasUserInteraction_) return;
-    fitToContents(canvasPos, canvasSize, padding);
+    if (hasFitRect_) fitToRect(fitRectMin_, fitRectMax_, canvasSize, padding);
+    else             fitToContents(canvasPos, canvasSize, padding);
+    hasFitRect_ = false;
     needsFit_ = false;
 }
 
@@ -648,7 +693,14 @@ void SchematicView::render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2
     // Schematic-style white "paper" canvas -- see kCanvasBgColor.
     dl->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), kCanvasBgColor);
 
-    // Top-level nets draw first (so top-level instances render on top), as
+    // Hierarchy group frames go under everything else -- they only outline
+    // which module the traced leaves belong to, and are listed parent-first
+    // so nested frames paint over their enclosing one.
+    for (const auto& inst : instances) {
+        if (inst.isHierGroup) drawInstance(dl, inst, canvasPos, canvasSize);
+    }
+
+    // Top-level nets draw next (so top-level instances render on top), as
     // before. A net nested inside an expanded instance (containerShapeId set)
     // is drawn later instead -- see drawSubtree below -- so that instance's
     // opaque box fill doesn't get painted over it afterward.
@@ -667,7 +719,7 @@ void SchematicView::render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2
             if (child.parentShapeId == inst.id) drawSubtree(child);
     };
     for (const auto& inst : instances) {
-        if (inst.parentShapeId < 0) drawSubtree(inst);
+        if (inst.parentShapeId < 0 && !inst.isHierGroup) drawSubtree(inst);
     }
 
     dl->PopClipRect();

@@ -603,14 +603,19 @@ static json equipotentialJson(const SNLEquipotential& equi,
     if (sinks && it->getDirection() == SNLTerm::Direction::Input &&
         !sinks->count(occ)) continue;
     auto* bt = it->getBitTerm();
+    // Each path entry is [name, child_id, model_name]: the model name lets
+    // the schematic label the hierarchical module boxes it draws around a
+    // driver trace (see EquipotentialView's hierarchy grouping).
     json pathArr = json::array();
     for (auto* inst : occ.getPath().getInstances())
       pathArr.push_back(json::array({inst->getString(),
-                                     static_cast<unsigned>(inst->getID())}));
+                                     static_cast<unsigned>(inst->getID()),
+                                     designName(inst->getModel())}));
     // The occurrence path is to the parent design; append the instance itself
     auto* theInst = it->getInstance();
     pathArr.push_back(json::array({theInst->getString(),
-                                   static_cast<unsigned>(theInst->getID())}));
+                                   static_cast<unsigned>(theInst->getID()),
+                                   designName(theInst->getModel())}));
     auto entry = bitTermJson(bt);
     entry["path"] = std::move(pathArr);
     if (auto* model = theInst->getModel()) {
