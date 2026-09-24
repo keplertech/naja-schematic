@@ -81,6 +81,10 @@ static SchematicView      g_schematic;
 static int                g_pendingZoomSteps = 0;
 static bool               g_pendingFit       = false;
 static bool               g_pendingClear     = false;
+// Set when a pin double-click requests a net: the view it extends keeps the
+// user's current pan/zoom instead of re-fitting to the whole drawing once
+// the net arrives. Consumed by the next item-count change.
+static bool               g_skipNextAutoFit  = false;
 static INetlistProvider*  g_provider         = nullptr;
 // Which instance box (if any) the canvas right-click popup currently
 // targets; -1 = the canvas-level menu (Clear all nets / Fit view).
@@ -97,10 +101,13 @@ struct PortEquiRequest {
 };
 static std::map<int, OccurrenceInfo>  g_occInfoByShapeId;
 static std::map<int, PortEquiRequest> g_portEquiByPortId;
-// Merged bus-pin port id (or the topmost bit's port id when a bus is shown
-// expanded) -> the bus-group key it toggles. Checked before
-// g_portEquiByPortId on double-click. Rebuilt every frame.
+// Merged bus-pin port id -> the bus-group key it expands on double-click.
+// Checked before g_portEquiByPortId. Rebuilt every frame.
 static std::map<int, std::string> g_busGroupByPortId;
+// Bit port id of a bus shown expanded -> its bus-group key, for the pin
+// context menu's "Collapse Bus". Double-clicking these bits loads their net
+// like any scalar pin. Rebuilt every frame.
+static std::map<int, std::string> g_expandedBusGroupByPortId;
 
 static std::map<std::string, std::vector<EquipotentialView::ExpandedPort>> g_expandedInstances;
 static std::set<std::string> g_pendingExpansions;
@@ -618,6 +625,7 @@ void EquipotentialView::resetLayout() {
     g_hierPending.clear();
     g_instanceInternals.clear();
     g_layoutNextY = 0.f;
+    g_skipNextAutoFit = false;
     g_pendingFit   = true;
 }
 
@@ -753,6 +761,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 if (portIt->second.bit.has_value()) req["bit"] = portIt->second.bit.value();
                 g_provider->send(req.dump());
             }
+            auto busIt = g_expandedBusGroupByPortId.find(g_ctxPortId);
+            if (busIt != g_expandedBusGroupByPortId.end() && ImGui::MenuItem("Collapse Bus"))
+                g_expandedBuses.erase(busIt->second);
         } else if (occIt != g_occInfoByShapeId.end()) {
             if (occIt->second.sourceLoc.has_value()) {
                 if (ImGui::MenuItem("Show RTL Source") && g_provider) {
@@ -837,11 +848,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 if (dx*dx + dy*dy > hr2) continue;
                 auto busIt = g_busGroupByPortId.find(port.id);
                 if (busIt != g_busGroupByPortId.end()) {
-                    // Merged bus pin, or the topmost bit of an expanded bus:
-                    // toggle expand/collapse instead of requesting a net.
+                    // Merged bus pin: expand it instead of requesting a net.
                     // All bits are already loaded, so no request is needed.
-                    if (!g_expandedBuses.erase(busIt->second))
-                        g_expandedBuses.insert(busIt->second);
+                    // Collapsing is done from a bit pin's context menu.
+                    g_expandedBuses.insert(busIt->second);
                     hit = true; break;
                 }
                 auto it = g_portEquiByPortId.find(port.id);
@@ -852,6 +862,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 j["term_id"] = it->second.termId;
                 if (it->second.bit.has_value()) j["bit"] = it->second.bit.value();
                 g_provider->send(j.dump());
+                g_skipNextAutoFit = true;
                 hit = true; break;
             }
             if (hit) break;
@@ -901,6 +912,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     g_occInfoByShapeId.clear();
     g_portEquiByPortId.clear();
     g_busGroupByPortId.clear();
+    g_expandedBusGroupByPortId.clear();
 
     int nextInstId = 1, nextPortId = 1, totalItems = 0;
 
@@ -1060,7 +1072,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
 
             struct Row { std::vector<const ResolvedPort*> members; bool merged = false;
-                         std::string busBase; bool isExpandedBusTop = false; std::string groupKey; };
+                         std::string busBase; bool isExpandedBusBit = false; std::string groupKey; };
             std::vector<Row> rows;
             std::set<std::string> seenGroup;
             for (const auto& rp : resolved) {
@@ -1078,7 +1090,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 bool expandedBus = members.size() == 1 || g_expandedBuses.count(gk);
                 if (expandedBus) {
                     for (size_t i = 0; i < members.size(); ++i)
-                        rows.push_back({ { members[i] }, false, "", i == 0 && members.size() > 1, gk });
+                        rows.push_back({ { members[i] }, false, "", members.size() > 1, gk });
                 } else {
                     rows.push_back({ members, true, base, false, gk });
                 }
@@ -1106,7 +1118,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     p.id   = row.members[0]->pid;
                     p.name = row.members[0]->ep->name;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->ep->name));
-                    if (row.isExpandedBusTop) g_busGroupByPortId[p.id] = row.groupKey;
+                    if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
                 }
                 p.lx = isIn ? -0.5f : 0.5f;
                 p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
@@ -1126,7 +1138,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             // bus base name) so a bus with >=2 loaded bits collapses to one
             // pin instead of one row per bit.
             struct Row { std::vector<const PortSlot*> members; bool merged = false;
-                         std::string busBase; bool isExpandedBusTop = false; std::string groupKey; };
+                         std::string busBase; bool isExpandedBusBit = false; std::string groupKey; };
             std::vector<Row> rows;
             std::set<std::string> seenGroup;
             for (const auto& ps : mi.ports) {
@@ -1144,7 +1156,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 bool expandedBus = members.size() == 1 || g_expandedBuses.count(gk);
                 if (expandedBus) {
                     for (size_t i = 0; i < members.size(); ++i)
-                        rows.push_back({ { members[i] }, false, "", i == 0 && members.size() > 1, gk });
+                        rows.push_back({ { members[i] }, false, "", members.size() > 1, gk });
                 } else {
                     rows.push_back({ members, true, base, false, gk });
                 }
@@ -1172,7 +1184,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     p.id   = row.members[0]->portId;
                     p.name = row.members[0]->name;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->name));
-                    if (row.isExpandedBusTop) g_busGroupByPortId[p.id] = row.groupKey;
+                    if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
                 }
                 p.lx = isIn ? -0.5f : 0.5f;
                 p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
@@ -1387,7 +1399,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
 
     static int lastTotal = -1;
-    if (totalItems != lastTotal) { g_schematic.requestFit(true); lastTotal = totalItems; }
+    if (totalItems != lastTotal) {
+        if (g_skipNextAutoFit) g_skipNextAutoFit = false;
+        else                   g_schematic.requestFit(true);
+        lastTotal = totalItems;
+    }
     if (!g_pendingZoomGroup.empty()) {
         for (const auto& inst : g_schematic.instances) {
             if (!inst.isHierGroup) continue;

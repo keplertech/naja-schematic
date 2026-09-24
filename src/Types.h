@@ -233,8 +233,8 @@ struct Port {
     bool isInput = false; // used by renderer to pick red/green
     ImU32 color = 0;      // optional explicit color override (0 == no override)
     // True when this pin represents multiple merged bus bits rather than a
-    // single bit/scalar terminal — drives a distinct draw style and toggles
-    // expand/collapse (instead of load_equipotential) on double-click.
+    // single bit/scalar terminal — drives a distinct draw style and expands
+    // the bus (instead of load_equipotential) on double-click.
     bool isBus = false;
 };
 

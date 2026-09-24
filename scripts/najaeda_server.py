@@ -672,7 +672,28 @@ if __name__ == "__main__":
     parser.add_argument("--liberty", nargs="*", help="List of liberty files to load")
     parser.add_argument("--verilog", type=str,
                         help="Verilog netlist to load")
+    parser.add_argument("--systemverilog", "--sv", nargs="+", metavar="FILE",
+                        help="SystemVerilog file(s) to load (elaborated with slang)")
+    parser.add_argument("--flist", "-f", type=str, metavar="FILE",
+                        help="SystemVerilog command file (slang -f syntax: sources, "
+                             "+incdir+, +define+, ...); may be combined with --systemverilog")
+    parser.add_argument("--top", type=str,
+                        help="SystemVerilog only: top module to elaborate")
+    parser.add_argument("--define", "-D", action="append", metavar="NAME[=VALUE]",
+                        help="SystemVerilog only: preprocessor define (repeatable)")
     args = parser.parse_args()
+
+    is_sv = bool(args.systemverilog or args.flist)
+    if not args.verilog and not is_sv:
+        parser.error("provide a design: --verilog, or --systemverilog and/or --flist")
+    if args.verilog and is_sv:
+        parser.error("--verilog cannot be combined with --systemverilog/--flist")
+    if not is_sv and (args.top or args.define):
+        parser.error("--top/--define only apply to --systemverilog/--flist")
+    if is_sv and args.liberty:
+        # Same restriction as the native standalone: the SystemVerilog loader
+        # has no liberty hook, so fail loudly rather than silently ignore it.
+        parser.error("--liberty is not supported with --systemverilog/--flist")
 
     PORT = args.port
 
@@ -680,27 +701,34 @@ if __name__ == "__main__":
         print("📦 Loading Xilinx primitives")
         netlist.load_primitives('xilinx')
 
-    # Load the liberty libraries and the Verilog design
+    # Load the liberty libraries and the Verilog/SystemVerilog design
     if args.liberty:
         #if arg contains *, expand to list of files
         expanded_liberty_files = []
         for lib in args.liberty:
             if '*' in lib:
-                expanded_liberty_files.extend(glob.glob(lib))
+                expanded_liberty_files.extend(glob(lib))
             else:
                 expanded_liberty_files.append(lib)
         for lib in expanded_liberty_files:
             print(f"📚 Loading liberty file: {lib}")
             netlist.load_liberty(lib)
 
-    if not args.verilog:
-        print("❌ No Verilog file specified. Use --verilog to provide a netlist.")
-        exit(1)
+    if is_sv:
+        sv_files = args.systemverilog or []
+        sources = sv_files + ([f"-f {args.flist}"] if args.flist else [])
+        print(f"📄 Loading SystemVerilog: {', '.join(sources)}")
+        config = netlist.SystemVerilogConfig()
+        config.flist = args.flist
+        config.top = args.top
+        config.defines = args.define
+        config.blackbox_unknown_modules = args.allow_unknown_designs
+        top = netlist.load_system_verilog(sv_files, config=config)
     else:
         print(f"📄 Loading Verilog netlist: {args.verilog}")
         config = netlist.VerilogConfig()
         config.allow_unknown_designs = args.allow_unknown_designs
         top = netlist.load_verilog(args.verilog, config=config)
-        print(f"✅ Design loaded: {top.get_name()}")
+    print(f"✅ Design loaded: {top.get_name()}")
 
     asyncio.run(main())

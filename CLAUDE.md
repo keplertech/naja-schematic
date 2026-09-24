@@ -124,7 +124,22 @@ python3 scripts/najaeda_server.py   # serves ws://localhost:8081/ws
 
 # gate-level Verilog + Liberty example:
 python3 scripts/najaeda_server.py --verilog design.v --liberty cells.lib
+
+# SystemVerilog (elaborated with slang) example:
+python3 scripts/najaeda_server.py --systemverilog a.sv b.sv --top top -D SYNTHESIS
+
+# SystemVerilog from a slang command file (sources, +incdir+, +define+, ...):
+python3 scripts/najaeda_server.py --flist design.f --top top
 ```
+
+A design is required: either `--verilog`, or SystemVerilog via
+`--systemverilog`/`--sv <path>...` and/or `--flist`/`-f <file>` (the two SV
+inputs can be combined; `--flist` maps to `SystemVerilogConfig.flist`).
+Verilog and SV are mutually exclusive. `--top`/`--define`/`-D` apply only to
+SystemVerilog, and `--liberty` is rejected with SV — same restriction as the
+native CLI, since the SV loader has no liberty hook.
+`--allow_unknown_designs` maps to `SystemVerilogConfig.blackbox_unknown_modules`
+for SV.
 
 Note the flag shapes are *not* symmetric with the native CLI above: the
 server takes `--verilog <path>` (singular) + `--liberty <path>...` (one flag,
