@@ -95,6 +95,7 @@ if(EMSCRIPTEN_BUILD)
     ${CORE_SOURCES}
     src/WebSocketClient.cpp
     src/WebSocketProvider.cpp
+    src/JsBridgeProvider.cpp
     src/main_wasm.cpp
   )
 
@@ -113,7 +114,6 @@ if(EMSCRIPTEN_BUILD)
     "-sEXIT_RUNTIME=0"
     "-sEXPORTED_RUNTIME_METHODS=['requestFullscreen']"
     "-sWASM=1"
-    "--shell-file=${CMAKE_SOURCE_DIR}/src/shell_minimal.html"
     "-lwebsocket.js"
     "-lembind"
     "-fexceptions"
@@ -121,9 +121,29 @@ if(EMSCRIPTEN_BUILD)
     "-sEXCEPTION_CATCHING_ALLOWED=['main','naja-schematic']"
   )
 
+  # Default: a full page (naja-schematic.html + .js + .wasm) for emrun.
+  # NAJA_SCHEMATIC_WASM_MODULE: one self-contained naja-schematic.js (wasm
+  # inlined) defining a createNajaSchematic({canvas, ...}) factory, so a host
+  # page can embed one viewer per canvas -- what the naja_schematic Python
+  # package ships (its index.html and Jupyter widget both load it).
+  option(NAJA_SCHEMATIC_WASM_MODULE
+    "Build the WASM viewer as an embeddable single-file JS module" OFF)
+  if(NAJA_SCHEMATIC_WASM_MODULE)
+    list(APPEND EM_LINK_FLAGS
+      "-sMODULARIZE=1"
+      "-sEXPORT_NAME=createNajaSchematic"
+      "-sSINGLE_FILE=1"
+      "-sENVIRONMENT=web"
+    )
+    set(NAJA_SCHEMATIC_WASM_SUFFIX ".js")
+  else()
+    list(APPEND EM_LINK_FLAGS "--shell-file=${CMAKE_SOURCE_DIR}/src/shell_minimal.html")
+    set(NAJA_SCHEMATIC_WASM_SUFFIX ".html")
+  endif()
+
   target_compile_options(naja-schematic PRIVATE ${EM_COMPILE_FLAGS})
   target_link_options(naja-schematic    PRIVATE ${EM_LINK_FLAGS})
-  set_target_properties(naja-schematic  PROPERTIES SUFFIX ".html")
+  set_target_properties(naja-schematic  PROPERTIES SUFFIX ${NAJA_SCHEMATIC_WASM_SUFFIX})
   target_compile_definitions(naja-schematic PRIVATE
     NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
     NAJA_VERSION_STRING="${NAJA_VERSION}"

@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "naja-schematic"
+dynamic = ["version"]
+description = "Interactive schematic viewer for najaeda netlists: in Jupyter/Colab notebooks or a browser"
+readme = "README.md"
+license = "Apache-2.0"
+authors = [{name = "Naja Authors", email = "contact@keplertech.io"}]
+requires-python = ">=3.10"
+dependencies = [
+  "najaeda>=0.7.24",
+  "websockets>=13",
+  "anywidget>=0.9",
+]
+classifiers = [
+  "Framework :: Jupyter",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+naja-schematic = "naja_schematic.server:main"
+
+[project.urls]
+Homepage = "https://github.com/najaeda/naja-schematic"
+
+[tool.hatch.version]
+path = "naja_schematic/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["naja_schematic"]
+# The viewer bundle is a CI build product (gitignored), so list it
+# explicitly or hatch would skip it along with other ignored files.
+artifacts = ["naja_schematic/static/naja-schematic.js"]
+
+[tool.hatch.build.targets.sdist]
+include = ["naja_schematic", "tests", "README.md"]
+artifacts = ["naja_schematic/static/naja-schematic.js"]

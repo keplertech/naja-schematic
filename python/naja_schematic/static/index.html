@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>naja-schematic</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #000; color: #ddd; font: 13px sans-serif; overflow: hidden; }
+      /* The canvas must not have a border or padding, or mouse coords will be wrong.
+         !important stops SDL from pinning an inline pixel size on the element;
+         main_wasm.cpp follows the CSS size. */
+      #canvas { position: absolute; inset: 0; width: 100% !important; height: 100% !important;
+                border: 0; padding: 0; display: block; outline: none; }
+      #status { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+                pointer-events: none; }
+      #status[hidden] { display: none; }
+    </style>
+  </head>
+  <body>
+    <!-- Served by `naja-schematic` (naja_schematic/server.py), on the same
+         port as the WebSocket the viewer talks to. -->
+    <canvas id="canvas" tabindex="-1" oncontextmenu="event.preventDefault()"></canvas>
+    <div id="status">Loading viewer...</div>
+    <script src="naja-schematic.js"></script>
+    <script>
+      const status = document.getElementById("status");
+      const wsScheme = location.protocol === "https:" ? "wss:" : "ws:";
+      createNajaSchematic({
+        canvas: document.getElementById("canvas"),
+        najaWsUrl: `${wsScheme}//${location.host}/ws`,
+      }).then(() => { status.hidden = true; })
+        .catch((e) => { status.textContent = `Failed to start the viewer: ${e}`; });
+    </script>
+  </body>
+</html>

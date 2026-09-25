@@ -1,0 +1,124 @@
+name: Python Package
+
+# Builds the naja-schematic wheel/sdist (Python backend + the WASM viewer
+# bundle), tests it against published najaeda, and on a `python-v<version>`
+# tag publishes it to PyPI.
+#
+# Publishing uses PyPI trusted publishing (no token): the PyPI project must
+# list this repository, this workflow file and the `pypi` environment as a
+# trusted publisher.
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ "python-v*" ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          # imgui for the build, naja only for its version header
+          # (CMakeLists.txt reads NajaVersion.h.in); not recursive.
+          submodules: true
+
+      - name: Set up Emscripten
+        uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+
+      - name: Build the viewer bundle
+        run: |
+          emcmake cmake -S . -B build-wasm-module \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DNAJA_SCHEMATIC_WASM_MODULE=ON
+          cmake --build build-wasm-module -j
+          cp build-wasm-module/naja-schematic.js python/naja_schematic/static/
+          cp LICENSE python/LICENSE
+
+      - name: Check the tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/python-v')
+        run: |
+          version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' python/naja_schematic/__init__.py)
+          test "python-v$version" = "${GITHUB_REF_NAME}" || {
+            echo "Tag ${GITHUB_REF_NAME} does not match __version__ $version"; exit 1; }
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install build
+          python -m build python --outdir dist
+
+      - name: Check the bundle is in both archives
+        run: |
+          unzip -l dist/*.whl | grep -q 'naja_schematic/static/naja-schematic.js'
+          tar tzf dist/*.tar.gz | grep -q 'naja_schematic/static/naja-schematic.js'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  test:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ ubuntu-latest, macos-latest ]
+        python-version: [ "3.10", "3.13" ]
+        # Oldest najaeda the package declares support for, and the newest.
+        najaeda: [ "==0.7.24", "" ]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Install the built wheel
+        shell: bash
+        run: |
+          python -m pip install "$(ls dist/*.whl)[test]" "najaeda${{ matrix.najaeda }}"
+
+      - name: Run tests against the installed package
+        # From outside python/, so the tests import the installed wheel
+        # rather than the source tree.
+        working-directory: ${{ runner.temp }}
+        run: python -m pytest -v ${{ github.workspace }}/python/tests
+
+      - name: Smoke-test the CLI
+        shell: bash
+        run: |
+          echo '{"request":"load_root"}' \
+            | naja-schematic --xilinx --verilog python/tests/data/design.v --stdio \
+            | grep -q '"root_response"'
+
+  publish:
+    needs: [ build, test ]
+    if: startsWith(github.ref, 'refs/tags/python-v')
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
