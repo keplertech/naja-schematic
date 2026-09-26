@@ -58,4 +58,4 @@ pip install -e "python[test]" && pytest python/tests
 ```
 
 Releases are built and published by `.github/workflows/python-package.yml`
-on a `python-v<version>` tag.
+on a `v<version>` tag (e.g. `v0.1.0`).

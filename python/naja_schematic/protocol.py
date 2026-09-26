@@ -13,7 +13,7 @@ from najaeda import naja
 
 log = logging.getLogger("naja_schematic")
 
-MIN_NAJAEDA_VERSION = (0, 7, 24)
+MIN_NAJAEDA_VERSION = (0, 7, 25)  # keep in step with pyproject.toml
 
 
 def check_najaeda_version():
@@ -26,8 +26,7 @@ def check_najaeda_version():
     if version < MIN_NAJAEDA_VERSION:
         min_str = ".".join(str(p) for p in MIN_NAJAEDA_VERSION)
         raise RuntimeError(
-            f"najaeda {version_str} is too old (need >= {min_str}, for "
-            f"SNLEquipotential.Mode support used by load_equipotential). "
+            f"najaeda {version_str} is too old (need >= {min_str}). "
             f"Upgrade with: pip install -U najaeda"
         )
 

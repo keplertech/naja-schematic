@@ -181,7 +181,7 @@ The viewer bundle `static/naja-schematic.js` is **not** checked in: it's the
 WASM target configured with `-DNAJA_SCHEMATIC_WASM_MODULE=ON` (single file,
 wasm inlined, `createNajaSchematic({canvas, ...})` factory, one instance per
 canvas), built by `.github/workflows/python-package.yml`, which also tests
-the wheel and publishes it to PyPI on a `python-v<version>` tag (version in
+the wheel and publishes it to PyPI on a `v<version>` tag (version in
 `naja_schematic/__init__.py`). For local work set `NAJA_SCHEMATIC_BUNDLE` to
 a locally built bundle (see `_bundle.py`). Tests: `pytest python/tests`.
 

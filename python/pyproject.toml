@@ -11,7 +11,7 @@ license = "Apache-2.0"
 authors = [{name = "Naja Authors", email = "contact@keplertech.io"}]
 requires-python = ">=3.10"
 dependencies = [
-  "najaeda>=0.7.24",
+  "najaeda>=0.7.25",
   "websockets>=13",
   "anywidget>=0.9",
 ]

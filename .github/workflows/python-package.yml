@@ -1,7 +1,7 @@
 name: Python Package
 
 # Builds the naja-schematic wheel/sdist (Python backend + the WASM viewer
-# bundle), tests it against published najaeda, and on a `python-v<version>`
+# bundle), tests it against published najaeda, and on a `v<version>`
 # tag publishes it to PyPI.
 #
 # Publishing uses PyPI trusted publishing (no token): the PyPI project must
@@ -11,7 +11,7 @@ name: Python Package
 on:
   push:
     branches: [ main ]
-    tags: [ "python-v*" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
@@ -42,10 +42,10 @@ jobs:
           cp LICENSE python/LICENSE
 
       - name: Check the tag matches the package version
-        if: startsWith(github.ref, 'refs/tags/python-v')
+        if: startsWith(github.ref, 'refs/tags/v')
         run: |
           version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' python/naja_schematic/__init__.py)
-          test "python-v$version" = "${GITHUB_REF_NAME}" || {
+          test "v$version" = "${GITHUB_REF_NAME}" || {
             echo "Tag ${GITHUB_REF_NAME} does not match __version__ $version"; exit 1; }
 
       - uses: actions/setup-python@v5
@@ -76,7 +76,7 @@ jobs:
         os: [ ubuntu-latest, macos-latest ]
         python-version: [ "3.10", "3.13" ]
         # Oldest najaeda the package declares support for, and the newest.
-        najaeda: [ "==0.7.24", "" ]
+        najaeda: [ "==0.7.25", "" ]
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -110,7 +110,7 @@ jobs:
 
   publish:
     needs: [ build, test ]
-    if: startsWith(github.ref, 'refs/tags/python-v')
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
