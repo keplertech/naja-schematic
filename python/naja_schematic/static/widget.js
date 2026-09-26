@@ -25,11 +25,17 @@ function render({ model, el }) {
   injectStyle();
   const wrap = document.createElement("div");
   wrap.className = "naja-schematic-wrap";
+  // Right-click belongs to the viewer (its tree and schematic context menus
+  // hold Show Equipotential, Trace to Driver, ...). JupyterLab opens its own
+  // cell menu on top unless the target is inside this attribute.
+  wrap.setAttribute("data-jp-suppress-context-menu", "");
   wrap.style.height = `${model.get("height")}px`;
   const canvas = document.createElement("canvas");
   canvas.className = "naja-schematic-canvas";
   canvas.tabIndex = -1;
-  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+  // Also keep the event from reaching other hosts' menu handlers (classic
+  // Notebook, VSCode, Colab) and suppress the browser's own menu.
+  canvas.addEventListener("contextmenu", (e) => { e.preventDefault(); e.stopPropagation(); });
   // Keyboard input only goes to the viewer while it has focus.
   canvas.addEventListener("mousedown", () => canvas.focus());
   const status = document.createElement("div");

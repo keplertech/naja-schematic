@@ -1445,6 +1445,15 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
 
     g_schematic.render(dl, cpos, inner);
+    if (equipotentials.empty()) {
+        // Nothing drawn yet: the schematic is only ever filled from a pin's
+        // context menu, which a first-time user has no way to guess.
+        const char* hint = "Right-click a pin in the Netlist Hierarchy (e.g. top > Terms > a port)\n"
+                           "and choose Show Equipotential or Trace to Driver.";
+        ImVec2 ts = ImGui::CalcTextSize(hint);
+        dl->AddText(ImVec2(cpos.x + (inner.x - ts.x) * 0.5f, cpos.y + (inner.y - ts.y) * 0.5f),
+                    IM_COL32(120, 120, 120, 255), hint);
+    }
     ImGui::EndChild();
 
     // Scrollbars
