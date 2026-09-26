@@ -5,7 +5,7 @@
 - From a shell: ``naja-schematic --verilog design.v --open`` serves the
   viewer page and opens it in a browser.
 """
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 from .protocol import diagnosis_response, handle_request
 
