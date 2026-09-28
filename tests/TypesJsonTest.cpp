@@ -225,7 +225,6 @@ TEST(DiagnosisItemJson, ParsesInstanceKindWithDefaults) {
   EXPECT_EQ(d.severity, DiagnosisSeverity::Error);
   EXPECT_EQ(d.message, "stuck-at-0");
   EXPECT_EQ(d.source, "kepler-formal");
-  EXPECT_EQ(d.pathKey(), "u1/u2");
 }
 
 TEST(DiagnosisItemJson, ParsesNetKindAndUnknownSeverityDefaultsInfo) {
@@ -239,12 +238,6 @@ TEST(DiagnosisItemJson, ParsesNetKindAndUnknownSeverityDefaultsInfo) {
   EXPECT_EQ(d.terminal, "Q");
   EXPECT_EQ(d.severity, DiagnosisSeverity::Info);
   EXPECT_TRUE(d.path.empty());
-  EXPECT_EQ(d.pathKey(), "");
-}
-
-TEST(DiagnosisItemPathKey, EmptyPathIsTopLevel) {
-  DiagnosisItem d;
-  EXPECT_EQ(d.pathKey(), "");
 }
 
 TEST(GeometryHelpers, HierToggleGlyphRectIsCenteredOnTop) {

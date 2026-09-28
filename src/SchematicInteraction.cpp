@@ -37,27 +37,23 @@ std::optional<PinHit> pickPin(const std::vector<InstanceShape>& instances,
     return hit;
 }
 
-std::string pinRequestKey(const std::vector<unsigned>& pathIds, unsigned termId,
-                          std::optional<int> bit) {
-    std::string key;
-    for (unsigned id : pathIds) key += std::to_string(id) + "/";
-    key += "#" + std::to_string(termId);
-    if (bit.has_value()) key += "[" + std::to_string(*bit) + "]";
-    return key;
+PinRequestKey pinRequestKey(const std::vector<unsigned>& pathIds, unsigned termId,
+                            std::optional<int> bit) {
+    return {pathIds, termId, bit};
 }
 
-bool PendingRequests::begin(const std::string& key, double now) {
+bool PendingRequests::begin(const PinRequestKey& key, double now) {
     if (isPending(key, now)) return false;
     started_[key] = now;
     return true;
 }
 
-bool PendingRequests::isPending(const std::string& key, double now) const {
+bool PendingRequests::isPending(const PinRequestKey& key, double now) const {
     auto it = started_.find(key);
     return it != started_.end() && now - it->second < timeout_;
 }
 
-void PendingRequests::resolve(const std::string& key) { started_.erase(key); }
+void PendingRequests::resolve(const PinRequestKey& key) { started_.erase(key); }
 
 void PendingRequests::clear() { started_.clear(); }
 

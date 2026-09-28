@@ -61,9 +61,9 @@ TEST(EquipotentialCovers, DifferentPinBitOrPathIsNotCovered) {
 TEST(EquipotentialCovers, PathSegmentsAreNotConfusedWithSlashes) {
   Equipotential a{true, {}, {occ({"a", "b"}, "A", Direction::Input)}};
   Equipotential b{true, {}, {occ({"a/b"}, "A", Direction::Input)}};
-  // Both flatten to "a/b" -- that's also how the view keys instances, so
-  // they're the same box on screen and treating them alike is right.
-  EXPECT_TRUE(equipotentialCovers(a, b));
+  // An escaped name can contain '/': instance b inside a is not the
+  // top-level instance named "a/b", so a doesn't cover b.
+  EXPECT_FALSE(equipotentialCovers(a, b));
 }
 
 // ---------------------------------------------------------------------------

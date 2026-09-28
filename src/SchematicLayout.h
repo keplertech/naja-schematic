@@ -40,7 +40,6 @@ inline constexpr float kGroupColGap = 90.0f; // gap between columns inside a fra
 // ---------------------------------------------------------------------------
 struct Item {
     std::string            label;       // port/term name (for matching, port rendering)
-    std::string            fullName;    // slash-path for instances; term name for terms
     Direction              direction   = Direction::Inout;
     bool                   isTerm      = false;
     DesignRef              designRef{};
@@ -57,10 +56,9 @@ struct Item {
     std::optional<SourceLoc> sourceLoc;
     // Instance occurrences only: per-segment instance names / model names of
     // the full hierarchical path (the last entry is the instance itself).
-    std::vector<std::string> path;
+    // `path` is the instance's identity in the layout.
+    InstancePath             path;
     std::vector<std::string> pathModels;
-
-    const std::string& key() const { return fullName.empty() ? label : fullName; }
 };
 
 void buildItems(const Equipotential* eq, std::vector<Item>& drivers, std::vector<Item>& receivers);
@@ -79,8 +77,8 @@ class IncrementalLayout {
     void place(const Equipotential* eq);
     // Places one instance on its own (a starting point with no net shown
     // yet) in the left column below everything placed so far. No-op if
-    // `key` is already placed.
-    void placeAlone(const std::string& key);
+    // `path` is already placed.
+    void placeAlone(const InstancePath& path);
 
     // Push boxes down within each column (same x) so none overlaps the one
     // above it -- place() reserves a fixed kInstH slot per instance, but a box
@@ -91,11 +89,11 @@ class IncrementalLayout {
 
     void clear();
 
-    // Instance key (slash-joined path) -> world top-left.
-    const std::map<std::string, ImVec2>& positions() const { return placed_; }
+    // Instance path -> world top-left.
+    const std::map<InstancePath, ImVec2>& positions() const { return placed_; }
 
   private:
-    std::map<std::string, ImVec2>  placed_;
+    std::map<InstancePath, ImVec2> placed_;
     std::set<const Equipotential*> laidOut_;
     float                          nextY_ = 0.f;
 };
@@ -115,23 +113,23 @@ class IncrementalLayout {
 // overlap.
 // ---------------------------------------------------------------------------
 struct LeafHier {
-    std::vector<std::string> path;        // full instance-name path, leaf last
+    InstancePath             path;        // full instance-name path, leaf last
     std::vector<std::string> pathModels;  // matching model names ("" if unknown)
 };
 
 struct HierFrame {
-    InstanceShape shape;    // isHierGroup set, label "inst (Model)" in `name`
-    std::string   pathKey;  // slash-joined instance path of the module
+    InstanceShape shape;    // isHierGroup set, label "inst (Model)" in `name`,
+                            // the module's instance path in `path`
 };
 
-// Moves the leaves of `instances` (looked up through keyToInstId) into their
+// Moves the leaves of `instances` (looked up through pathToInstId) into their
 // module frames and returns the frames, parent first, with ids allocated from
 // nextInstId. Leaves inside a frame get their `label` shortened to the leaf
 // name. Returns an empty vector, leaving every shape untouched, when no
 // displayed leaf sits below the top design (no hierarchy to show).
-std::vector<HierFrame> layoutHierarchyGroups(const std::map<std::string, LeafHier>& leafHier,
+std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHier>& leafHier,
                                              std::vector<InstanceShape>& instances,
-                                             const std::map<std::string, int>& keyToInstId,
+                                             const std::map<InstancePath, int>& pathToInstId,
                                              int& nextInstId);
 
 } // namespace SchematicLayout

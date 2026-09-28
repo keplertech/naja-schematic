@@ -480,15 +480,15 @@ def bit_terms_json(design):
 
 
 def _handle_expand_instance_terms(u, request):
-    path_key = request.get("path_key", "")
+    instance_path = request.get("instance_path", [])
     design_ref = get_design_ref(request.get("design_ref"))
-    log.debug("expand_instance_terms for path_key=%r design_ref=%s", path_key, design_ref)
+    log.debug("expand_instance_terms for instance_path=%r design_ref=%s", instance_path, design_ref)
     design = u.getSNLDesign(design_ref) if design_ref else None
     if not design:
         log.warning("expand_instance_terms: design not found for %s", design_ref)
     return [{
         "response": "expanded_instance_terms",
-        "path_key": path_key,
+        "instance_path": instance_path,
         "terms": bit_terms_json(design) if design else []
     }]
 
@@ -538,7 +538,7 @@ def _handle_instance_selected(u, request):
 
 
 def _handle_load_instance_internals(u, request):
-    path_key = request.get("path_key", "")
+    instance_path = request.get("instance_path", [])
     design_ref = get_design_ref(request.get("design_ref"))
     model = u.getSNLDesign(design_ref) if design_ref else None
     children = []
@@ -596,7 +596,7 @@ def _handle_load_instance_internals(u, request):
 
     return [{
         "response": "instance_internals_response",
-        "path_key": path_key,
+        "instance_path": instance_path,
         "children": children,
         "nets": nets
     }]

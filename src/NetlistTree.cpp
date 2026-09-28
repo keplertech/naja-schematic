@@ -35,8 +35,8 @@ void NetlistTree::render() {
   }
 }
 
-void NetlistTree::reveal(const std::string& pathKey) {
-  revealPath_ = splitPathKey(pathKey);
+void NetlistTree::reveal(const InstancePath& path) {
+  revealPath_ = path;
 }
 
 void NetlistTree::advanceReveal() {
@@ -75,7 +75,8 @@ void NetlistTree::advanceReveal() {
       }
       if (!waiting) {
         Console::Error("Cannot reveal instance: no '" + name + "' under " +
-                       (node->getPathKey().empty() ? node->getLabel() : node->getPathKey()));
+                       (node->getInstancePath().empty() ? node->getLabel()
+                                                        : displayPath(node->getInstancePath())));
         revealPath_.reset();
       }
       return;
@@ -89,9 +90,9 @@ void NetlistTree::advanceReveal() {
   revealPath_.reset();
 }
 
-NetlistTreeNode* NetlistTree::findInstance(const std::string& pathKey) const {
+NetlistTreeNode* NetlistTree::findInstance(const InstancePath& path) const {
   NetlistTreeNode* node = root_;
-  for (const auto& name : splitPathKey(pathKey)) {
+  for (const auto& name : path) {
     if (!node || !node->children_) return nullptr;
     NetlistTreeNode* next = nullptr;
     for (auto* group : *node->children_) {
@@ -128,9 +129,9 @@ void NetlistTreeNode::getPath(NetlistTree::Path& path) const {
   getParent()->getPath(path);
 }
 
-std::string NetlistTreeNode::getPathKey() const {
+InstancePath NetlistTreeNode::getInstancePath() const {
   auto* parent = getParent();
-  return parent ? parent->getPathKey() : std::string();
+  return parent ? parent->getInstancePath() : InstancePath();
 }
 
 void NetlistTreeNode::render() {
@@ -140,7 +141,7 @@ void NetlistTreeNode::render() {
   if (isLeaf()) {
     flags = flags | ImGuiTreeNodeFlags_Leaf;
   }
-  if (isInstanceNode() && SelectionStore::isSelected(getPathKey())) {
+  if (isInstanceNode() && SelectionStore::isSelected(getInstancePath())) {
     flags = flags | ImGuiTreeNodeFlags_Selected;
   }
   if (tree->forceOpen_.erase(guiID_)) {
@@ -159,7 +160,7 @@ void NetlistTreeNode::render() {
   }
   // Clicking an instance's label (not its open/close arrow) selects it.
   if (isInstanceNode() && ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
-    SelectionStore::select(getPathKey(), SelectionStore::Origin::Tree);
+    SelectionStore::select(getInstancePath(), SelectionStore::Origin::Tree);
   }
   if (ImGui::IsItemHovered()) {
     auto diagnostics = getDiagnostics();
@@ -193,7 +194,7 @@ void NetlistTreeNode::render() {
         json req;
         req["request"]  = "get_properties";
         req["kind"]     = "term";
-        req["path"]     = splitPathKey(getPathKey());
+        req["path"]     = getInstancePath();
         req["terminal"] = getTermBaseName();
         if (isBusBit()) req["bit"] = getBusBit();
         getTree()->getProvider()->send(req.dump());
@@ -220,7 +221,7 @@ void NetlistTreeNode::render() {
         json req;
         req["request"]  = "get_properties";
         req["kind"]     = "term";
-        req["path"]     = splitPathKey(getPathKey());
+        req["path"]     = getInstancePath();
         req["terminal"] = getTermBaseName();
         getTree()->getProvider()->send(req.dump());
       }
@@ -232,7 +233,7 @@ void NetlistTreeNode::render() {
         json req;
         req["request"] = "get_properties";
         req["kind"]    = "net";
-        req["path"]    = splitPathKey(getPathKey());
+        req["path"]    = getInstancePath();
         req["net"]     = getNetBaseName();
         if (isBusBit()) req["bit"] = getBusBit();
         getTree()->getProvider()->send(req.dump());
@@ -254,7 +255,7 @@ void NetlistTreeNode::render() {
         json req;
         req["request"] = "get_properties";
         req["kind"]    = "instance";
-        req["path"]    = splitPathKey(getPathKey());
+        req["path"]    = getInstancePath();
         getTree()->getProvider()->send(req.dump());
       }
       ImGui::EndPopup();
@@ -326,20 +327,21 @@ void NetlistTreeInstanceNode::getPath(NetlistTree::Path& path) const {
   path.push_back(childID_);
 }
 
-std::string NetlistTreeInstanceNode::getPathKey() const {
-  if (isRoot()) return std::string();
-  std::string parentKey = getParent() ? getParent()->getPathKey() : std::string();
-  return parentKey.empty() ? name_ : parentKey + "/" + name_;
+InstancePath NetlistTreeInstanceNode::getInstancePath() const {
+  if (isRoot()) return {};
+  InstancePath path = getParent() ? getParent()->getInstancePath() : InstancePath();
+  path.push_back(name_);
+  return path;
 }
 
 ImU32 NetlistTreeInstanceNode::getColor() const {
   if (isRoot()) return 0;
-  return DiagnosisStore::instanceColor(getPathKey());
+  return DiagnosisStore::instanceColor(getInstancePath());
 }
 
 std::vector<const DiagnosisItem*> NetlistTreeInstanceNode::getDiagnostics() const {
   if (isRoot()) return {};
-  return DiagnosisStore::instanceDiagnostics(getPathKey());
+  return DiagnosisStore::instanceDiagnostics(getInstancePath());
 }
 
 NetlistTreeGroupNode::NetlistTreeGroupNode(
