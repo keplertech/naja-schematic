@@ -296,6 +296,9 @@ struct InstanceShape {
     // Nesting depth of a hierarchy group frame (1 = directly under the top
     // design), used to shade nested frames progressively.
     int  hierDepth = 0;
+    // The instance (or module frame) selected in the viewer -- see
+    // SelectionStore. Drawn with a selection outline.
+    bool selected = false;
 };
 
 struct NetWire {

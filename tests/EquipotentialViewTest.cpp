@@ -4,6 +4,7 @@
 // through a FakeNetlistProvider and on the geometry it builds.
 #include "EquipotentialView.h"
 #include "SchematicView.h"
+#include "SelectionStore.h"
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
@@ -37,11 +38,13 @@ class SchematicClicks : public ::testing::Test {
     io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
     EquipotentialView::setProvider(&provider);
     EquipotentialView::resetLayout();
+    SelectionStore::clear();
   }
 
   void TearDown() override {
     EquipotentialView::setProvider(nullptr);
     EquipotentialView::resetLayout();
+    SelectionStore::clear();
     for (auto* eq : eqs) delete eq;
     ImGui::DestroyContext();
   }
@@ -293,4 +296,108 @@ TEST_F(SchematicClicks, DoubleClickOnHierarchyGlyphTogglesItOnce) {
 
   EXPECT_TRUE(shape("u2")->hierExpanded);
   EXPECT_EQ(sent("load_instance_internals").size(), 1u);
+}
+
+// ---------------------------------------------------------------------------
+// Starting the view from one instance (a host's focus_instance)
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// An instance_resolved reply as protocol.py / LocalSNLProvider build it, for
+// top/core/u7 (an AND2 with pins A, B, Y).
+nlohmann::json resolvedU7() {
+  return nlohmann::json::parse(R"({
+    "response": "instance_resolved", "path": ["core", "u7"], "found": true,
+    "instance": {
+      "path": [["core", 5, "Core"], ["u7", 7, "AND2"]],
+      "design_ref": {"db_id": 1, "library_id": 2, "design_id": 3},
+      "has_instances": false, "source_loc": null,
+      "terms": [{"name": "A", "child_id": 0, "direction": 0},
+                {"name": "B", "child_id": 1, "direction": 0},
+                {"name": "Y", "child_id": 2, "direction": 1}]
+    }})");
+}
+
+} // namespace
+
+TEST(StartInstance, ParsedFromAnInstanceResolvedReply) {
+  auto start = EquipotentialView::startInstanceFromResolved(resolvedU7());
+  ASSERT_TRUE(start.has_value());
+  EXPECT_EQ(start->path, (std::vector<std::string>{"core", "u7"}));
+  EXPECT_EQ(start->pathIds, (std::vector<unsigned>{5, 7}));
+  EXPECT_EQ(start->pathModels, (std::vector<std::string>{"Core", "AND2"}));
+  EXPECT_EQ(start->designRef.design_id, 3u);
+  ASSERT_EQ(start->ports.size(), 3u);
+  EXPECT_EQ(start->ports[2].name, "Y");
+  EXPECT_EQ(start->ports[2].direction, Direction::Output);
+
+  auto notFound = nlohmann::json::parse(R"({"response":"instance_resolved","path":["x"],"found":false})");
+  EXPECT_FALSE(EquipotentialView::startInstanceFromResolved(notFound).has_value());
+  auto top = nlohmann::json::parse(R"({"response":"instance_resolved","path":[],"found":true})");
+  EXPECT_FALSE(EquipotentialView::startInstanceFromResolved(top).has_value());
+}
+
+TEST_F(SchematicClicks, StartInstanceIsDrawnAloneWithAllPinsOpen) {
+  EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
+  frame(3);
+
+  const InstanceShape* u7 = shape("core/u7");
+  ASSERT_NE(u7, nullptr);
+  EXPECT_FALSE(u7->partialInterface);  // its whole interface is shown
+  for (auto name : {"A", "B", "Y"}) {
+    ASSERT_NE(pin("core/u7", name), nullptr) << name;
+    EXPECT_TRUE(pin("core/u7", name)->open) << name;
+  }
+  // Drawn inside its module's frame, like any traced leaf.
+  bool framed = false;
+  for (const auto& s : sv().instances) framed = framed || (s.isHierGroup && s.name == "core (Core)");
+  EXPECT_TRUE(framed);
+}
+
+TEST_F(SchematicClicks, ClickingAStartInstancePinLoadsItsNetWithTheInstancePath) {
+  EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
+  frame(3);
+  moveTo(pinScreen("core/u7", "Y"));
+  click();
+
+  auto reqs = sent("load_equipotential");
+  ASSERT_EQ(reqs.size(), 1u);
+  EXPECT_EQ(reqs[0]["path"], nlohmann::json::array({5, 7}));
+  EXPECT_EQ(reqs[0]["term_id"], 2);
+}
+
+TEST_F(SchematicClicks, ResetLayoutDropsTheStartInstance) {
+  EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
+  frame(2);
+  ASSERT_NE(shape("core/u7"), nullptr);
+  EquipotentialView::resetLayout();
+  frame(2);
+  EXPECT_EQ(shape("core/u7"), nullptr);
+}
+
+TEST_F(SchematicClicks, ClickingABoxSelectsItAndDrawsItSelected) {
+  showFirstNet();
+  moveTo(boxCenterScreen("u2"));
+  click();
+  EXPECT_TRUE(SelectionStore::isSelected("u2"));
+  EXPECT_EQ(SelectionStore::origin(), SelectionStore::Origin::Schematic);
+  frame();
+  EXPECT_TRUE(shape("u2")->selected);
+  EXPECT_FALSE(shape("u1")->selected);
+}
+
+TEST_F(SchematicClicks, ClickingAPinDoesNotChangeTheSelection) {
+  showFirstNet();
+  expandU2();
+  moveTo(pinScreen("u2", "B"));
+  click();
+  EXPECT_FALSE(SelectionStore::hasSelection());
+}
+
+TEST_F(SchematicClicks, ASelectionMadeElsewhereIsDrawnInTheSchematic) {
+  showFirstNet();
+  SelectionStore::select("u1", SelectionStore::Origin::Host);
+  frame();
+  EXPECT_TRUE(shape("u1")->selected);
 }
