@@ -17,6 +17,9 @@ public:
     std::vector<InstanceShape> instances;
     std::vector<NetWire> nets;
     Transform transform;
+    // Pin under the cursor (drawn highlighted), -1 = none. Set each frame by
+    // the owning view, which does the hit-testing.
+    int hoveredPortId = -1;
 
     float minScale = 0.1f;
     float maxScale = 6.0f;

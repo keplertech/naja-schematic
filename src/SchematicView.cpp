@@ -72,6 +72,14 @@ constexpr ImU32 kPinLineColor       = IM_COL32(40, 40, 40, 235);
 // use red/amber/blue (DiagnosisStore.cpp), so it doesn't read as a finding.
 constexpr ImU32 kBoundaryPortFillColor = IM_COL32(196, 232, 204, 255);
 constexpr ImU32 kBoundaryPortLineColor = IM_COL32(28, 110, 60, 255);
+// Interaction feedback, not a finding: the pin under the cursor, and an open
+// pin whose net is loading. Blue/violet stay clear of the diagnosis
+// red/amber/blue-ish severities by being brighter and used only transiently.
+constexpr ImU32 kPinHoverColor   = IM_COL32(20, 110, 235, 255);
+constexpr ImU32 kPinPendingColor = IM_COL32(150, 90, 220, 255);
+// Open-pin stub circle (see Port::open), world-space "1x zoom" radius.
+constexpr float kOpenPinBaseR = 3.5f;
+constexpr float kMinOpenPinR  = 2.0f;
 
 // Returns 0.0f when the label would render too small to read -- callers
 // should skip drawing (and any backing rect) in that case.
@@ -179,10 +187,7 @@ Port* SchematicView::findPortById(InstanceShape& inst, int portId) const {
 
 // Compute absolute world position of a port given its instance and normalized local coords (lx,ly).
 ImVec2 SchematicView::portWorldPos(const InstanceShape& inst, const Port& port) const {
-    // port.lx, port.ly are normalized: -0.5..0.5 horizontally/vertically where 0 is center
-    float px = inst.x + (inst.w * (0.5f + port.lx)); // convert -0.5..0.5 to 0..1 then * width
-    float py = inst.y + (inst.h * (0.5f + port.ly));
-    return ImVec2(px, py);
+    return portAnchor(inst, port);
 }
 
 // ---------------------------------------------------------------------------
@@ -202,11 +207,28 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
         // No direction color by default -- direction reads from the pin's
         // side of the box, not a red/green fill. p.color (diagnosis/
         // selection override) is the one case color is still used here.
-        ImU32 portColor = p.color != 0 ? p.color : kPinLineColor;
+        const bool hovered = p.id == sv.hoveredPortId;
+        ImU32 portColor = hovered ? kPinHoverColor
+                        : p.pending ? kPinPendingColor
+                        : p.color != 0 ? p.color : kPinLineColor;
         float tickThickness = std::max(1.0f, 1.5f * sv.transform.scale);
+        if (hovered) tickThickness *= 2.0f;
 
         ImVec2 tickEnd = ImVec2(screenP.x + (isLeft ? -tickLen : tickLen), screenP.y);
+        if (hovered)
+            dl->AddCircleFilled(tickEnd, std::max(6.0f, tickLen * 0.9f), IM_COL32(20, 110, 235, 45));
         dl->AddLine(screenP, tickEnd, portColor, tickThickness);
+        // An open pin (net not in the view yet) ends in a hollow circle, a
+        // loading one in a filled circle: "click here to see more" without
+        // needing color for the resting state.
+        ImVec2 labelAt = tickEnd;
+        if (p.open) {
+            float r = std::max(kMinOpenPinR, kOpenPinBaseR * sv.transform.scale);
+            ImVec2 c(tickEnd.x + (isLeft ? -r : r), tickEnd.y);
+            dl->AddCircleFilled(c, r, p.pending ? portColor : kCanvasBgColor);
+            dl->AddCircle(c, r, portColor, 0, std::max(1.0f, tickThickness * 0.8f));
+            labelAt.x += isLeft ? -2.0f * r : 2.0f * r; // label goes past the circle
+        }
         // A merged bus pin gets the classic diagonal bus slash across its
         // tick instead of a plain line, in addition to its "[hi:lo]" label.
         if (p.isBus) {
@@ -230,12 +252,12 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
                 // Anchored past the tick's tip (not the box edge) so the
                 // label doesn't sit on top of the pin's own tick line.
                 ImVec2 lblPos   = isLeft
-                    ? ImVec2(tickEnd.x - 3.0f - textSize.x, tickEnd.y - textSize.y * 0.5f)
-                    : ImVec2(tickEnd.x + 3.0f,               tickEnd.y - textSize.y * 0.5f);
+                    ? ImVec2(labelAt.x - 3.0f - textSize.x, labelAt.y - textSize.y * 0.5f)
+                    : ImVec2(labelAt.x + 3.0f,               labelAt.y - textSize.y * 0.5f);
                 dl->AddRectFilled(
                     ImVec2(lblPos.x - 2.0f, lblPos.y - 1.0f),
                     ImVec2(lblPos.x + textSize.x + 2.0f, lblPos.y + textSize.y + 1.0f),
-                    IM_COL32(30, 30, 30, 190));
+                    hovered ? kPinHoverColor : IM_COL32(30, 30, 30, 190));
                 dl->AddText(font, fontSize, lblPos, IM_COL32(225, 225, 225, 235), label.c_str());
             }
         }
@@ -371,8 +393,10 @@ static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
     // (an output) -- flat base toward `anchor`, where the wire attaches.
     float outDir = 1.0f;
 
-    ImU32 outline = p.color != 0 ? p.color : kBoundaryPortLineColor;
+    const bool hovered = p.id == sv.hoveredPortId;
+    ImU32 outline = hovered ? kPinHoverColor : p.color != 0 ? p.color : kBoundaryPortLineColor;
     float lineThickness = std::max(1.0f, 1.25f * sv.transform.scale);
+    if (hovered) lineThickness *= 2.0f;
 
     // Name shown whenever instance names are (same visibility threshold),
     // drawn at pin-label size but never below the legible minimum.

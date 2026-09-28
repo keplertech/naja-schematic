@@ -6,6 +6,7 @@
 
 class Equipotential;
 class INetlistProvider;
+class SchematicView;
 
 class EquipotentialView {
   public:
@@ -71,4 +72,11 @@ class EquipotentialView {
     // Called by AppLogic when an instance_internals_response arrives.
     static void applyInstanceInternals(const std::string& pathKey,
                                        const InstanceInternals& data);
+
+    // Test hooks (read-only): the geometry the last renderSchematic() drew,
+    // and the screen position of its canvas's top-left corner -- enough for a
+    // headless ImGui test to turn a pin's world position into a mouse
+    // position (see tests/EquipotentialViewTest.cpp).
+    static const SchematicView& schematicForTesting();
+    static ImVec2 canvasOriginForTesting();
 };

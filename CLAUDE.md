@@ -287,6 +287,20 @@ to Driver"; both clear the view first, like "Show Equipotential") and from the
 schematic (right-click a pin -> "Trace to Driver"; this one *adds* to the view
 instead of clearing it).
 
+Extending the schematic by hand works pin by pin. A box drawn with a dashed
+border shows only the pins on nets already in view; double-clicking its body
+sends `expand_instance_terms` and reveals the rest. Pins whose net isn't in
+the view yet are "open" (`Port::open`, drawn with a hollow-circle stub), and a
+**single click** on one sends `load_equipotential` for its net (the stub fills
+while it loads; `SchematicInteraction::PendingRequests` stops repeat sends).
+A single click on a merged bus pin shows its bits instead. Hovering a pin
+highlights it and shows a tooltip naming its click action. When the requested
+net arrives the view pans so the clicked box stays put on screen, even if the
+hierarchy frames re-lay everything out. Pins are hit-tested nearest-first by
+`SchematicInteraction::pickPin`. `GUIData::addEquipotential()` rejects a net
+whose endpoints are all already shown (`equipotentialCovers()`), so neither a
+re-click nor a trace re-listing a shown net draws its wires twice.
+
 Occurrence `path` entries (in `equipotential_response` and each
 `trace_driver_response` net) are `[name, child_id, model_name]`; the third
 element is optional on parse (`InstTermOccurrence::pathModels`, `""` when
@@ -406,6 +420,17 @@ appear as boxes/pins there).
   instance placement and column de-overlap) and `layoutHierarchyGroups()`
   (module frames). Changes to how the schematic is laid out belong here,
   with a test; `EquipotentialView` only turns the result into drawn shapes.
+- **`SchematicInteraction`** — the pure side of the schematic's pin
+  interactions: `pickPin()` (nearest-pin hit test, radius capped in world
+  units so a pin doesn't swallow box-body clicks at low zoom) and
+  `PendingRequests` (in-flight pin requests, which expire after 5 s).
+  `tests/SchematicInteractionTest.cpp` tests them. The click flow itself is
+  covered end to end by `tests/EquipotentialViewTest.cpp`. That test drives
+  the real `EquipotentialView::renderSchematic()` in a headless ImGui context
+  with no render backend: it moves the mouse and clicks through the ImGui IO
+  API, then asserts on what `FakeNetlistProvider` received and on the
+  geometry, read through `EquipotentialView::schematicForTesting()`. Use the
+  same pattern for new canvas interactions.
 
 ### Diagnosis overlay
 
