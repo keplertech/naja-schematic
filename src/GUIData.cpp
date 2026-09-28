@@ -8,8 +8,15 @@ std::string GUIData::getString() const {
   return result;
 }
 
-void GUIData::addEquipotential(Equipotential* eq) {
+bool GUIData::addEquipotential(Equipotential* eq) {
+  for (const auto* shown : equipotentials_) {
+    if (equipotentialCovers(*shown, *eq)) {
+      delete eq;
+      return false;
+    }
+  }
   equipotentials_.push_back(eq);
+  return true;
 }
 
 void GUIData::clearEquipotentials() {

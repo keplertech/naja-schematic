@@ -10,7 +10,9 @@ struct GUIData {
   public:
     std::string getString() const;
 
-    void addEquipotential(Equipotential* eq);
+    // Takes ownership. Returns false (and deletes `eq`) when an equipotential
+    // already shown covers all of its endpoints -- see equipotentialCovers().
+    bool addEquipotential(Equipotential* eq);
     void clearEquipotentials();
 
     NetlistTree*                  netlist_       {nullptr};
