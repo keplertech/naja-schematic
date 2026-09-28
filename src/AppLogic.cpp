@@ -26,7 +26,6 @@ using json = nlohmann::json;
 #include "SelectionStore.h"
 #include "PropertiesView.h"
 #include "DroidSansFont.h"
-#include "Version.h"
 
 #ifndef __EMSCRIPTEN__
 #include <fstream>
@@ -721,7 +720,7 @@ bool appFrame(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::Text("Version: %s", naja_schematic::VERSION.c_str());
+    ImGui::Text("Version: %s", NAJA_SCHEMATIC_VERSION_STRING);
     ImGui::Text("Commit:  %s", NAJA_SCHEMATIC_GIT_HASH);
     ImGui::Text("naja:    %s", NAJA_VERSION_STRING);
     ImGui::Text("Project: github.com/najaeda/naja-schematic");
