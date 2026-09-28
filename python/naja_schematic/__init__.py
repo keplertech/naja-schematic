@@ -12,12 +12,12 @@ __version__ = "0.1.1"
 from .protocol import diagnosis_response, handle_request
 
 
-def show(height=600, diagnosis=None):
+def show(height=600, diagnosis=None, instance=None):
     """Display a view of the loaded design in the current notebook; see
     naja_schematic.widget.show()."""
     # Imported lazily: the CLI/server path doesn't need anywidget/IPython.
     from .widget import show as _show
-    return _show(height=height, diagnosis=diagnosis)
+    return _show(height=height, diagnosis=diagnosis, instance=instance)
 
 
 __all__ = ["__version__", "show", "handle_request", "diagnosis_response"]
