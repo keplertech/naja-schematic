@@ -188,7 +188,10 @@ the wheel and publishes it to PyPI on a `v<version>` tag (version in
 also reads it into `NAJA_SCHEMATIC_VERSION_STRING` for the C++ app's About
 dialog, so a release is one edit plus a tag). For local work set
 `NAJA_SCHEMATIC_BUNDLE` to a locally built bundle (see `_bundle.py`). Tests:
-`pytest python/tests`.
+`pytest python/tests`. `python/notebooks/colab_test.ipynb` is a manual
+end-to-end check of the widget against the released PyPI package (linked
+from `python/README.md` as an Open-in-Colab badge); keep it in step with
+the `Schematic` API.
 
 ## Architecture
 
