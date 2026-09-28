@@ -67,6 +67,8 @@ path = [
   "src/PropertiesView.cpp",
   "src/PropertiesView.h",
   "src/RenderTypes.h",
+  "src/SchematicLayout.cpp",
+  "src/SchematicLayout.h",
   "src/SchematicView.cpp",
   "src/SchematicView.h",
   "src/SourceStore.cpp",
@@ -85,6 +87,7 @@ path = [
   "tests/DiagnosisStoreTest.cpp",
   "tests/FakeNetlistProvider.h",
   "tests/NetlistTreeTest.cpp",
+  "tests/SchematicLayoutTest.cpp",
   "tests/SourceStoreTest.cpp",
   "tests/TypesJsonTest.cpp",
 ]
