@@ -5,6 +5,8 @@
 - From a shell: ``naja-schematic --verilog design.v --open`` serves the
   viewer page and opens it in a browser.
 """
+# Single version for the whole project: CMakeLists.txt reads this line into the
+# C++ app too (NAJA_SCHEMATIC_VERSION_STRING), so keep it a plain literal.
 __version__ = "0.1.1"
 
 from .protocol import diagnosis_response, handle_request
