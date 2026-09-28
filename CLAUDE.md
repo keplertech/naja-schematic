@@ -175,7 +175,9 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   viewer's requests come back over the widget comm channel as
   `{"json": "<message>"}` and are answered in the kernel, so the view shows
   the netlist as edited by earlier cells. `Schematic.annotate(items)`
-  pushes diagnoses.
+  pushes diagnoses; `show_instance()`/`selected`/`on_select()` exchange
+  instances with najaeda (see "Getting to one hierarchical instance"
+  under Wire protocol).
 
 The viewer bundle `static/naja-schematic.js` is **not** checked in: it's the
 WASM target configured with `-DNAJA_SCHEMATIC_WASM_MODULE=ON` (single file,
@@ -347,6 +349,41 @@ all, so it gets diagnosis data via **File > Load Diagnosis JSON...**
 (reads a `{"items": [...]}` file or a bare array through the same
 `DiagnosisItem` parser) instead.
 
+Getting to one hierarchical instance works in both directions, keyed by
+the same instance-name path as diagnosis items:
+
+- **Host → viewer.** `focus_instance` is a server push,
+  `{"response":"focus_instance","path":["u1","u2"]}`, from
+  `Schematic.show_instance()` / `show(instance=...)`, re-pushed after each
+  `root_response` like diagnoses. The viewer answers it with a
+  `resolve_instance` request (`{"request":"resolve_instance","path":[...]}`),
+  which both providers implement (`protocol.py`
+  `_handle_resolve_instance`, `LocalSNLProvider::buildResolveInstanceResponse`).
+  The reply looks like this:
+  ```json
+  { "response": "instance_resolved", "path": ["u1","u2"], "found": true,
+    "instance": {                        // absent for the top design ([])
+      "path": [["u1", 3, "Mod"], ["u2", 7, "AND2"]],   // [name, child_id, model] per level
+      "design_ref": {...}, "has_instances": false, "source_loc": null,
+      "terms": [ {"name": "A", "child_id": 0, "direction": 0}, ... ] } }  // expanded_instance_terms shape
+  ```
+  The viewer then:
+  - clears the schematic and draws the instance alone with every pin open
+    (`EquipotentialView::showInstance()`, parsed by
+    `startInstanceFromResolved()`);
+  - selects it (`SelectionStore`);
+  - reveals it in the tree. `NetlistTree::reveal()` walks down the path,
+    requesting each level's Instances/Primitives group as needed; it's
+    asynchronous and `advanceReveal()` runs each frame.
+- **Viewer → host.** There is one selected instance: click an instance row
+  in the tree or a box/frame body in the schematic. Each change sends a
+  notification with no reply, `{"request":"instance_selected","path":[...]}`,
+  plus a `get_properties` for it. The notebook widget intercepts
+  `instance_selected` into `Schematic.selected_path`; `Schematic.selected`
+  returns it as a najaeda `netlist.Instance`, and `on_select()` gives a
+  callback. The other hosts only log it (`protocol.py`) or ignore it
+  (`LocalSNLProvider`).
+
 `get_properties`/`properties_response` is a general name/value inspector for
 whatever object the UI asks about — an instance (including the top design
 itself), a term/pin, or a net — answered by both `LocalSNLProvider`
@@ -414,6 +451,12 @@ appear as boxes/pins there).
   `root_response`/`root_loaded`.
 - **`PropertiesView`** — renders the current `PropertiesStore` contents as a
   two-column name/value table into the "Properties" bottom-panel tab.
+- **`SelectionStore`** — global static store (same pattern) for the one
+  selected instance, by pathKey (`""` = top). It's set from the tree, the
+  schematic or a host `focus_instance`, and drawn highlighted in both
+  views. Its listener (installed in `AppLogic.cpp`) reports each change to
+  the host. `NetlistTree` reveals selections made outside it by comparing
+  `revision()`. Cleared on every fresh `root_response`/`root_loaded`.
 - **`SchematicLayout`** — the schematic's pure placement geometry, split out
   of `EquipotentialView` so it's unit-testable without ImGui frames or a
   provider (`tests/SchematicLayoutTest.cpp`): `IncrementalLayout` (per-net

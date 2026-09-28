@@ -124,6 +124,12 @@ void IncrementalLayout::place(const Equipotential* eq) {
     }
 }
 
+void IncrementalLayout::placeAlone(const std::string& key) {
+    if (placed_.count(key)) return;
+    placed_.emplace(key, ImVec2{kLeftMargin, nextY_});
+    nextY_ += kInstH + kRowSpacing + kNetVGap;
+}
+
 void IncrementalLayout::resolveColumnOverlaps(std::vector<InstanceShape>& instances) {
     std::map<int, std::vector<InstanceShape*>> byColumn;
     for (auto& inst : instances)
