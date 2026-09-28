@@ -22,7 +22,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-test = ["pytest"]
+# nbformat/nbclient/ipykernel: tests/test_notebook.py runs the Colab notebook.
+test = ["pytest", "nbformat", "nbclient", "ipykernel"]
 
 [project.scripts]
 naja-schematic = "naja_schematic.server:main"
