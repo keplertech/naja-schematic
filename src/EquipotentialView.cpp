@@ -13,17 +13,16 @@
 #include "SchematicView.h"
 #include "INetlistProvider.h"
 #include "DiagnosisStore.h"
+#include "SchematicLayout.h"
+
+// Net/instance placement and hierarchy frames live in SchematicLayout
+// (pure geometry, unit-tested); this file turns them into drawn shapes.
+using namespace SchematicLayout;
 
 // ---------------------------------------------------------------------------
-// Layout geometry constants
+// Layout geometry constants (see SchematicLayout.h for the placement ones)
 // ---------------------------------------------------------------------------
-static constexpr float kInstW       = 180.0f;
-static constexpr float kInstH       = 70.0f;
-static constexpr float kColGap      = 120.0f;
-static constexpr float kRowSpacing  = 24.0f;
 static constexpr float kPortSpacing = 18.0f;
-static constexpr float kLeftMargin  = 20.0f;
-static constexpr float kNetVGap     = 80.0f;
 
 // Pin click/hit-test radius, in screen pixels (converted to world units by
 // dividing by the current zoom scale where it's used). A pin now renders as
@@ -40,39 +39,6 @@ static constexpr float kHierChildH    = 44.0f;
 static constexpr float kHierGap       = 14.0f;
 static constexpr float kHierMargin    = 16.0f;
 static constexpr float kHierHeaderGap = 26.0f; // room below the box's own label/ports
-
-// Hierarchy grouping (module frames around traced leaves) geometry.
-static constexpr float kGroupHeader = 30.0f; // room for the frame's label
-static constexpr float kGroupPad    = 18.0f; // inner padding of a frame
-static constexpr float kGroupColGap = 90.0f; // gap between columns inside a frame
-
-// ---------------------------------------------------------------------------
-// Internal item type
-// ---------------------------------------------------------------------------
-struct Item {
-    std::string            label;       // port/term name (for matching, port rendering)
-    std::string            fullName;    // slash-path for instances; term name for terms
-    Direction              direction   = Direction::Inout;
-    bool                   isTerm      = false;
-    DesignRef              designRef{};
-    unsigned               termChildId = 0;
-    std::optional<int>     termBit;
-    std::vector<unsigned>  pathIds;
-    // Only meaningful for instance occurrences (isTerm == false): whether
-    // this instance's model has sub-instances worth expanding into a nested
-    // schematic box.
-    bool                   hasInstances = false;
-    // Total bit-term count of the instance's model, if known.
-    std::optional<size_t>  bitTermCount;
-    // RTL source location of the instance itself, if available.
-    std::optional<SourceLoc> sourceLoc;
-    // Instance occurrences only: per-segment instance names / model names of
-    // the full hierarchical path (the last entry is the instance itself).
-    std::vector<std::string> path;
-    std::vector<std::string> pathModels;
-
-    const std::string& key() const { return fullName.empty() ? label : fullName; }
-};
 
 // ---------------------------------------------------------------------------
 // Static view state
@@ -126,16 +92,14 @@ static std::map<std::string, EquipotentialView::InstanceInternals> g_instanceInt
 
 // Hierarchy grouping: when on, the leaf instances shown are laid out inside
 // nested frames standing for the hierarchical modules that contain them
-// (see layoutHierarchyGroups) instead of the flat column layout.
+// (see SchematicLayout::layoutHierarchyGroups) instead of the flat column layout.
 static bool g_showHierarchy = true;
 // A "Zoom to Module" request from the canvas context menu: the pathKey of the
 // frame to fit the view to once this frame's layout is known.
 static std::string g_pendingZoomGroup;
 
-// Persistent layout state
-static std::map<std::string, ImVec2>  g_placedPositions;  // key → world top-left
-static std::set<const Equipotential*> g_laidOut;
-static float                          g_layoutNextY = 0.f;
+// Persistent layout state: where each instance has been placed so far.
+static IncrementalLayout g_layout;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -184,45 +148,6 @@ static std::string modelNameFromLeaf(const std::string& leaf) {
     return "";  // generic box
 }
 
-static void buildItems(const Equipotential* eq,
-                       std::vector<Item>& drivers,
-                       std::vector<Item>& receivers) {
-    for (const auto& bt : eq->terms) {
-        Item item;
-        item.label       = bt.getString();
-        item.fullName    = bt.name;
-        item.direction   = bt.direction;
-        item.isTerm      = true;
-        item.termChildId = bt.child_id;
-        item.termBit     = bt.bit;
-        (bt.direction == Direction::Input ? drivers : receivers).push_back(std::move(item));
-    }
-    for (const auto& occ : eq->occurrences) {
-        Item item;
-        item.label       = occ.term.getString();
-        item.isTerm      = false;
-        item.designRef   = occ.designRef;
-        item.termChildId = occ.term.child_id;
-        item.termBit     = occ.term.bit;
-        item.pathIds     = occ.pathIds;
-        item.hasInstances = occ.has_instances;
-        item.bitTermCount = occ.bit_term_count;
-        item.sourceLoc    = occ.source_loc;
-        item.path         = occ.path;
-        item.pathModels   = occ.pathModels;
-        std::string joined;
-        bool first = true;
-        for (const auto& seg : occ.path) {
-            if (!first) joined += '/';
-            joined += seg;
-            first = false;
-        }
-        item.fullName  = std::move(joined);
-        item.direction = occ.term.direction;
-        (occ.term.direction == Direction::Output ? drivers : receivers).push_back(std::move(item));
-    }
-}
-
 static float portLy(int i, int n) {
     return n > 1 ? -0.4f + 0.8f * float(i) / float(n - 1) : 0.0f;
 }
@@ -234,77 +159,6 @@ static ImVec2 mouseWorldPos(const SchematicView& sv, const ImVec2& cpos) {
     return ImVec2(
         (m.x - cpos.x) / s + sv.transform.offset.x - sv.transform.screenOrigin.x / s,
         (m.y - cpos.y) / s + sv.transform.offset.y - sv.transform.screenOrigin.y / s);
-}
-
-// ---------------------------------------------------------------------------
-// Layout: called once per new equip, stores positions in g_placedPositions
-// ---------------------------------------------------------------------------
-static void layoutEquipotential(const Equipotential* eq) {
-    if (g_laidOut.count(eq)) return;
-    g_laidOut.insert(eq);
-
-    std::vector<Item> drivers, receivers;
-    buildItems(eq, drivers, receivers);
-    if (drivers.empty() && receivers.empty()) return;
-
-    // Find anchor: first non-term already placed
-    const Item* anchor      = nullptr;
-    bool        anchorDrives = false;
-
-    for (const auto& item : drivers) {
-        if (!item.isTerm && g_placedPositions.count(item.key()))
-            { anchor = &item; anchorDrives = true; break; }
-    }
-    if (!anchor) {
-        for (const auto& item : receivers) {
-            if (!item.isTerm && g_placedPositions.count(item.key()))
-                { anchor = &item; anchorDrives = false; break; }
-        }
-    }
-
-    if (!anchor) {
-        // First/independent net: two-column layout below existing content
-        const float lx = kLeftMargin;
-        const float rx = kLeftMargin + kInstW + kColGap;
-        float dyl = g_layoutNextY, dyr = g_layoutNextY;
-        for (const auto& item : drivers) {
-            if (!item.isTerm) {
-                g_placedPositions.emplace(item.key(), ImVec2{lx, dyl});
-                dyl += kInstH + kRowSpacing;
-            }
-        }
-        for (const auto& item : receivers) {
-            if (!item.isTerm) {
-                g_placedPositions.emplace(item.key(), ImVec2{rx, dyr});
-                dyr += kInstH + kRowSpacing;
-            }
-        }
-        g_layoutNextY = std::max(dyl, dyr) + kNetVGap;
-    } else {
-        // Expansion: extend horizontally from anchor
-        const ImVec2& ap  = g_placedPositions[anchor->key()];
-        const auto& items = anchorDrives ? receivers : drivers;
-        float newX = anchorDrives
-            ? ap.x + kInstW + kColGap    // new receivers go right of driver
-            : ap.x - kInstW - kColGap;  // new drivers go left of receiver
-        float dy = ap.y;
-        // Two nets can anchor to the same instance (e.g. each input of a
-        // gate in a driver trace) and would otherwise stack their new boxes
-        // at the same spot in the same column: slide down past anything
-        // already placed there.
-        auto isFree = [&](float x, float y) {
-            for (const auto& [key, p] : g_placedPositions)
-                if (std::abs(p.x - x) < kInstW && std::abs(p.y - y) < kInstH + kRowSpacing / 2)
-                    return false;
-            return true;
-        };
-        for (const auto& item : items) {
-            if (item.isTerm || g_placedPositions.count(item.key())) continue;
-            while (!isFree(newX, dy)) dy += kInstH + kRowSpacing;
-            g_placedPositions.emplace(item.key(), ImVec2{newX, dy});
-            dy += kInstH + kRowSpacing;
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -450,164 +304,6 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
 
 
 // ---------------------------------------------------------------------------
-// Hierarchy grouping: nested frames for the hierarchical modules containing
-// the displayed leaf instances. A driver trace (or any equipotential) spans
-// leaf cells anywhere in the design; without this, they're shown as one flat
-// sea of boxes and the module structure is lost.
-//
-// Each leaf keeps the logic column the incremental layout gave it
-// (layoutEquipotential's g_placedPositions x, i.e. its distance from the
-// traced net), and the modules become a tree of frames laid out bottom-up:
-// inside a frame, its own leaves and sub-frames are bucketed into columns by
-// the (average) logic column of their contents, left to right, and stacked
-// by their original vertical order. That keeps the left-to-right signal
-// flow while guaranteeing frames nest cleanly and never overlap.
-//
-// Frames are separate InstanceShapes (isHierGroup) inserted at the front of
-// g_schematic.instances; the leaves stay top-level shapes, so wiring, pins
-// and hit-testing work exactly as in the flat layout.
-// ---------------------------------------------------------------------------
-struct LeafHier {
-    std::vector<std::string> path;        // full instance-name path, leaf last
-    std::vector<std::string> pathModels;  // matching model names ("" if unknown)
-};
-
-namespace {
-struct GroupNode {
-    std::string pathKey;
-    std::string label;
-    int         depth = 0;
-    std::vector<std::unique_ptr<GroupNode>> groups;
-    std::map<std::string, GroupNode*>       groupByName;
-    std::vector<InstanceShape*>             leaves;
-    // Filled by measureGroup().
-    float  levelMin = 0.f, levelMax = 0.f, sortY = 0.f;
-    float  w = 0.f, h = 0.f;
-    ImVec2 rel{};                                  // top-left, relative to the parent frame
-    std::vector<std::pair<InstanceShape*, ImVec2>> leafRel;
-};
-
-float leafLevel(const InstanceShape& s) {
-    return (s.x - kLeftMargin) / (kInstW + kColGap);
-}
-
-void measureGroup(GroupNode& node, bool isRoot) {
-    struct Elem { GroupNode* g; InstanceShape* leaf; float center, sortY, w, h; };
-    std::vector<Elem> elems;
-    node.levelMin = 1e9f; node.levelMax = -1e9f; node.sortY = 1e9f;
-    for (auto& g : node.groups) {
-        measureGroup(*g, false);
-        elems.push_back({ g.get(), nullptr, 0.5f * (g->levelMin + g->levelMax), g->sortY, g->w, g->h });
-        node.levelMin = std::min(node.levelMin, g->levelMin);
-        node.levelMax = std::max(node.levelMax, g->levelMax);
-        node.sortY    = std::min(node.sortY, g->sortY);
-    }
-    for (auto* leaf : node.leaves) {
-        float lv = leafLevel(*leaf);
-        elems.push_back({ nullptr, leaf, lv, leaf->y, leaf->w, leaf->h });
-        node.levelMin = std::min(node.levelMin, lv);
-        node.levelMax = std::max(node.levelMax, lv);
-        node.sortY    = std::min(node.sortY, leaf->y);
-    }
-
-    // Bucket into columns by half-level so a module spanning an odd number
-    // of logic columns doesn't get forced into the same column as a leaf.
-    std::map<long, std::vector<Elem*>> columns;
-    for (auto& e : elems) columns[std::lround(e.center * 2.0f)].push_back(&e);
-
-    const float pad    = isRoot ? 0.f : kGroupPad;
-    const float top    = isRoot ? 0.f : kGroupHeader;
-    const float colGap = isRoot ? kColGap : kGroupColGap;
-    float x = pad, maxBottom = top;
-    for (auto& [col, members] : columns) {
-        std::stable_sort(members.begin(), members.end(),
-                         [](const Elem* a, const Elem* b) { return a->sortY < b->sortY; });
-        float y = top, colW = 0.f;
-        for (auto* e : members) {
-            if (e->g) e->g->rel = ImVec2(x, y);
-            else      node.leafRel.push_back({ e->leaf, ImVec2(x, y) });
-            y   += e->h + kRowSpacing;
-            colW = std::max(colW, e->w);
-        }
-        maxBottom = std::max(maxBottom, y - kRowSpacing);
-        x += colW + colGap;
-    }
-    node.w = std::max(x - colGap + pad, 2.f * pad + kInstW);
-    node.h = maxBottom + pad;
-}
-
-void placeGroup(const GroupNode& node, ImVec2 origin, bool isRoot,
-                int& nextInstId, std::vector<InstanceShape>& frames) {
-    if (!isRoot) {
-        InstanceShape f;
-        f.id          = nextInstId++;
-        f.name        = node.label;
-        f.x           = origin.x;
-        f.y           = origin.y;
-        f.w           = node.w;
-        f.h           = node.h;
-        f.isHierGroup = true;
-        f.hierDepth   = node.depth;
-        f.diagOutline = DiagnosisStore::instanceColor(node.pathKey);
-        g_occInfoByShapeId[f.id] = { node.pathKey, DesignRef{}, std::nullopt };
-        frames.push_back(std::move(f));
-    }
-    for (const auto& [leaf, rel] : node.leafRel) {
-        leaf->x = origin.x + rel.x;
-        leaf->y = origin.y + rel.y;
-        if (!isRoot) leaf->label = leafSegment(leaf->name);
-    }
-    for (const auto& g : node.groups)
-        placeGroup(*g, ImVec2(origin.x + g->rel.x, origin.y + g->rel.y), false, nextInstId, frames);
-}
-} // namespace
-
-// Returns false (leaving every shape untouched) when no displayed leaf sits
-// below the top design, i.e. there's no hierarchy to show.
-static bool layoutHierarchyGroups(const std::map<std::string, LeafHier>& leafHier,
-                                  const std::map<std::string, int>& keyToInstId,
-                                  int& nextInstId) {
-    bool anyNested = false;
-    for (const auto& [key, lh] : leafHier)
-        if (lh.path.size() >= 2 && keyToInstId.count(key)) { anyNested = true; break; }
-    if (!anyNested) return false;
-
-    GroupNode root;
-    for (const auto& [key, lh] : leafHier) {
-        auto kit = keyToInstId.find(key);
-        if (kit == keyToInstId.end()) continue;
-        InstanceShape* leaf = g_schematic.findInstanceById(kit->second);
-        if (!leaf) continue;
-        GroupNode* node = &root;
-        for (size_t i = 0; i + 1 < lh.path.size(); ++i) {
-            const std::string& seg = lh.path[i];
-            auto git = node->groupByName.find(seg);
-            if (git == node->groupByName.end()) {
-                auto child = std::make_unique<GroupNode>();
-                child->pathKey = node->pathKey.empty() ? seg : node->pathKey + "/" + seg;
-                child->depth   = node->depth + 1;
-                const std::string model = i < lh.pathModels.size() ? lh.pathModels[i] : "";
-                child->label   = model.empty() ? seg : seg + " (" + model + ")";
-                git = node->groupByName.emplace(seg, child.get()).first;
-                node->groups.push_back(std::move(child));
-            }
-            node = git->second;
-        }
-        node->leaves.push_back(leaf);
-    }
-
-    measureGroup(root, true);
-    std::vector<InstanceShape> frames;
-    placeGroup(root, ImVec2(kLeftMargin, 0.f), true, nextInstId, frames);
-    // Parent-first order at the front: drawn under everything, and reverse
-    // hit-test scans still find a leaf before the frame around it.
-    g_schematic.instances.insert(g_schematic.instances.begin(),
-                                 std::make_move_iterator(frames.begin()),
-                                 std::make_move_iterator(frames.end()));
-    return true;
-}
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 void EquipotentialView::zoomIn()    { g_pendingZoomSteps++; }
@@ -616,15 +312,13 @@ void EquipotentialView::fitView()   { g_pendingFit = true; }
 void EquipotentialView::clearNets() { g_pendingClear = true; }
 
 void EquipotentialView::resetLayout() {
-    g_placedPositions.clear();
-    g_laidOut.clear();
+    g_layout.clear();
     g_expandedInstances.clear();
     g_pendingExpansions.clear();
     g_expandedBuses.clear();
     g_hierExpanded.clear();
     g_hierPending.clear();
     g_instanceInternals.clear();
-    g_layoutNextY = 0.f;
     g_skipNextAutoFit = false;
     g_pendingFit   = true;
 }
@@ -902,7 +596,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // Layout new equips (once each, stores positions)
     // -----------------------------------------------------------------------
     for (Equipotential* eq : equipotentials)
-        if (eq) layoutEquipotential(eq);
+        if (eq) g_layout.place(eq);
 
     // -----------------------------------------------------------------------
     // Rebuild geometry: merged instances + per-equip wires
@@ -974,8 +668,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     mi.sourceLoc     = item.sourceLoc;
                     mi.path          = item.path;
                     mi.pathModels    = item.pathModels;
-                    auto pit = g_placedPositions.find(item.key());
-                    mi.pos = pit != g_placedPositions.end()
+                    auto pit = g_layout.positions().find(item.key());
+                    mi.pos = pit != g_layout.positions().end()
                         ? pit->second : ImVec2{kLeftMargin, 0.f};
                 }
                 // Find or create port slot for this port
@@ -1196,34 +890,29 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         g_schematic.instances.push_back(std::move(inst));
     }
 
-    // Resolve vertical overlaps: layoutEquipotential() reserves a fixed
-    // kInstH-tall slot per instance, but an expanded instance's actual
-    // height (computed above from its per-bit port count) can exceed that,
-    // overlapping whatever was placed below it in the same column. Push
-    // later instances down within each column and persist the correction
-    // to g_placedPositions so future layout/anchor placement and Pass 3's
-    // term-column bandY stay consistent with what's actually drawn.
+    // Either wrap the leaves in module frames (which re-lays them out), or
+    // keep the flat incremental layout and just resolve vertical overlaps
+    // from boxes drawn taller than their reserved slot (persisted, so Pass 3's
+    // term-column bandY and later anchoring match what's actually drawn).
     bool grouped = false;
     if (g_showHierarchy) {
         std::map<std::string, LeafHier> leafHier;
         for (const auto& [key, mi] : minsts) leafHier[key] = { mi.path, mi.pathModels };
-        grouped = layoutHierarchyGroups(leafHier, keyToInstId, nextInstId);
-    }
-    if (!grouped) {
-        std::map<int, std::vector<InstanceShape*>> byColumn;
-        for (auto& inst : g_schematic.instances)
-            if (inst.w > 0.f) byColumn[std::lround(inst.x)].push_back(&inst);
-        for (auto& [x, col] : byColumn) {
-            std::sort(col.begin(), col.end(),
-                      [](const InstanceShape* a, const InstanceShape* b) { return a->y < b->y; });
-            float minY = -1e9f;
-            for (auto* inst : col) {
-                if (inst->y < minY) inst->y = minY;
-                minY = inst->y + inst->h + kRowSpacing;
-                g_placedPositions[inst->name] = ImVec2{inst->x, inst->y};
-            }
+        auto frames = layoutHierarchyGroups(leafHier, g_schematic.instances, keyToInstId, nextInstId);
+        grouped = !frames.empty();
+        std::vector<InstanceShape> frameShapes;
+        for (auto& f : frames) {
+            f.shape.diagOutline = DiagnosisStore::instanceColor(f.pathKey);
+            g_occInfoByShapeId[f.shape.id] = { f.pathKey, DesignRef{}, std::nullopt };
+            frameShapes.push_back(std::move(f.shape));
         }
+        // Parent-first order at the front: drawn under everything, and reverse
+        // hit-test scans still find a leaf before the frame around it.
+        g_schematic.instances.insert(g_schematic.instances.begin(),
+                                     std::make_move_iterator(frameShapes.begin()),
+                                     std::make_move_iterator(frameShapes.end()));
     }
+    if (!grouped) g_layout.resolveColumnOverlaps(g_schematic.instances);
 
     // Hierarchy embedding: now that top-level positions are finalized (the
     // deoverlap pass above may have shifted a box's y), lay out and append

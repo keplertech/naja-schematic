@@ -400,6 +400,12 @@ appear as boxes/pins there).
   `root_response`/`root_loaded`.
 - **`PropertiesView`** — renders the current `PropertiesStore` contents as a
   two-column name/value table into the "Properties" bottom-panel tab.
+- **`SchematicLayout`** — the schematic's pure placement geometry, split out
+  of `EquipotentialView` so it's unit-testable without ImGui frames or a
+  provider (`tests/SchematicLayoutTest.cpp`): `IncrementalLayout` (per-net
+  instance placement and column de-overlap) and `layoutHierarchyGroups()`
+  (module frames). Changes to how the schematic is laid out belong here,
+  with a test; `EquipotentialView` only turns the result into drawn shapes.
 
 ### Diagnosis overlay
 
