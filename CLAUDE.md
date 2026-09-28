@@ -184,8 +184,11 @@ WASM target configured with `-DNAJA_SCHEMATIC_WASM_MODULE=ON` (single file,
 wasm inlined, `createNajaSchematic({canvas, ...})` factory, one instance per
 canvas), built by `.github/workflows/python-package.yml`, which also tests
 the wheel and publishes it to PyPI on a `v<version>` tag (version in
-`naja_schematic/__init__.py`). For local work set `NAJA_SCHEMATIC_BUNDLE` to
-a locally built bundle (see `_bundle.py`). Tests: `pytest python/tests`.
+`naja_schematic/__init__.py`, the project's single version: `CMakeLists.txt`
+also reads it into `NAJA_SCHEMATIC_VERSION_STRING` for the C++ app's About
+dialog, so a release is one edit plus a tag). For local work set
+`NAJA_SCHEMATIC_BUNDLE` to a locally built bundle (see `_bundle.py`). Tests:
+`pytest python/tests`.
 
 ## Architecture
 
