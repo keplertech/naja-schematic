@@ -63,15 +63,16 @@ def _ids_to_names(ids):
 
 def instance_path(target):
     """Normalize what show_instance() accepts to a list of instance names
-    (top excluded): a najaeda netlist.Instance, a "u1/u2" string, or a
-    list/tuple of names. The top design is [] (or "")."""
+    (top excluded): a najaeda netlist.Instance, a list/tuple of names, or a
+    single name for a child of the top design. A string is one name, never
+    split on "/": escaped names can contain it. The top design is []."""
     if hasattr(target, "pathIDs"):  # najaeda.netlist.Instance
         return _ids_to_names(target.pathIDs)
     if isinstance(target, str):
-        return [name for name in target.split("/") if name]
+        return [target]
     if isinstance(target, (list, tuple)):
         return [str(name) for name in target]
-    raise TypeError(f"expected a najaeda Instance, a 'u1/u2' path or a list of names, "
+    raise TypeError(f"expected a najaeda Instance, a list of names or a name, "
                     f"got {type(target).__name__}")
 
 
@@ -137,15 +138,15 @@ class Schematic(anywidget.AnyWidget):
     def show_instance(self, target):
         """Bring one hierarchical instance into view.
 
-        `target`: a najaeda netlist.Instance, a "u1/u2" path string, or a
-        list of instance names (top excluded; [] or "" = the top design).
+        `target`: a najaeda netlist.Instance, a list of instance names (top
+        excluded; [] = the top design), or one name for a child of the top.
         The viewer opens the tree down to it, selects it, shows its
         properties, and draws it alone in the schematic with all its pins,
         ready to be extended pin by pin. Kept across view reloads.
         """
         path = instance_path(target)
         if _names_to_ids(path) is None:
-            raise ValueError(f"no instance {'/'.join(path)!r} in the loaded design")
+            raise ValueError(f"no instance {path!r} in the loaded design")
         self._focus_push = json.dumps(protocol.focus_instance(path))
         self._send_json(self._focus_push)
 
@@ -172,13 +173,14 @@ class Schematic(anywidget.AnyWidget):
         return handler
 
 
-def show(height=600, diagnosis=None, instance=None):
+def show(instance=None, *, height=600, diagnosis=None):
     """Display a view of the design currently loaded with najaeda.
 
     Evaluate it as the last expression of a cell (or pass it to
     IPython.display.display). Requests are answered from the live netlist,
     so run show() again after editing the design to get a fresh view.
-    `instance` starts the view on one instance (see Schematic.show_instance).
+    `instance` starts the view on one instance, e.g. show(inst) or
+    show(["u1", "u2"]) (see Schematic.show_instance).
     """
     # (anywidget itself turns on Colab's custom widget manager.)
     view = Schematic(height=height)

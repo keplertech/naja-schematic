@@ -33,10 +33,9 @@ def _ask(request):
     return list(_sent)
 
 replies = _ask({"request": "load_root"})
-assert [r["response"] for r in replies] == \
-    ["root_response", "diagnosis_response", "focus_instance"], replies
+assert [r["response"] for r in replies] == ["root_response", "focus_instance"], replies
 assert replies[0]["root"]["name"] == "fulladder", replies[0]
-assert replies[2]["path"] == ["ha1", "carry_and"], replies[2]
+assert replies[1]["path"] == ["ha1", "carry_and"], replies[1]
 
 (resolved,) = _ask({"request": "resolve_instance", "path": ["ha2", "sum_xor"]})
 assert resolved["response"] == "instance_resolved" and resolved["found"], resolved

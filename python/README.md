@@ -37,8 +37,9 @@ view
 ```
 
 The view and your najaeda code can point each other at instances.
-`show_instance()` takes a najaeda `Instance`, a `"u1/u2"` path or a list of
-names. The viewer opens its tree down to that instance, selects it, and
+`show_instance()` takes a najaeda `Instance` or a list of instance names
+(a plain string is one name, never split on `/`, since escaped names can
+contain it). The viewer opens its tree down to that instance, selects it, and
 draws it alone in the schematic. Each pin there is open, so you can click
 one to add its net and grow the schematic from the instance. In the other
 direction, the instance selected in the viewer (click it in the tree or the
@@ -46,7 +47,7 @@ schematic) is available as a najaeda `Instance`:
 
 ```python
 view.show_instance(netlist.get_instance_by_path(["u_sub", "u_and"]))
-view.show_instance("u_sub/u_and")     # same thing
+view.show_instance(["u_sub", "u_and"]) # same thing
 
 inst = view.selected                   # what the user clicked, or None
 inst.get_model_name()
@@ -54,7 +55,8 @@ inst.get_model_name()
 view.on_select(lambda inst: print("selected", inst))
 ```
 
-`naja_schematic.show(instance="u_sub/u_and")` starts a new view on it.
+`naja_schematic.show(inst)` (or `show(["u_sub", "u_and"])`) starts a new
+view on it.
 
 ## From a shell
 
