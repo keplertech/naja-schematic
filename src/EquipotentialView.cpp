@@ -14,6 +14,7 @@
 #include "INetlistProvider.h"
 #include "DiagnosisStore.h"
 #include "SchematicLayout.h"
+#include "SchematicInteraction.h"
 
 // Net/instance placement and hierarchy frames live in SchematicLayout
 // (pure geometry, unit-tested); this file turns them into drawn shapes.
@@ -23,15 +24,6 @@ using namespace SchematicLayout;
 // Layout geometry constants (see SchematicLayout.h for the placement ones)
 // ---------------------------------------------------------------------------
 static constexpr float kPortSpacing = 18.0f;
-
-// Pin click/hit-test radius, in screen pixels (converted to world units by
-// dividing by the current zoom scale where it's used). A pin now renders as
-// a short tick line (see SchematicView.cpp's drawPorts) reaching a few
-// pixels out from the port's anchor point rather than a filled dot sitting
-// right on it, so the hit area needs to comfortably cover the whole tick
-// (and the start of its label) -- not just the anchor -- or double-click/
-// right-click on a pin becomes very hard to land.
-static constexpr float kPortHitRadiusPx = 18.0f;
 
 // Hierarchy embedding (nested boxes) geometry.
 static constexpr float kHierChildW    = 110.0f;
@@ -47,10 +39,24 @@ static SchematicView      g_schematic;
 static int                g_pendingZoomSteps = 0;
 static bool               g_pendingFit       = false;
 static bool               g_pendingClear     = false;
-// Set when a pin double-click requests a net: the view it extends keeps the
+// Set when a pin click requests a net: the view it extends keeps the
 // user's current pan/zoom instead of re-fitting to the whole drawing once
 // the net arrives. Consumed by the next item-count change.
 static bool               g_skipNextAutoFit  = false;
+// The instance whose pin was clicked, and where it was: once the net arrives
+// the view is panned so that box stays put on screen, even though adding a
+// net can re-lay out everything (hierarchy frames grow and shift).
+static std::string        g_keepInPlaceKey;
+static ImVec2             g_keepInPlaceWorld{};
+// Pin nets requested by a click and not arrived yet (keyed by
+// SchematicInteraction::pinRequestKey), so a second click doesn't re-send.
+static SchematicInteraction::PendingRequests g_pendingPinNets;
+// Instance box whose "double-click to show all pins" hint is due, and since
+// when the cursor has rested on it.
+static int                g_hintShapeId      = -1;
+static double             g_hintSince        = 0.0;
+// Screen position of the canvas's top-left corner, last frame.
+static ImVec2             g_canvasOrigin{};
 static INetlistProvider*  g_provider         = nullptr;
 // Which instance box (if any) the canvas right-click popup currently
 // targets; -1 = the canvas-level menu (Clear all nets / Fit view).
@@ -67,12 +73,12 @@ struct PortEquiRequest {
 };
 static std::map<int, OccurrenceInfo>  g_occInfoByShapeId;
 static std::map<int, PortEquiRequest> g_portEquiByPortId;
-// Merged bus-pin port id -> the bus-group key it expands on double-click.
+// Merged bus-pin port id -> the bus-group key it expands on click.
 // Checked before g_portEquiByPortId. Rebuilt every frame.
 static std::map<int, std::string> g_busGroupByPortId;
 // Bit port id of a bus shown expanded -> its bus-group key, for the pin
-// context menu's "Collapse Bus". Double-clicking these bits loads their net
-// like any scalar pin. Rebuilt every frame.
+// context menu's "Collapse Bus". Clicking an open bit loads its net like any
+// scalar pin. Rebuilt every frame.
 static std::map<int, std::string> g_expandedBusGroupByPortId;
 
 static std::map<std::string, std::vector<EquipotentialView::ExpandedPort>> g_expandedInstances;
@@ -159,6 +165,62 @@ static ImVec2 mouseWorldPos(const SchematicView& sv, const ImVec2& cpos) {
     return ImVec2(
         (m.x - cpos.x) / s + sv.transform.offset.x - sv.transform.screenOrigin.x / s,
         (m.y - cpos.y) / s + sv.transform.offset.y - sv.transform.screenOrigin.y / s);
+}
+
+// ---------------------------------------------------------------------------
+// Pin interactions. A left click on a pin does the one thing that pin
+// offers -- the same thing its hover tooltip announces:
+//   - merged bus pin  -> show its individual bits (no request needed)
+//   - open pin        -> add its net to the view (load_equipotential)
+// A pin whose net is already shown has no click action (its right-click menu
+// still offers Trace to Driver). Pins are hit-tested nearest-first with
+// SchematicInteraction::pickPin against what was drawn last frame.
+// ---------------------------------------------------------------------------
+enum class PinAction { None, ExpandBus, LoadNet, Loading };
+
+static PinAction pinAction(const Port& p) {
+    if (g_busGroupByPortId.count(p.id)) return PinAction::ExpandBus;
+    if (p.open) return p.pending ? PinAction::Loading : PinAction::LoadNet;
+    return PinAction::None;
+}
+
+static std::string pinRequestKey(const PortEquiRequest& r) {
+    return SchematicInteraction::pinRequestKey(r.pathIds, r.termId, r.bit);
+}
+
+// Sends load_equipotential for `port` (sitting on `inst`) unless it's already
+// in flight, and arranges for `inst` to stay where it is on screen when the
+// net arrives.
+static void requestPinNet(const InstanceShape& inst, const Port& port) {
+    auto it = g_portEquiByPortId.find(port.id);
+    if (!g_provider || it == g_portEquiByPortId.end()) return;
+    if (!g_pendingPinNets.begin(pinRequestKey(it->second), ImGui::GetTime())) return;
+    json j;
+    j["request"] = "load_equipotential";
+    j["path"]    = it->second.pathIds;
+    j["term_id"] = it->second.termId;
+    if (it->second.bit.has_value()) j["bit"] = it->second.bit.value();
+    g_provider->send(j.dump());
+    g_skipNextAutoFit  = true;
+    g_keepInPlaceKey   = inst.name;
+    g_keepInPlaceWorld = ImVec2(inst.x, inst.y);
+}
+
+// Runs the click action of the pin under `wp`, if any. Returns true when a
+// pin was hit (even one with no action), so the click isn't also treated as
+// a click on the box body underneath.
+static bool clickPin(const ImVec2& wp) {
+    auto hit = SchematicInteraction::pickPin(g_schematic.instances, wp, g_schematic.transform.scale);
+    if (!hit) return false;
+    InstanceShape* inst = g_schematic.findInstanceById(hit->instanceId);
+    Port* port = inst ? g_schematic.findPortById(*inst, hit->portId) : nullptr;
+    if (!port) return true;
+    switch (pinAction(*port)) {
+        case PinAction::ExpandBus: g_expandedBuses.insert(g_busGroupByPortId[port->id]); break;
+        case PinAction::LoadNet:   requestPinNet(*inst, *port); break;
+        default: break;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,6 +382,8 @@ void EquipotentialView::resetLayout() {
     g_hierPending.clear();
     g_instanceInternals.clear();
     g_skipNextAutoFit = false;
+    g_keepInPlaceKey.clear();
+    g_pendingPinNets.clear();
     g_pendingFit   = true;
 }
 
@@ -333,6 +397,9 @@ bool EquipotentialView::takePendingClear() {
 void EquipotentialView::setProvider(INetlistProvider* p) { g_provider = p; }
 
 bool EquipotentialView::showHierarchy() { return g_showHierarchy; }
+
+const SchematicView& EquipotentialView::schematicForTesting() { return g_schematic; }
+ImVec2 EquipotentialView::canvasOriginForTesting() { return g_canvasOrigin; }
 
 void EquipotentialView::setShowHierarchy(bool on) {
     if (g_showHierarchy == on) return;
@@ -392,6 +459,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         ImGuiButtonFlags_MouseButtonMiddle);
     ImDrawList* dl   = ImGui::GetWindowDrawList();
     ImVec2      cpos = ImGui::GetItemRectMin();
+    g_canvasOrigin   = cpos;
 
     g_schematic.handleInteraction(cpos, inner);
 
@@ -410,19 +478,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
         g_ctxInstanceId = -1;
         g_ctxPortId     = -1;
-        {
-            // Same hit radius as the double-click pin test further down.
-            const float sc  = std::max(0.01f, g_schematic.transform.scale);
-            const float hr2 = (kPortHitRadiusPx / sc) * (kPortHitRadiusPx / sc);
-            for (const auto& inst : g_schematic.instances) {
-                for (const auto& port : inst.ports) {
-                    ImVec2 pw = g_schematic.portWorldPos(inst, port);
-                    float dx = wp.x - pw.x, dy = wp.y - pw.y;
-                    if (dx*dx + dy*dy <= hr2 && g_portEquiByPortId.count(port.id))
-                        g_ctxPortId = port.id;
-                }
-            }
-        }
+        if (auto hit = SchematicInteraction::pickPin(g_schematic.instances, wp, g_schematic.transform.scale))
+            if (g_portEquiByPortId.count(hit->portId)) g_ctxPortId = hit->portId;
         for (auto rit = g_schematic.instances.rbegin(); rit != g_schematic.instances.rend(); ++rit) {
             if (rit->w <= 0.f || rit->h <= 0.f) continue;
             if (wp.x < rit->x || wp.x > rit->x + rit->w) continue;
@@ -490,18 +547,23 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         ImGui::EndPopup();
     }
 
-    // Single click on an instance's hierarchy glyph: expand/collapse its
-    // sub-instances nested inside its box. Checked before the double-click
-    // handling below since it targets a small, distinct hotspot (top-center
-    // of the box) that never overlaps a port dot or the body double-click
-    // area used for expand_instance_terms.
-    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+    // Single click: an instance's hierarchy glyph expands/collapses its
+    // sub-instances nested inside its box; otherwise a pin runs its click
+    // action (see clickPin). The glyph is checked first since it's a small,
+    // distinct hotspot (top-center of the box) that never overlaps a pin.
+    // Only the first click of a double-click counts, so a double-click
+    // doesn't act twice (e.g. expand a bus, then load the bit that lands
+    // under the cursor).
+    if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
+        ImGui::GetMouseClickedCount(ImGuiMouseButton_Left) == 1) {
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
+        bool glyphHit = false;
         for (const auto& inst : g_schematic.instances) {
             if (!canShowHierToggle(inst)) continue;
             float gx0, gy0, gx1, gy1;
             hierToggleGlyphRect(inst, gx0, gy0, gx1, gy1);
             if (wp.x < gx0 || wp.x > gx1 || wp.y < gy0 || wp.y > gy1) continue;
+            glyphHit = true;
             if (!g_hierExpanded.erase(inst.name)) {
                 g_hierExpanded.insert(inst.name);
                 if (!g_instanceInternals.count(inst.name) && !g_hierPending.count(inst.name) && g_provider) {
@@ -520,47 +582,18 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
             break;
         }
+        if (!glyphHit) clickPin(wp);
     }
 
-    // Double-click: port dot → load equip; instance box → expand interface
+    // Double-click on a box body (not a pin -- those act on single click
+    // above): a partial-interface box loads its full interface, revealing
+    // the pins whose nets aren't shown yet.
     if (ImGui::IsItemHovered() &&
         ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && g_provider) {
-
-        float s  = g_schematic.transform.scale;
-        ImVec2 m = ImGui::GetMousePos();
-        float wx = (m.x - cpos.x) / s + g_schematic.transform.offset.x
-                   - g_schematic.transform.screenOrigin.x / s;
-        float wy = (m.y - cpos.y) / s + g_schematic.transform.offset.y
-                   - g_schematic.transform.screenOrigin.y / s;
-        const float hr2 = (kPortHitRadiusPx / std::max(0.01f, s)) * (kPortHitRadiusPx / std::max(0.01f, s));
-        bool hit = false;
-
-        for (const auto& inst : g_schematic.instances) {
-            for (const auto& port : inst.ports) {
-                ImVec2 pw = g_schematic.portWorldPos(inst, port);
-                float dx = wx - pw.x, dy = wy - pw.y;
-                if (dx*dx + dy*dy > hr2) continue;
-                auto busIt = g_busGroupByPortId.find(port.id);
-                if (busIt != g_busGroupByPortId.end()) {
-                    // Merged bus pin: expand it instead of requesting a net.
-                    // All bits are already loaded, so no request is needed.
-                    // Collapsing is done from a bit pin's context menu.
-                    g_expandedBuses.insert(busIt->second);
-                    hit = true; break;
-                }
-                auto it = g_portEquiByPortId.find(port.id);
-                if (it == g_portEquiByPortId.end()) break;
-                json j;
-                j["request"] = "load_equipotential";
-                j["path"]    = it->second.pathIds;
-                j["term_id"] = it->second.termId;
-                if (it->second.bit.has_value()) j["bit"] = it->second.bit.value();
-                g_provider->send(j.dump());
-                g_skipNextAutoFit = true;
-                hit = true; break;
-            }
-            if (hit) break;
-        }
+        ImVec2 wp = mouseWorldPos(g_schematic, cpos);
+        const float wx = wp.x, wy = wp.y;
+        const bool hit = SchematicInteraction::pickPin(g_schematic.instances, wp,
+                                                       g_schematic.transform.scale).has_value();
         if (!hit) {
             // A hierarchy-expanded box's nested children sit *inside* its
             // own bounding rect, so a forward scan would always match the
@@ -689,6 +722,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     ps.pathIds     = item.pathIds;
                     mi.ports.push_back(std::move(ps));
                     g_portEquiByPortId[pid] = { item.pathIds, item.termChildId, item.termBit };
+                    // This pin's net is in the view now: its request is done.
+                    g_pendingPinNets.resolve(pinRequestKey(g_portEquiByPortId[pid]));
                 }
                 equiEnds[ei].push_back({ item.key(), pid });
             }
@@ -751,18 +786,21 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             // equipotential, else allocating a display-only id), then group
             // by (direction, bus base name) exactly like the partial-
             // interface branch below so a bus collapses to one pin here too.
-            struct ResolvedPort { const EquipotentialView::ExpandedPort* ep; int pid; };
+            // `open`: no loaded equipotential backs this pin, i.e. its net
+            // isn't in the view yet -- clicking it will add it.
+            struct ResolvedPort { const EquipotentialView::ExpandedPort* ep; int pid; bool open; };
             std::vector<ResolvedPort> resolved;
             resolved.reserve(expIt->second.size());
             for (const auto& ep : expIt->second) {
                 int pid = nextPortId++;
+                bool open = true;
                 for (const auto& ps : mi.ports) {
                     if (ps.name == ep.name && ps.direction == ep.direction)
-                        { pid = ps.portId; nextPortId--; break; }
+                        { pid = ps.portId; nextPortId--; open = false; break; }
                 }
                 auto pathIds = mi.ports.empty() ? std::vector<unsigned>{} : mi.ports[0].pathIds;
                 g_portEquiByPortId[pid] = { pathIds, ep.childId, ep.bit };
-                resolved.push_back({ &ep, pid });
+                resolved.push_back({ &ep, pid, open });
             }
 
             struct Row { std::vector<const ResolvedPort*> members; bool merged = false;
@@ -808,11 +846,15 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     for (auto* m : row.members) logicalToRenderedPortId[m->pid] = p.id;
                     g_busGroupByPortId[p.id] = row.groupKey;
                     p.color = DiagnosisStore::netColor(key, row.busBase);
+                    for (auto* m : row.members) p.open = p.open || m->open;
                 } else {
                     p.id   = row.members[0]->pid;
                     p.name = row.members[0]->ep->name;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->ep->name));
                     if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
+                    p.open    = row.members[0]->open;
+                    p.pending = p.open && g_pendingPinNets.isPending(
+                                    pinRequestKey(g_portEquiByPortId[p.id]), ImGui::GetTime());
                 }
                 p.lx = isIn ? -0.5f : 0.5f;
                 p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
@@ -1073,6 +1115,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // those into one thicker "bus" wire instead of drawing them stacked.
     {
         std::map<std::tuple<int,int,int,int>, size_t> firstOf;
+        auto portIsBus = [](int instId, int portId) {
+            auto* inst = g_schematic.findInstanceById(instId);
+            auto* port = inst ? g_schematic.findPortById(*inst, portId) : nullptr;
+            return port && port->isBus;
+        };
         std::vector<NetWire> merged;
         for (const auto& n : g_schematic.nets) {
             auto k = std::make_tuple(n.srcInstance, n.srcPortId, n.dstInstance, n.dstPortId);
@@ -1080,17 +1127,32 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (it == firstOf.end()) {
                 firstOf[k] = merged.size();
                 merged.push_back(n);
-            } else {
+            } else if (portIsBus(n.srcInstance, n.srcPortId) || portIsBus(n.dstInstance, n.dstPortId)) {
                 merged[it->second].isBus = true;
             }
+            // else: the same net drawn twice (e.g. overlapping trace nets) --
+            // just one wire, not a bus.
         }
         g_schematic.nets = std::move(merged);
     }
 
     static int lastTotal = -1;
     if (totalItems != lastTotal) {
-        if (g_skipNextAutoFit) g_skipNextAutoFit = false;
-        else                   g_schematic.requestFit(true);
+        if (g_skipNextAutoFit) {
+            g_skipNextAutoFit = false;
+            // Pan so the box whose pin was clicked stays under the cursor,
+            // wherever the re-layout moved it (screen = (world - offset) *
+            // scale, so shifting offset by the world delta cancels it out).
+            for (const auto& inst : g_schematic.instances) {
+                if (inst.isHierGroup || inst.name != g_keepInPlaceKey) continue;
+                g_schematic.transform.offset.x += inst.x - g_keepInPlaceWorld.x;
+                g_schematic.transform.offset.y += inst.y - g_keepInPlaceWorld.y;
+                break;
+            }
+            g_keepInPlaceKey.clear();
+        } else {
+            g_schematic.requestFit(true);
+        }
         lastTotal = totalItems;
     }
     if (!g_pendingZoomGroup.empty()) {
@@ -1105,9 +1167,45 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
     g_schematic.updateFitIfNeeded(cpos, inner, 60.f);
 
-    // Hover tooltip: show diagnosis messages for the instance under the cursor.
-    if (ImGui::IsMouseHoveringRect(cpos, ImVec2(cpos.x + inner.x, cpos.y + inner.y))) {
+    // Hover feedback, against this frame's geometry (the one about to be
+    // drawn): the pin under the cursor is highlighted, gets a hand cursor if
+    // clicking it does something, and a tooltip saying what; otherwise the
+    // box under the cursor shows its diagnostics and, after a short rest on
+    // a partial-interface box, how to reveal its other pins.
+    g_schematic.hoveredPortId = -1;
+    const bool canvasHovered =
+        ImGui::IsMouseHoveringRect(cpos, ImVec2(cpos.x + inner.x, cpos.y + inner.y)) &&
+        !ImGui::IsPopupOpen("##ctx") && !ImGui::IsMouseDragging(ImGuiMouseButton_Right) &&
+        !ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
+    bool pinHovered = false;
+    if (canvasHovered) {
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
+        auto hit = SchematicInteraction::pickPin(g_schematic.instances, wp, g_schematic.transform.scale);
+        InstanceShape* inst = hit ? g_schematic.findInstanceById(hit->instanceId) : nullptr;
+        Port* port = inst ? g_schematic.findPortById(*inst, hit->portId) : nullptr;
+        if (port) {
+            pinHovered = true;
+            g_schematic.hoveredPortId = port->id;
+            const PinAction action = pinAction(*port);
+            if (action == PinAction::ExpandBus || action == PinAction::LoadNet)
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImGui::BeginTooltip();
+            if (inst->modelName == "port") ImGui::Text("%s  (top-level port)", port->name.c_str());
+            else                           ImGui::Text("%s / %s", inst->name.c_str(), port->name.c_str());
+            switch (action) {
+                case PinAction::ExpandBus: ImGui::TextDisabled("Click: show the individual bits"); break;
+                case PinAction::LoadNet:   ImGui::TextDisabled("Click: add this net to the view"); break;
+                case PinAction::Loading:   ImGui::TextDisabled("Loading net..."); break;
+                case PinAction::None:      ImGui::TextDisabled("Net shown"); break;
+            }
+            if (g_portEquiByPortId.count(port->id))
+                ImGui::TextDisabled("Right-click: Trace to Driver");
+            ImGui::EndTooltip();
+        }
+    }
+    if (canvasHovered && !pinHovered) {
+        ImVec2 wp = mouseWorldPos(g_schematic, cpos);
+        bool overBox = false;
         // Reverse scan: a nested child's rect sits inside its parent's, so
         // the innermost (most specific) box under the cursor is whichever
         // one was appended last -- see the same reasoning on the
@@ -1119,18 +1217,25 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (wp.y < inst.y || wp.y > inst.y + inst.h) continue;
             auto it = g_occInfoByShapeId.find(inst.id);
             if (it == g_occInfoByShapeId.end()) break;
+            overBox = true;
+            if (inst.id != g_hintShapeId) { g_hintShapeId = inst.id; g_hintSince = ImGui::GetTime(); }
+            const bool showHint = inst.partialInterface && ImGui::GetTime() - g_hintSince > 0.6;
             auto diagnostics = DiagnosisStore::instanceDiagnostics(it->second.pathKey);
-            if (!diagnostics.empty()) {
+            if (!diagnostics.empty() || showHint) {
                 ImGui::BeginTooltip();
                 for (const auto* d : diagnostics) {
                     ImGui::TextColored(ImColor(DiagnosisStore::colorForSeverity(d->severity)).Value,
                                        "[%s] %s", toString(d->severity), d->message.c_str());
                     if (!d->source.empty()) ImGui::TextDisabled("source: %s", d->source.c_str());
                 }
+                if (showHint) ImGui::TextDisabled("Double-click: show all pins");
                 ImGui::EndTooltip();
             }
             break;
         }
+        if (!overBox) g_hintShapeId = -1;
+    } else {
+        g_hintShapeId = -1;
     }
 
     g_schematic.render(dl, cpos, inner);

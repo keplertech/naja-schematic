@@ -1,5 +1,7 @@
 #include "Types.h"
 
+#include <set>
+
 #include "Console.h"
 
 static std::optional<SourceLoc> parseSourceLoc(const json& j) {
@@ -231,4 +233,24 @@ void from_json(const json& j, PropertiesResponseJson& r) {
       r.properties.push_back(raw.get<PropertyItem>());
     }
   }
+}
+
+// One endpoint of an equipotential, by name: "T|<term>[bit]" for a top-level
+// term, "O|<inst/path>|<pin>[bit]" for an instance pin.
+static std::set<std::string> endpointKeys(const Equipotential& e) {
+  std::set<std::string> keys;
+  for (const auto& t : e.terms) keys.insert("T|" + t.getString());
+  for (const auto& o : e.occurrences) {
+    std::string k = "O|";
+    for (const auto& seg : o.path) k += seg + "/";
+    keys.insert(k + "|" + o.term.getString());
+  }
+  return keys;
+}
+
+bool equipotentialCovers(const Equipotential& shown, const Equipotential& candidate) {
+  const auto have = endpointKeys(shown);
+  for (const auto& k : endpointKeys(candidate))
+    if (!have.count(k)) return false;
+  return true;
 }
