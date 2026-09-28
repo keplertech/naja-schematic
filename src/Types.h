@@ -169,24 +169,36 @@ inline const char* toString(DiagnosisSeverity s) {
   }
 }
 
+//
+// --- Instance paths ---
+// An instance is identified by its instance names from the top design
+// (excluded) down to it: {} is the top design itself. It stays a list
+// everywhere -- on the wire, as map/set keys, in stores -- and is never
+// joined into a string that gets parsed back: escaped Verilog names can
+// contain '/' (or any other separator). Composite keys are std::tuples.
+//
+
+using InstancePath = std::vector<std::string>;
+
+// "u1/u2" for a human to read (labels, tooltips, log lines). Never parse it
+// or use it as a key.
+inline std::string displayPath(const InstancePath& path) {
+  std::string out;
+  for (size_t i = 0; i < path.size(); ++i) {
+    if (i) out += '/';
+    out += path[i];
+  }
+  return out;
+}
+
 struct DiagnosisItem {
   DiagnosisKind             kind     = DiagnosisKind::Instance;
-  std::vector<std::string>  path;              // instance-name path, root excluded; empty = top level
+  InstancePath              path;              // instance-name path, root excluded; empty = top level
   std::string               terminal;          // pin/port base name (no bus-bit suffix); Kind::Net only
   DiagnosisSeverity          severity = DiagnosisSeverity::Info;
   std::string               message;
   std::string               source;            // e.g. "kepler-formal", "naja-scope"
 
-  // Slash-joined instance path, matching NetlistTree::getPathKey() and
-  // EquipotentialView's instance-item keys.
-  std::string pathKey() const {
-    std::string out;
-    for (size_t i = 0; i < path.size(); ++i) {
-      if (i) out += '/';
-      out += path[i];
-    }
-    return out;
-  }
 };
 
 //
@@ -196,7 +208,7 @@ struct DiagnosisItem {
 // request/response pair (get_properties -> properties_response), answered by
 // both LocalSNLProvider (native) and najaeda_server.py (WASM/browser) the
 // same way load_terms etc. are. The object is identified the same way
-// DiagnosisItem identifies things: a slash-joined instance-name path (root
+// DiagnosisItem identifies things: a list of instance names (root
 // excluded), not provider-specific numeric ids, so both backends resolve it
 // by walking instance names from the top design.
 //
@@ -210,20 +222,6 @@ struct PropertiesResponseJson {
   std::vector<PropertyItem> properties;
 };
 
-// Inverse of DiagnosisItem::pathKey(): splits a slash-joined instance-name
-// path back into per-segment names. "" (root/top-level) yields an empty path.
-inline std::vector<std::string> splitPathKey(const std::string& key) {
-  std::vector<std::string> out;
-  size_t start = 0;
-  while (start <= key.size()) {
-    size_t slash = key.find('/', start);
-    std::string seg = key.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
-    if (!seg.empty()) out.push_back(seg);
-    if (slash == std::string::npos) break;
-    start = slash + 1;
-  }
-  return out;
-}
 
 //
 // --- Renderer / UI types (kept separate from the JSON / API types above) ---
@@ -253,10 +251,13 @@ struct Port {
 
 struct InstanceShape {
     int id = 0;
-    std::string name;       // instance path (display label)
+    // The instance this box stands for (a module frame's module); {} for a
+    // top-level port stub. The identity key -- `name` is only displayed.
+    InstancePath path;
+    std::string name;       // display label (displayPath(path) for an instance box)
     // Optional display label overriding `name` on the box (e.g. just the
     // leaf name when a hierarchy frame around the box already shows the
-    // rest of the path); `name` stays the identity key either way.
+    // rest of the path).
     std::string label;
     std::string modelName;  // gate/cell type — drives the icon dispatcher in drawInstance()
     float x = 0.0f;

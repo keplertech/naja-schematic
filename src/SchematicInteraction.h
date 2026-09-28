@@ -7,6 +7,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <vector>
 #include <imgui.h>
 
@@ -42,8 +43,9 @@ std::optional<PinHit> pickPin(const std::vector<InstanceShape>& instances,
 
 // Identity of a load_equipotential request for one pin, so a pin whose net
 // is already on its way isn't requested again.
-std::string pinRequestKey(const std::vector<unsigned>& pathIds, unsigned termId,
-                          std::optional<int> bit);
+using PinRequestKey = std::tuple<std::vector<unsigned>, unsigned, std::optional<int>>;
+PinRequestKey pinRequestKey(const std::vector<unsigned>& pathIds, unsigned termId,
+                            std::optional<int> bit);
 
 // Requests sent but not answered yet. An entry expires after `timeout`
 // seconds, so a request whose reply never comes (server error, dropped
@@ -54,15 +56,15 @@ class PendingRequests {
 
     // Registers `key` at time `now`. False (and no change) if it's already
     // pending, i.e. the caller shouldn't send it again.
-    bool begin(const std::string& key, double now);
-    bool isPending(const std::string& key, double now) const;
+    bool begin(const PinRequestKey& key, double now);
+    bool isPending(const PinRequestKey& key, double now) const;
     // The reply arrived (the pin's net is now shown).
-    void resolve(const std::string& key);
+    void resolve(const PinRequestKey& key);
     void clear();
 
   private:
     double                        timeout_;
-    std::map<std::string, double> started_;
+    std::map<PinRequestKey, double> started_;
 };
 
 } // namespace SchematicInteraction

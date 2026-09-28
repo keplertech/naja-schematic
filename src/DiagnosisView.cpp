@@ -28,8 +28,8 @@ void DiagnosisView::render() {
     ImGui::PopStyleColor();
 
     std::string where = item.kind == DiagnosisKind::Instance
-      ? (item.pathKey().empty() ? std::string("<top>") : item.pathKey())
-      : (item.pathKey().empty() ? item.terminal : item.pathKey() + "/" + item.terminal);
+      ? (item.path.empty() ? std::string("<top>") : displayPath(item.path))
+      : (item.path.empty() ? item.terminal : displayPath(item.path) + "/" + item.terminal);
     ImGui::SameLine();
     ImGui::TextDisabled("%s", where.c_str());
 

@@ -65,8 +65,8 @@ TEST_F(DiagnosisStoreTest, InstanceAndNetLookupsAreSuppressedWhileUIHidden) {
 
   DiagnosisStore::setDiagnostics({instanceItem, netItem});
 
-  EXPECT_TRUE(DiagnosisStore::instanceDiagnostics("u1").empty());
-  EXPECT_TRUE(DiagnosisStore::netDiagnostics("u1", "Q").empty());
-  EXPECT_EQ(DiagnosisStore::instanceColor("u1"), 0u);
-  EXPECT_EQ(DiagnosisStore::netColor("u1", "Q"), 0u);
+  EXPECT_TRUE(DiagnosisStore::instanceDiagnostics(InstancePath{"u1"}).empty());
+  EXPECT_TRUE(DiagnosisStore::netDiagnostics(InstancePath{"u1"}, "Q").empty());
+  EXPECT_EQ(DiagnosisStore::instanceColor(InstancePath{"u1"}), 0u);
+  EXPECT_EQ(DiagnosisStore::netColor(InstancePath{"u1"}, "Q"), 0u);
 }

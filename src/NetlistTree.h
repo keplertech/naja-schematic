@@ -52,18 +52,17 @@ class NetlistTree {
     void render();
     void insertNodeInMap(NetlistTreeNode* node);
 
-    // Opens the tree down to the instance at `pathKey` (slash-joined
-    // instance names, "" = root) and scrolls to it. Levels load on demand, so
+    // Opens the tree down to the instance at `path` ({} = root) and scrolls to it. Levels load on demand, so
     // this is asynchronous: each level's Instances/Primitives groups are
     // requested as needed and advanceReveal() continues once their replies
     // have created the child nodes. A new reveal replaces a pending one.
-    void reveal(const std::string& pathKey);
+    void reveal(const InstancePath& path);
     // One step of a pending reveal; called by render() every frame (public
     // so tests can drive it without an ImGui frame).
     void advanceReveal();
     bool isRevealPending() const { return revealPath_.has_value(); }
-    // The instance node at `pathKey`, if its level is already loaded.
-    NetlistTreeNode* findInstance(const std::string& pathKey) const;
+    // The instance node at `path`, if its level is already loaded.
+    NetlistTreeNode* findInstance(const InstancePath& path) const;
   private:
     friend class NetlistTreeNode;
     INetlistProvider*       ws_                    {nullptr};
@@ -72,7 +71,7 @@ class NetlistTree {
     unsigned                nextGUIID_ {0};
     NodesMap                nodes_;
     // Pending reveal: the instance names still to walk down from the root.
-    std::optional<std::vector<std::string>> revealPath_;
+    std::optional<InstancePath> revealPath_;
     // Nodes render() must open (once each) / scroll to, after a reveal.
     std::set<unsigned>      forceOpen_;
     std::optional<unsigned> scrollTo_;
@@ -169,9 +168,9 @@ class NetlistTreeNode {
       return 0;
     }
     virtual void getPath(NetlistTree::Path& path) const;
-    // Slash-joined instance-name path, root excluded ("" at/above root).
-    // Matches DiagnosisItem::pathKey() and EquipotentialView's instance keys.
-    virtual std::string getPathKey() const;
+    // Instance-name path, root excluded ({} at/above root). Matches
+    // DiagnosisItem::path and InstanceShape::path.
+    virtual InstancePath getInstancePath() const;
     // Diagnosis items attached to this node's path, if any (only
     // NetlistTreeInstanceNode currently reports these).
     virtual std::vector<const DiagnosisItem*> getDiagnostics() const { return {}; }
@@ -222,7 +221,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual DesignRef getDesignRef() const override { return designRef_; }
     virtual std::string getLabel() const override;
     virtual void getPath(NetlistTree::Path& path) const override;
-    virtual std::string getPathKey() const override;
+    virtual InstancePath getInstancePath() const override;
     virtual unsigned getChildID() const override { return childID_; }
     virtual bool isLeaf() const override {
       return !(hasTerms_ || hasPrimitives_ || hasInstances_ || hasNets_);

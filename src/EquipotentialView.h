@@ -78,7 +78,7 @@ class EquipotentialView {
     static void setProvider(INetlistProvider* provider);
 
     // Called by AppLogic when an expanded_instance_terms response arrives.
-    static void applyInstanceExpansion(const std::string& pathKey,
+    static void applyInstanceExpansion(const InstancePath& path,
                                        const std::vector<ExpandedPort>& ports);
 
     // Adds `start` to the view as a lone box showing all its pins, each
@@ -90,7 +90,7 @@ class EquipotentialView {
     static std::optional<StartInstance> startInstanceFromResolved(const json& reply);
 
     // Called by AppLogic when an instance_internals_response arrives.
-    static void applyInstanceInternals(const std::string& pathKey,
+    static void applyInstanceInternals(const InstancePath& path,
                                        const InstanceInternals& data);
 
     // Test hooks (read-only): the geometry the last renderSchematic() drew,

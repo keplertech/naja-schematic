@@ -7,20 +7,12 @@
 
 namespace SchematicLayout {
 
-// Extract the leaf segment from a slash-separated instance path.
-// e.g. "top/sub/<assign:0>" → "<assign:0>"
-static std::string leafSegment(const std::string& path) {
-    auto pos = path.rfind('/');
-    return (pos == std::string::npos) ? path : path.substr(pos + 1);
-}
-
 void buildItems(const Equipotential* eq,
                 std::vector<Item>& drivers,
                 std::vector<Item>& receivers) {
     for (const auto& bt : eq->terms) {
         Item item;
         item.label       = bt.getString();
-        item.fullName    = bt.name;
         item.direction   = bt.direction;
         item.isTerm      = true;
         item.termChildId = bt.child_id;
@@ -40,14 +32,6 @@ void buildItems(const Equipotential* eq,
         item.sourceLoc    = occ.source_loc;
         item.path         = occ.path;
         item.pathModels   = occ.pathModels;
-        std::string joined;
-        bool first = true;
-        for (const auto& seg : occ.path) {
-            if (!first) joined += '/';
-            joined += seg;
-            first = false;
-        }
-        item.fullName  = std::move(joined);
         item.direction = occ.term.direction;
         (occ.term.direction == Direction::Output ? drivers : receivers).push_back(std::move(item));
     }
@@ -69,12 +53,12 @@ void IncrementalLayout::place(const Equipotential* eq) {
     bool        anchorDrives = false;
 
     for (const auto& item : drivers) {
-        if (!item.isTerm && placed_.count(item.key()))
+        if (!item.isTerm && placed_.count(item.path))
             { anchor = &item; anchorDrives = true; break; }
     }
     if (!anchor) {
         for (const auto& item : receivers) {
-            if (!item.isTerm && placed_.count(item.key()))
+            if (!item.isTerm && placed_.count(item.path))
                 { anchor = &item; anchorDrives = false; break; }
         }
     }
@@ -86,20 +70,20 @@ void IncrementalLayout::place(const Equipotential* eq) {
         float dyl = nextY_, dyr = nextY_;
         for (const auto& item : drivers) {
             if (!item.isTerm) {
-                placed_.emplace(item.key(), ImVec2{lx, dyl});
+                placed_.emplace(item.path, ImVec2{lx, dyl});
                 dyl += kInstH + kRowSpacing;
             }
         }
         for (const auto& item : receivers) {
             if (!item.isTerm) {
-                placed_.emplace(item.key(), ImVec2{rx, dyr});
+                placed_.emplace(item.path, ImVec2{rx, dyr});
                 dyr += kInstH + kRowSpacing;
             }
         }
         nextY_ = std::max(dyl, dyr) + kNetVGap;
     } else {
         // Expansion: extend horizontally from anchor
-        const ImVec2 ap   = placed_[anchor->key()];
+        const ImVec2 ap   = placed_[anchor->path];
         const auto& items = anchorDrives ? receivers : drivers;
         float newX = anchorDrives
             ? ap.x + kInstW + kColGap    // new receivers go right of driver
@@ -116,17 +100,17 @@ void IncrementalLayout::place(const Equipotential* eq) {
             return true;
         };
         for (const auto& item : items) {
-            if (item.isTerm || placed_.count(item.key())) continue;
+            if (item.isTerm || placed_.count(item.path)) continue;
             while (!isFree(newX, dy)) dy += kInstH + kRowSpacing;
-            placed_.emplace(item.key(), ImVec2{newX, dy});
+            placed_.emplace(item.path, ImVec2{newX, dy});
             dy += kInstH + kRowSpacing;
         }
     }
 }
 
-void IncrementalLayout::placeAlone(const std::string& key) {
-    if (placed_.count(key)) return;
-    placed_.emplace(key, ImVec2{kLeftMargin, nextY_});
+void IncrementalLayout::placeAlone(const InstancePath& path) {
+    if (placed_.count(path)) return;
+    placed_.emplace(path, ImVec2{kLeftMargin, nextY_});
     nextY_ += kInstH + kRowSpacing + kNetVGap;
 }
 
@@ -141,7 +125,7 @@ void IncrementalLayout::resolveColumnOverlaps(std::vector<InstanceShape>& instan
         for (auto* inst : col) {
             if (inst->y < minY) inst->y = minY;
             minY = inst->y + inst->h + kRowSpacing;
-            placed_[inst->name] = ImVec2{inst->x, inst->y};
+            placed_[inst->path] = ImVec2{inst->x, inst->y};
         }
     }
 }
@@ -157,7 +141,7 @@ void IncrementalLayout::clear() {
 // ---------------------------------------------------------------------------
 namespace {
 struct GroupNode {
-    std::string pathKey;
+    InstancePath path;
     std::string label;
     int         depth = 0;
     std::vector<std::unique_ptr<GroupNode>> groups;
@@ -231,27 +215,27 @@ void placeGroup(const GroupNode& node, ImVec2 origin, bool isRoot,
         f.shape.h           = node.h;
         f.shape.isHierGroup = true;
         f.shape.hierDepth   = node.depth;
-        f.pathKey           = node.pathKey;
+        f.shape.path        = node.path;
         frames.push_back(std::move(f));
     }
     for (const auto& [leaf, rel] : node.leafRel) {
         leaf->x = origin.x + rel.x;
         leaf->y = origin.y + rel.y;
-        if (!isRoot) leaf->label = leafSegment(leaf->name);
+        if (!isRoot && !leaf->path.empty()) leaf->label = leaf->path.back();
     }
     for (const auto& g : node.groups)
         placeGroup(*g, ImVec2(origin.x + g->rel.x, origin.y + g->rel.y), false, nextInstId, frames);
 }
 } // namespace
 
-std::vector<HierFrame> layoutHierarchyGroups(const std::map<std::string, LeafHier>& leafHier,
+std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHier>& leafHier,
                                              std::vector<InstanceShape>& instances,
-                                             const std::map<std::string, int>& keyToInstId,
+                                             const std::map<InstancePath, int>& pathToInstId,
                                              int& nextInstId) {
     std::vector<HierFrame> frames;
     bool anyNested = false;
-    for (const auto& [key, lh] : leafHier)
-        if (lh.path.size() >= 2 && keyToInstId.count(key)) { anyNested = true; break; }
+    for (const auto& [path, lh] : leafHier)
+        if (lh.path.size() >= 2 && pathToInstId.count(path)) { anyNested = true; break; }
     if (!anyNested) return frames;
 
     auto findById = [&](int id) -> InstanceShape* {
@@ -260,9 +244,9 @@ std::vector<HierFrame> layoutHierarchyGroups(const std::map<std::string, LeafHie
     };
 
     GroupNode root;
-    for (const auto& [key, lh] : leafHier) {
-        auto kit = keyToInstId.find(key);
-        if (kit == keyToInstId.end()) continue;
+    for (const auto& [path, lh] : leafHier) {
+        auto kit = pathToInstId.find(path);
+        if (kit == pathToInstId.end()) continue;
         InstanceShape* leaf = findById(kit->second);
         if (!leaf) continue;
         GroupNode* node = &root;
@@ -271,7 +255,8 @@ std::vector<HierFrame> layoutHierarchyGroups(const std::map<std::string, LeafHie
             auto git = node->groupByName.find(seg);
             if (git == node->groupByName.end()) {
                 auto child = std::make_unique<GroupNode>();
-                child->pathKey = node->pathKey.empty() ? seg : node->pathKey + "/" + seg;
+                child->path    = node->path;
+                child->path.push_back(seg);
                 child->depth   = node->depth + 1;
                 const std::string model = i < lh.pathModels.size() ? lh.pathModels[i] : "";
                 child->label   = model.empty() ? seg : seg + " (" + model + ")";

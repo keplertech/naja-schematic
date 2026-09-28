@@ -1,6 +1,7 @@
 #include "DiagnosisStore.h"
 
 #include <map>
+#include <utility>
 
 namespace {
 // Diagnosis UI is temporarily hidden (tree/schematic tinting, tooltips, and
@@ -9,21 +10,18 @@ namespace {
 constexpr bool kDiagnosisUIHidden = true;
 
 std::vector<DiagnosisItem> g_items;
-std::map<std::string, std::vector<const DiagnosisItem*>> g_instanceIndex;
-std::map<std::string, std::vector<const DiagnosisItem*>> g_netIndex;
-
-std::string netKey(const std::string& pathKey, const std::string& terminal) {
-  return pathKey + "::" + terminal;
-}
+std::map<InstancePath, std::vector<const DiagnosisItem*>> g_instanceIndex;
+// (containing instance, terminal) -> items.
+std::map<std::pair<InstancePath, std::string>, std::vector<const DiagnosisItem*>> g_netIndex;
 
 void rebuildIndex() {
   g_instanceIndex.clear();
   g_netIndex.clear();
   for (const auto& item : g_items) {
     if (item.kind == DiagnosisKind::Instance) {
-      g_instanceIndex[item.pathKey()].push_back(&item);
+      g_instanceIndex[item.path].push_back(&item);
     } else {
-      g_netIndex[netKey(item.pathKey(), item.terminal)].push_back(&item);
+      g_netIndex[{item.path, item.terminal}].push_back(&item);
     }
   }
 }
@@ -50,16 +48,16 @@ void DiagnosisStore::clear() {
 
 const std::vector<DiagnosisItem>& DiagnosisStore::all() { return g_items; }
 
-std::vector<const DiagnosisItem*> DiagnosisStore::instanceDiagnostics(const std::string& pathKey) {
+std::vector<const DiagnosisItem*> DiagnosisStore::instanceDiagnostics(const InstancePath& path) {
   if (kDiagnosisUIHidden) return {};
-  auto it = g_instanceIndex.find(pathKey);
+  auto it = g_instanceIndex.find(path);
   return it != g_instanceIndex.end() ? it->second : std::vector<const DiagnosisItem*>{};
 }
 
-std::vector<const DiagnosisItem*> DiagnosisStore::netDiagnostics(const std::string& pathKey,
+std::vector<const DiagnosisItem*> DiagnosisStore::netDiagnostics(const InstancePath& path,
                                                                   const std::string& terminal) {
   if (kDiagnosisUIHidden) return {};
-  auto it = g_netIndex.find(netKey(pathKey, terminal));
+  auto it = g_netIndex.find({path, terminal});
   return it != g_netIndex.end() ? it->second : std::vector<const DiagnosisItem*>{};
 }
 
@@ -72,14 +70,14 @@ ImU32 DiagnosisStore::colorForSeverity(DiagnosisSeverity sev) {
   return 0;
 }
 
-ImU32 DiagnosisStore::instanceColor(const std::string& pathKey) {
-  auto items = instanceDiagnostics(pathKey);
+ImU32 DiagnosisStore::instanceColor(const InstancePath& path) {
+  auto items = instanceDiagnostics(path);
   if (items.empty()) return 0;
   return colorForSeverity(worstOf(items));
 }
 
-ImU32 DiagnosisStore::netColor(const std::string& pathKey, const std::string& terminal) {
-  auto items = netDiagnostics(pathKey, terminal);
+ImU32 DiagnosisStore::netColor(const InstancePath& path, const std::string& terminal) {
+  auto items = netDiagnostics(path, terminal);
   if (items.empty()) return 0;
   return colorForSeverity(worstOf(items));
 }

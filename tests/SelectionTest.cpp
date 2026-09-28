@@ -15,42 +15,42 @@ class SelectionStoreTest : public ::testing::Test {
  protected:
   void SetUp() override {
     SelectionStore::clear();
-    SelectionStore::setListener([this](const std::string& k) { notified.push_back(k); });
+    SelectionStore::setListener([this](const InstancePath& p) { notified.push_back(p); });
   }
   void TearDown() override {
     SelectionStore::setListener(nullptr);
     SelectionStore::clear();
   }
-  std::vector<std::string> notified;
+  std::vector<InstancePath> notified;
 };
 
 TEST_F(SelectionStoreTest, SelectNotifiesOncePerChange) {
   EXPECT_FALSE(SelectionStore::hasSelection());
   const unsigned rev = SelectionStore::revision();
 
-  SelectionStore::select("u1/u2", SelectionStore::Origin::Schematic);
-  EXPECT_TRUE(SelectionStore::isSelected("u1/u2"));
-  EXPECT_FALSE(SelectionStore::isSelected("u1"));
+  SelectionStore::select(InstancePath{"u1", "u2"}, SelectionStore::Origin::Schematic);
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{"u1", "u2"}));
+  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{"u1"}));
   EXPECT_EQ(SelectionStore::origin(), SelectionStore::Origin::Schematic);
   EXPECT_EQ(SelectionStore::revision(), rev + 1);
 
-  SelectionStore::select("u1/u2", SelectionStore::Origin::Tree);  // same: no-op
+  SelectionStore::select(InstancePath{"u1", "u2"}, SelectionStore::Origin::Tree);  // same: no-op
   EXPECT_EQ(SelectionStore::revision(), rev + 1);
-  EXPECT_EQ(notified, std::vector<std::string>{"u1/u2"});
+  EXPECT_EQ(notified, (std::vector<InstancePath>{{"u1", "u2"}}));
 }
 
 TEST_F(SelectionStoreTest, TopDesignIsSelectable) {
-  SelectionStore::select("", SelectionStore::Origin::Host);
+  SelectionStore::select(InstancePath{}, SelectionStore::Origin::Host);
   EXPECT_TRUE(SelectionStore::hasSelection());
-  EXPECT_TRUE(SelectionStore::isSelected(""));
-  EXPECT_EQ(notified, std::vector<std::string>{""});
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{}));
+  EXPECT_EQ(notified, std::vector<InstancePath>{InstancePath{}});
 }
 
 TEST_F(SelectionStoreTest, ClearDoesNotNotify) {
-  SelectionStore::select("u1", SelectionStore::Origin::Tree);
+  SelectionStore::select(InstancePath{"u1"}, SelectionStore::Origin::Tree);
   SelectionStore::clear();
   EXPECT_FALSE(SelectionStore::hasSelection());
-  EXPECT_FALSE(SelectionStore::isSelected("u1"));
+  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{"u1"}));
   EXPECT_EQ(notified.size(), 1u);
 }
 
@@ -101,7 +101,7 @@ class TreeReveal : public ::testing::Test {
 } // namespace
 
 TEST_F(TreeReveal, WalksDownLoadingOnlyWhatIsNeeded) {
-  tree.reveal("u1/u2");
+  tree.reveal(InstancePath{"u1", "u2"});
   tree.advanceReveal();
   EXPECT_TRUE(tree.isRevealPending());
 
@@ -132,13 +132,36 @@ TEST_F(TreeReveal, WalksDownLoadingOnlyWhatIsNeeded) {
   answer(prim[0]["gui_id"], {{"u2", 20, false}});
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
-  NetlistTreeNode* u2 = tree.findInstance("u1/u2");
+  NetlistTreeNode* u2 = tree.findInstance(InstancePath{"u1", "u2"});
   ASSERT_NE(u2, nullptr);
-  EXPECT_EQ(u2->getPathKey(), "u1/u2");
+  EXPECT_EQ(u2->getInstancePath(), (InstancePath{"u1", "u2"}));
+}
+
+// An escaped instance name can contain '/': it's one level, not two.
+TEST_F(TreeReveal, NamesContainingSlashesAreOneLevel) {
+  const InstancePath key{"a/b", "u2"};
+  tree.reveal(key);
+  tree.advanceReveal();
+  auto inst = take("load_instances");
+  auto prim = take("load_primitives");
+  answer(inst[0]["gui_id"], {{"a", 10, true}, {"a/b", 11, true}});
+  answer(prim[0]["gui_id"], {});
+  tree.advanceReveal();
+  inst = take("load_instances");
+  prim = take("load_primitives");
+  ASSERT_EQ(inst.size(), 1u);
+  EXPECT_EQ(inst[0]["design_ref"]["design_id"], 11);  // under "a/b", not "a"
+  answer(inst[0]["gui_id"], {});
+  answer(prim[0]["gui_id"], {{"u2", 20, false}});
+  tree.advanceReveal();
+  EXPECT_FALSE(tree.isRevealPending());
+  NetlistTreeNode* u2 = tree.findInstance(key);
+  ASSERT_NE(u2, nullptr);
+  EXPECT_EQ(u2->getInstancePath(), key);
 }
 
 TEST_F(TreeReveal, AlreadyLoadedLevelsNeedNoRequest) {
-  tree.reveal("u1");
+  tree.reveal(InstancePath{"u1"});
   tree.advanceReveal();
   auto inst = take("load_instances");
   auto prim = take("load_primitives");
@@ -147,38 +170,38 @@ TEST_F(TreeReveal, AlreadyLoadedLevelsNeedNoRequest) {
   tree.advanceReveal();
   ASSERT_FALSE(tree.isRevealPending());
 
-  tree.reveal("u1");  // again: everything is there
+  tree.reveal(InstancePath{"u1"});  // again: everything is there
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
   EXPECT_TRUE(provider.sent.empty());
 }
 
 TEST_F(TreeReveal, FindsAnInstanceInTheFirstLoadedGroupWithoutWaitingForOthers) {
-  tree.reveal("u1");
+  tree.reveal(InstancePath{"u1"});
   tree.advanceReveal();
   auto inst = take("load_instances");
   take("load_primitives");  // never answered
   answer(inst[0]["gui_id"], {{"u1", 11, true}});
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
-  EXPECT_NE(tree.findInstance("u1"), nullptr);
+  EXPECT_NE(tree.findInstance(InstancePath{"u1"}), nullptr);
 }
 
 TEST_F(TreeReveal, UnknownNameStopsTheReveal) {
-  tree.reveal("nope");
+  tree.reveal(InstancePath{"nope"});
   tree.advanceReveal();
   answer(take("load_instances")[0]["gui_id"], {{"u1", 11, true}});
   answer(take("load_primitives")[0]["gui_id"], {});
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
-  EXPECT_EQ(tree.findInstance("nope"), nullptr);
+  EXPECT_EQ(tree.findInstance(InstancePath{"nope"}), nullptr);
 }
 
 TEST_F(TreeReveal, RootIsRevealedImmediately) {
-  tree.reveal("");
+  tree.reveal(InstancePath{});
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
-  EXPECT_EQ(tree.findInstance(""), tree.getRoot());
+  EXPECT_EQ(tree.findInstance(InstancePath{}), tree.getRoot());
 }
 
 // A selection made outside the tree (schematic click, host focus) makes the
@@ -203,11 +226,11 @@ TEST_F(TreeReveal, RevealsASelectionMadeElsewhereOnRender) {
   frame();
   provider.sent.clear();
 
-  SelectionStore::select("u1", SelectionStore::Origin::Tree);
+  SelectionStore::select(InstancePath{"u1"}, SelectionStore::Origin::Tree);
   frame();
   EXPECT_FALSE(tree.isRevealPending());
 
-  SelectionStore::select("u9", SelectionStore::Origin::Schematic);
+  SelectionStore::select(InstancePath{"u9"}, SelectionStore::Origin::Schematic);
   frame();
   EXPECT_TRUE(tree.isRevealPending());
   EXPECT_FALSE(take("load_instances").empty());
