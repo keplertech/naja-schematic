@@ -139,35 +139,39 @@ TEST(PinRequestKey, DistinguishesPathTermAndBit) {
   EXPECT_NE(pinRequestKey({1}, 23, std::nullopt), pinRequestKey({12}, 3, std::nullopt));
 }
 
+// Two distinct pins.
+const PinRequestKey kA = pinRequestKey({1}, 0, std::nullopt);
+const PinRequestKey kB = pinRequestKey({2}, 0, std::nullopt);
+
 TEST(PendingRequests, SecondClickWhileLoadingIsNotResent) {
   PendingRequests pending(5.0);
-  EXPECT_TRUE(pending.begin("a", 10.0));
-  EXPECT_TRUE(pending.isPending("a", 10.1));
-  EXPECT_FALSE(pending.begin("a", 10.2));
-  EXPECT_TRUE(pending.begin("b", 10.2));  // other pins are independent
+  EXPECT_TRUE(pending.begin(kA, 10.0));
+  EXPECT_TRUE(pending.isPending(kA, 10.1));
+  EXPECT_FALSE(pending.begin(kA, 10.2));
+  EXPECT_TRUE(pending.begin(kB, 10.2));  // other pins are independent
 }
 
 TEST(PendingRequests, ResolvedRequestIsNoLongerPending) {
   PendingRequests pending;
-  pending.begin("a", 0.0);
-  pending.resolve("a");
-  EXPECT_FALSE(pending.isPending("a", 0.1));
-  EXPECT_TRUE(pending.begin("a", 0.2));
+  pending.begin(kA, 0.0);
+  pending.resolve(kA);
+  EXPECT_FALSE(pending.isPending(kA, 0.1));
+  EXPECT_TRUE(pending.begin(kA, 0.2));
 }
 
 TEST(PendingRequests, UnansweredRequestExpiresSoThePinCanBeRetried) {
   PendingRequests pending(5.0);
-  pending.begin("a", 0.0);
-  EXPECT_TRUE(pending.isPending("a", 4.9));
-  EXPECT_FALSE(pending.isPending("a", 5.0));
-  EXPECT_TRUE(pending.begin("a", 6.0));
+  pending.begin(kA, 0.0);
+  EXPECT_TRUE(pending.isPending(kA, 4.9));
+  EXPECT_FALSE(pending.isPending(kA, 5.0));
+  EXPECT_TRUE(pending.begin(kA, 6.0));
 }
 
 TEST(PendingRequests, ClearDropsEverything) {
   PendingRequests pending;
-  pending.begin("a", 0.0);
-  pending.begin("b", 0.0);
+  pending.begin(kA, 0.0);
+  pending.begin(kB, 0.0);
   pending.clear();
-  EXPECT_FALSE(pending.isPending("a", 0.0));
-  EXPECT_FALSE(pending.isPending("b", 0.0));
+  EXPECT_FALSE(pending.isPending(kA, 0.0));
+  EXPECT_FALSE(pending.isPending(kB, 0.0));
 }

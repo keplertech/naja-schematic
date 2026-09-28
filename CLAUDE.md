@@ -241,6 +241,21 @@ wrapper since the underlying socket connects in its constructor.
 
 ### Wire protocol
 
+**Instance paths are lists of names.** Everywhere a hierarchical instance
+is named — wire-protocol `path` fields, `DiagnosisItem`s, the Python API
+(`show()`, `Schematic.show_instance()`, `selected_path`) and the docs'
+examples — it's a list of instance names, root excluded (`["u1", "u2"]`,
+`[]` = top), never a `"u1/u2"` string: escaped Verilog names
+(`\a/b `) can contain `/`, so splitting on it corrupts the path. A bare
+string passed to the Python API is one name, never split. Don't add
+`/`-parsing conveniences. The C++ viewer follows the same rule
+internally: an instance's identity is an `InstancePath`
+(`std::vector<std::string>`, `Types.h`) used directly as map/set key,
+and composite keys are `std::tuple`s, never strings joined with `/`, `|`
+or any other separator. Joined strings exist only for display
+(`displayPath()`, `properties_response`'s `subject`) and are never
+parsed back.
+
 Requests/responses are JSON with a `"request"`/`"response"` type field (e.g.
 `load_root`, `load_instance`, `load_primitives`, `load_terms`, `load_nets`,
 `load_equipotential` → `*_response`). Both `LocalSNLProvider` (native,
@@ -399,7 +414,7 @@ itself), a term/pin, or a net — answered by both `LocalSNLProvider`
 (`buildPropertiesResponse()`) and `protocol.py` the same request/
 response way as `load_terms` etc. (unlike `diagnosis_response`, it's not a
 push). The object is identified the same way `DiagnosisItem` identifies
-things — a slash-joined instance-name path, root excluded — rather than
+things — a list of instance names, root excluded — rather than
 provider-specific numeric `child_id`s, so both backends resolve it by
 walking instance names down from the top design:
 
@@ -461,7 +476,7 @@ appear as boxes/pins there).
 - **`PropertiesView`** — renders the current `PropertiesStore` contents as a
   two-column name/value table into the "Properties" bottom-panel tab.
 - **`SelectionStore`** — global static store (same pattern) for the one
-  selected instance, by pathKey (`""` = top). It's set from the tree, the
+  selected instance, by `InstancePath` (`{}` = top). It's set from the tree, the
   schematic or a host `focus_instance`, and drawn highlighted in both
   views. Its listener (installed in `AppLogic.cpp`) reports each change to
   the host. `NetlistTree` reveals selections made outside it by comparing
@@ -498,14 +513,16 @@ just query the store each frame:
 - `DiagnosisView` — the flat list, independent of what's currently expanded/
   loaded in the tree or schematic.
 
-Path matching convention: `DiagnosisItem::pathKey()` (slash-joined instance
-names, root excluded) must match `NetlistTreeInstanceNode::getPathKey()` and
-`EquipotentialView`'s instance-item keys — all three are built the same way,
-from instance *names*, not the provider's numeric `child_id`s (those aren't
-stable inputs for an external tool like kepler-formal to reference).
-`get_properties` reuses this same path/pathKey convention (`splitPathKey()`
-in `Types.h` is the inverse of `pathKey()`) so its request-building code in
-`NetlistTree.cpp`/`EquipotentialView.cpp` and its resolution code in
+Path matching convention: `DiagnosisItem::path` must match
+`NetlistTreeInstanceNode::getInstancePath()` and `InstanceShape::path` --
+all three are the same `InstancePath`, built from instance *names*, not
+the provider's numeric `child_id`s (those aren't stable inputs for an
+external tool like kepler-formal to reference). `get_properties`,
+`instance_selected` and `resolve_instance` send that same list as their
+`path`, and `expand_instance_terms`/`load_instance_internals` tag their
+request with it as `instance_path` (echoed back in the reply, so the view
+knows which box it's for), so the request-building code in
+`NetlistTree.cpp`/`EquipotentialView.cpp` and the resolution code in
 `LocalSNLProvider.cpp`/`protocol.py` need no id/name translation layer
 of their own.
 

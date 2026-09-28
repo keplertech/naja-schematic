@@ -1,6 +1,7 @@
 #include "Types.h"
 
 #include <set>
+#include <tuple>
 
 #include "Console.h"
 
@@ -235,16 +236,14 @@ void from_json(const json& j, PropertiesResponseJson& r) {
   }
 }
 
-// One endpoint of an equipotential, by name: "T|<term>[bit]" for a top-level
-// term, "O|<inst/path>|<pin>[bit]" for an instance pin.
-static std::set<std::string> endpointKeys(const Equipotential& e) {
-  std::set<std::string> keys;
-  for (const auto& t : e.terms) keys.insert("T|" + t.getString());
-  for (const auto& o : e.occurrences) {
-    std::string k = "O|";
-    for (const auto& seg : o.path) k += seg + "/";
-    keys.insert(k + "|" + o.term.getString());
-  }
+// One endpoint of an equipotential, by name: (false, {}, "<term>[bit]") for
+// a top-level term, (true, instance path, "<pin>[bit]") for an instance pin.
+using EndpointKey = std::tuple<bool, InstancePath, std::string>;
+
+static std::set<EndpointKey> endpointKeys(const Equipotential& e) {
+  std::set<EndpointKey> keys;
+  for (const auto& t : e.terms) keys.insert({false, {}, t.getString()});
+  for (const auto& o : e.occurrences) keys.insert({true, o.path, o.term.getString()});
   return keys;
 }
 

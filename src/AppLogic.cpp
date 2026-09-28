@@ -66,15 +66,15 @@ void setupProvider(AppState& state) {
   // Every selection change (tree click, schematic click, host focus) shows
   // the instance's properties and is reported to the host, which scripts
   // on it (the notebook widget's Schematic.selected).
-  SelectionStore::setListener([&state](const std::string& pathKey) {
+  SelectionStore::setListener([&state](const InstancePath& path) {
     json note;
     note["request"] = "instance_selected";
-    note["path"]    = splitPathKey(pathKey);
+    note["path"]    = path;
     state.provider->send(note.dump());
     json props;
     props["request"] = "get_properties";
     props["kind"]    = "instance";
-    props["path"]    = splitPathKey(pathKey);
+    props["path"]    = path;
     state.provider->send(props.dump());
   });
 
@@ -229,7 +229,7 @@ void setupProvider(AppState& state) {
                    std::to_string(added) + " new" +
                    (j.value("truncated", false) ? " (truncated)" : ""));
     } else if (resp == "expanded_instance_terms") {
-      std::string pathKey = j.value("path_key", std::string(""));
+      InstancePath path = j.value("instance_path", InstancePath());
       std::vector<EquipotentialView::ExpandedPort> ports;
       if (j.contains("terms") && j["terms"].is_array()) {
         for (const auto& t : j["terms"]) {
@@ -245,9 +245,9 @@ void setupProvider(AppState& state) {
           ports.push_back(std::move(ep));
         }
       }
-      EquipotentialView::applyInstanceExpansion(pathKey, ports);
+      EquipotentialView::applyInstanceExpansion(path, ports);
     } else if (resp == "instance_internals_response") {
-      std::string pathKey = j.value("path_key", std::string(""));
+      InstancePath path = j.value("instance_path", InstancePath());
       EquipotentialView::InstanceInternals data;
       if (j.contains("children") && j["children"].is_array()) {
         for (const auto& c : j["children"]) {
@@ -282,7 +282,7 @@ void setupProvider(AppState& state) {
           data.nets.push_back(std::move(in));
         }
       }
-      EquipotentialView::applyInstanceInternals(pathKey, data);
+      EquipotentialView::applyInstanceInternals(path, data);
     } else if (resp == "source_response") {
       std::string file = j.value("file", std::string(""));
       bool found = j.value("found", false);
@@ -317,13 +317,11 @@ void setupProvider(AppState& state) {
       req["path"]    = j.contains("path") && j["path"].is_array() ? j["path"] : json::array();
       state.provider->send(req.dump());
     } else if (resp == "instance_resolved") {
-      std::vector<std::string> path;
+      InstancePath path;
       if (j.contains("path") && j["path"].is_array())
         for (const auto& seg : j["path"]) path.push_back(seg.get<std::string>());
-      std::string pathKey;
-      for (const auto& seg : path) pathKey += (pathKey.empty() ? "" : "/") + seg;
       if (!j.value("found", false)) {
-        Console::Error("No instance '" + pathKey + "' in the design");
+        Console::Error("No instance '" + displayPath(path) + "' in the design");
         return;
       }
       // Start a fresh schematic from the instance alone, all pins open.
@@ -332,7 +330,7 @@ void setupProvider(AppState& state) {
         EquipotentialView::resetLayout();
         EquipotentialView::showInstance(*start);
       }
-      SelectionStore::select(pathKey, SelectionStore::Origin::Host);
+      SelectionStore::select(path, SelectionStore::Origin::Host);
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }

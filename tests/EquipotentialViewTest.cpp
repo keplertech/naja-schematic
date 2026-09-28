@@ -66,13 +66,13 @@ class SchematicClicks : public ::testing::Test {
 
   const SchematicView& sv() const { return EquipotentialView::schematicForTesting(); }
 
-  const InstanceShape* shape(const std::string& name) const {
+  const InstanceShape* shape(const InstancePath& path) const {
     for (const auto& s : sv().instances)
-      if (!s.isHierGroup && s.name == name) return &s;
+      if (!s.isHierGroup && s.path == path) return &s;
     return nullptr;
   }
 
-  const Port* pin(const std::string& inst, const std::string& name) const {
+  const Port* pin(const InstancePath& inst, const std::string& name) const {
     const InstanceShape* s = shape(inst);
     if (!s) return nullptr;
     for (const auto& p : s->ports)
@@ -85,18 +85,18 @@ class SchematicClicks : public ::testing::Test {
   }
 
   // Middle of the pin's tick, where a user would aim.
-  ImVec2 pinScreen(const std::string& inst, const std::string& name) const {
+  ImVec2 pinScreen(const InstancePath& inst, const std::string& name) const {
     const InstanceShape* s = shape(inst);
     const Port* p = pin(inst, name);
-    EXPECT_NE(p, nullptr) << inst << "/" << name;
+    EXPECT_NE(p, nullptr) << displayPath(inst) << "/" << name;
     if (!p) return ImVec2();
     ImVec2 a = portAnchor(*s, *p);
     return toScreen(ImVec2(a.x + (p->lx < 0.f ? -4.f : 4.f), a.y));
   }
 
-  ImVec2 boxCenterScreen(const std::string& inst) const {
+  ImVec2 boxCenterScreen(const InstancePath& inst) const {
     const InstanceShape* s = shape(inst);
-    EXPECT_NE(s, nullptr) << inst;
+    EXPECT_NE(s, nullptr) << displayPath(inst);
     return s ? toScreen(ImVec2(s->x + s->w * 0.5f, s->y + s->h * 0.5f)) : ImVec2();
   }
 
@@ -131,7 +131,7 @@ class SchematicClicks : public ::testing::Test {
     frame(3);
   }
   void expandU2() {
-    EquipotentialView::applyInstanceExpansion("u2", {
+    EquipotentialView::applyInstanceExpansion(InstancePath{"u2"}, {
         {"A", Direction::Input, 20, std::nullopt},
         {"B", Direction::Input, 21, std::nullopt},
         {"Y", Direction::Output, 22, std::nullopt},
@@ -147,20 +147,20 @@ class SchematicClicks : public ::testing::Test {
 
 TEST_F(SchematicClicks, DoubleClickOnPartialBoxRequestsItsFullInterface) {
   showFirstNet();
-  ASSERT_NE(shape("u2"), nullptr);
-  EXPECT_TRUE(shape("u2")->partialInterface);
+  ASSERT_NE(shape({"u2"}), nullptr);
+  EXPECT_TRUE(shape({"u2"})->partialInterface);
 
-  moveTo(boxCenterScreen("u2"));
+  moveTo(boxCenterScreen({"u2"}));
   doubleClick();
 
   auto reqs = sent("expand_instance_terms");
   ASSERT_EQ(reqs.size(), 1u);
-  EXPECT_EQ(reqs[0]["path_key"], "u2");
+  EXPECT_EQ(reqs[0]["instance_path"].get<InstancePath>(), InstancePath{"u2"});
 }
 
 TEST_F(SchematicClicks, DoubleClickOnAPinIsNotABoxDoubleClick) {
   showFirstNet();
-  moveTo(pinScreen("u2", "A"));
+  moveTo(pinScreen({"u2"}, "A"));
   doubleClick();
   EXPECT_TRUE(sent("expand_instance_terms").empty());
   EXPECT_TRUE(sent("load_equipotential").empty());  // A's net is already shown
@@ -169,34 +169,34 @@ TEST_F(SchematicClicks, DoubleClickOnAPinIsNotABoxDoubleClick) {
 TEST_F(SchematicClicks, ExpandedInterfaceMarksPinsNotInTheViewAsOpen) {
   showFirstNet();
   expandU2();
-  ASSERT_NE(pin("u2", "B"), nullptr);
-  EXPECT_FALSE(shape("u2")->partialInterface);
-  EXPECT_FALSE(pin("u2", "A")->open);  // on the net already shown
-  EXPECT_TRUE(pin("u2", "B")->open);
-  EXPECT_TRUE(pin("u2", "Y")->open);
+  ASSERT_NE(pin({"u2"}, "B"), nullptr);
+  EXPECT_FALSE(shape({"u2"})->partialInterface);
+  EXPECT_FALSE(pin({"u2"}, "A")->open);  // on the net already shown
+  EXPECT_TRUE(pin({"u2"}, "B")->open);
+  EXPECT_TRUE(pin({"u2"}, "Y")->open);
 }
 
 TEST_F(SchematicClicks, HoveringAPinHighlightsIt) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen("u2", "B"));
-  EXPECT_EQ(sv().hoveredPortId, pin("u2", "B")->id);
+  moveTo(pinScreen({"u2"}, "B"));
+  EXPECT_EQ(sv().hoveredPortId, pin({"u2"}, "B")->id);
 
-  moveTo(boxCenterScreen("u2"));
+  moveTo(boxCenterScreen({"u2"}));
   EXPECT_EQ(sv().hoveredPortId, -1);
 }
 
 TEST_F(SchematicClicks, SingleClickOnOpenPinLoadsItsNetOnce) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen("u2", "B"));
+  moveTo(pinScreen({"u2"}, "B"));
   click();
 
   auto reqs = sent("load_equipotential");
   ASSERT_EQ(reqs.size(), 1u);
   EXPECT_EQ(reqs[0]["path"], nlohmann::json::array({2}));
   EXPECT_EQ(reqs[0]["term_id"], 21);
-  EXPECT_TRUE(pin("u2", "B")->pending);
+  EXPECT_TRUE(pin({"u2"}, "B")->pending);
 
   // Impatient second click (or the second half of a double-click) while
   // the net is loading: nothing more is sent.
@@ -208,7 +208,7 @@ TEST_F(SchematicClicks, SingleClickOnOpenPinLoadsItsNetOnce) {
 TEST_F(SchematicClicks, ClickOnAPinWhoseNetIsShownSendsNothing) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen("u2", "A"));
+  moveTo(pinScreen({"u2"}, "A"));
   click();
   EXPECT_TRUE(provider.sent.empty());
 }
@@ -216,9 +216,9 @@ TEST_F(SchematicClicks, ClickOnAPinWhoseNetIsShownSendsNothing) {
 TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen("u2", "B"));
+  moveTo(pinScreen({"u2"}, "B"));
   click();
-  const ImVec2 before = boxCenterScreen("u2");
+  const ImVec2 before = boxCenterScreen({"u2"});
   const float scaleBefore = sv().transform.scale;
 
   // The reply: u9 (inside module "core", so hierarchy frames re-lay out the
@@ -233,10 +233,10 @@ TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
   add(e);
   frame(2);
 
-  ASSERT_NE(shape("core/u9"), nullptr);
-  EXPECT_FALSE(pin("u2", "B")->open);
-  EXPECT_FALSE(pin("u2", "B")->pending);
-  const ImVec2 after = boxCenterScreen("u2");
+  ASSERT_NE(shape({"core", "u9"}), nullptr);
+  EXPECT_FALSE(pin({"u2"}, "B")->open);
+  EXPECT_FALSE(pin({"u2"}, "B")->pending);
+  const ImVec2 after = boxCenterScreen({"u2"});
   EXPECT_NEAR(after.x, before.x, 0.5f);
   EXPECT_NEAR(after.y, before.y, 0.5f);
   EXPECT_EQ(sv().transform.scale, scaleBefore);  // no re-fit zoom either
@@ -250,15 +250,15 @@ TEST_F(SchematicClicks, ClickOnMergedBusPinShowsItsBits) {
     add(e);
   }
   frame(3);
-  ASSERT_NE(pin("u2", "D[1:0]"), nullptr);
-  EXPECT_TRUE(pin("u2", "D[1:0]")->isBus);
+  ASSERT_NE(pin({"u2"}, "D[1:0]"), nullptr);
+  EXPECT_TRUE(pin({"u2"}, "D[1:0]")->isBus);
 
-  moveTo(pinScreen("u2", "D[1:0]"));
+  moveTo(pinScreen({"u2"}, "D[1:0]"));
   click();
   frame();
-  EXPECT_EQ(pin("u2", "D[1:0]"), nullptr);
-  EXPECT_NE(pin("u2", "D[0]"), nullptr);
-  EXPECT_NE(pin("u2", "D[1]"), nullptr);
+  EXPECT_EQ(pin({"u2"}, "D[1:0]"), nullptr);
+  EXPECT_NE(pin({"u2"}, "D[0]"), nullptr);
+  EXPECT_NE(pin({"u2"}, "D[1]"), nullptr);
   EXPECT_TRUE(provider.sent.empty());  // all bits were already loaded
 }
 
@@ -286,15 +286,15 @@ TEST_F(SchematicClicks, DoubleClickOnHierarchyGlyphTogglesItOnce) {
   e.occurrences.push_back(sub);
   add(e);
   frame(3);
-  ASSERT_NE(shape("u2"), nullptr);
-  ASSERT_TRUE(canShowHierToggle(*shape("u2")));
+  ASSERT_NE(shape({"u2"}), nullptr);
+  ASSERT_TRUE(canShowHierToggle(*shape({"u2"})));
 
   float x0, y0, x1, y1;
-  hierToggleGlyphRect(*shape("u2"), x0, y0, x1, y1);
+  hierToggleGlyphRect(*shape({"u2"}), x0, y0, x1, y1);
   moveTo(toScreen(ImVec2((x0 + x1) * 0.5f, (y0 + y1) * 0.5f)));
   doubleClick();
 
-  EXPECT_TRUE(shape("u2")->hierExpanded);
+  EXPECT_TRUE(shape({"u2"})->hierExpanded);
   EXPECT_EQ(sent("load_instance_internals").size(), 1u);
 }
 
@@ -342,12 +342,12 @@ TEST_F(SchematicClicks, StartInstanceIsDrawnAloneWithAllPinsOpen) {
   EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
   frame(3);
 
-  const InstanceShape* u7 = shape("core/u7");
+  const InstanceShape* u7 = shape({"core", "u7"});
   ASSERT_NE(u7, nullptr);
   EXPECT_FALSE(u7->partialInterface);  // its whole interface is shown
   for (auto name : {"A", "B", "Y"}) {
-    ASSERT_NE(pin("core/u7", name), nullptr) << name;
-    EXPECT_TRUE(pin("core/u7", name)->open) << name;
+    ASSERT_NE(pin({"core", "u7"}, name), nullptr) << name;
+    EXPECT_TRUE(pin({"core", "u7"}, name)->open) << name;
   }
   // Drawn inside its module's frame, like any traced leaf.
   bool framed = false;
@@ -358,7 +358,7 @@ TEST_F(SchematicClicks, StartInstanceIsDrawnAloneWithAllPinsOpen) {
 TEST_F(SchematicClicks, ClickingAStartInstancePinLoadsItsNetWithTheInstancePath) {
   EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
   frame(3);
-  moveTo(pinScreen("core/u7", "Y"));
+  moveTo(pinScreen({"core", "u7"}, "Y"));
   click();
 
   auto reqs = sent("load_equipotential");
@@ -370,34 +370,65 @@ TEST_F(SchematicClicks, ClickingAStartInstancePinLoadsItsNetWithTheInstancePath)
 TEST_F(SchematicClicks, ResetLayoutDropsTheStartInstance) {
   EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
   frame(2);
-  ASSERT_NE(shape("core/u7"), nullptr);
+  ASSERT_NE(shape({"core", "u7"}), nullptr);
   EquipotentialView::resetLayout();
   frame(2);
-  EXPECT_EQ(shape("core/u7"), nullptr);
+  EXPECT_EQ(shape({"core", "u7"}), nullptr);
+}
+
+// An escaped instance name can contain '/': the top-level instance "a/b" and
+// instance b inside a are two boxes, and each click reports its own path.
+TEST_F(SchematicClicks, NamesContainingSlashesStayOneLevel) {
+  Equipotential e{true, {}, {}};
+  InstTermOccurrence drv = occ("a/b", 1, "Q", 10, Direction::Output, 1);
+  InstTermOccurrence rcv = occ("a", 2, "A", 20, Direction::Input, 3);
+  rcv.path       = {"a", "b"};
+  rcv.pathIds    = {2, 3};
+  rcv.pathModels = {"", ""};
+  e.occurrences  = {drv, rcv};
+  add(e);
+  frame(3);
+
+  const InstanceShape* flat   = shape({"a/b"});
+  const InstanceShape* nested = shape({"a", "b"});
+  ASSERT_NE(flat, nullptr);
+  ASSERT_NE(nested, nullptr);
+  EXPECT_NE(flat->id, nested->id);
+
+  moveTo(boxCenterScreen(InstancePath{"a/b"}));
+  click();
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{"a/b"}));
+
+  moveTo(toScreen(ImVec2(nested->x + nested->w * 0.5f, nested->y + nested->h * 0.5f)));
+  doubleClick();
+  auto reqs = sent("expand_instance_terms");
+  ASSERT_EQ(reqs.size(), 1u);
+  EXPECT_EQ(reqs[0]["instance_path"].get<InstancePath>(), (InstancePath{"a", "b"}));
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{"a", "b"}));
 }
 
 TEST_F(SchematicClicks, ClickingABoxSelectsItAndDrawsItSelected) {
   showFirstNet();
-  moveTo(boxCenterScreen("u2"));
+  moveTo(boxCenterScreen({"u2"}));
   click();
-  EXPECT_TRUE(SelectionStore::isSelected("u2"));
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{"u2"}));
   EXPECT_EQ(SelectionStore::origin(), SelectionStore::Origin::Schematic);
   frame();
-  EXPECT_TRUE(shape("u2")->selected);
-  EXPECT_FALSE(shape("u1")->selected);
+  EXPECT_TRUE(shape({"u2"})->selected);
+  EXPECT_FALSE(shape({"u1"})->selected);
 }
 
 TEST_F(SchematicClicks, ClickingAPinDoesNotChangeTheSelection) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen("u2", "B"));
+  moveTo(pinScreen({"u2"}, "B"));
   click();
   EXPECT_FALSE(SelectionStore::hasSelection());
 }
 
 TEST_F(SchematicClicks, ASelectionMadeElsewhereIsDrawnInTheSchematic) {
   showFirstNet();
-  SelectionStore::select("u1", SelectionStore::Origin::Host);
+  SelectionStore::select(InstancePath{"u1"}, SelectionStore::Origin::Host);
   frame();
-  EXPECT_TRUE(shape("u1")->selected);
+  EXPECT_TRUE(shape({"u1"})->selected);
 }

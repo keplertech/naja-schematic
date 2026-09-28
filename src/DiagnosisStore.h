@@ -21,17 +21,18 @@ class DiagnosisStore {
     static void clear();
     static const std::vector<DiagnosisItem>& all();
 
-    // pathKey: slash-joined instance-name path, root excluded ("" == top level).
-    // Matches NetlistTree::getPathKey() and EquipotentialView's instance keys.
-    static std::vector<const DiagnosisItem*> instanceDiagnostics(const std::string& pathKey);
+    // path: instance names, top excluded ({} == top level), as in
+    // DiagnosisItem::path, NetlistTree::getInstancePath() and
+    // InstanceShape::path.
+    static std::vector<const DiagnosisItem*> instanceDiagnostics(const InstancePath& path);
 
     // terminal: pin/port base name, no bus-bit suffix (e.g. "Q", not "Q[3]").
-    static std::vector<const DiagnosisItem*> netDiagnostics(const std::string& pathKey,
+    static std::vector<const DiagnosisItem*> netDiagnostics(const InstancePath& path,
                                                              const std::string& terminal);
 
     // Convenience: color for the worst severity at this path, 0 if unflagged.
-    static ImU32 instanceColor(const std::string& pathKey);
-    static ImU32 netColor(const std::string& pathKey, const std::string& terminal);
+    static ImU32 instanceColor(const InstancePath& path);
+    static ImU32 netColor(const InstancePath& path, const std::string& terminal);
 
     static ImU32 colorForSeverity(DiagnosisSeverity sev);
 };

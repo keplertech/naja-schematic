@@ -1,20 +1,20 @@
 #include "SelectionStore.h"
 
 namespace {
-std::string              g_selected;
+InstancePath             g_selected;
 bool                     g_hasSelection = false;
 SelectionStore::Origin   g_origin       = SelectionStore::Origin::Tree;
 unsigned                 g_revision     = 0;
-std::function<void(const std::string&)> g_listener;
+std::function<void(const InstancePath&)> g_listener;
 } // namespace
 
-void SelectionStore::select(const std::string& pathKey, Origin origin) {
-  if (g_hasSelection && g_selected == pathKey) return;
-  g_selected     = pathKey;
+void SelectionStore::select(const InstancePath& path, Origin origin) {
+  if (g_hasSelection && g_selected == path) return;
+  g_selected     = path;
   g_hasSelection = true;
   g_origin       = origin;
   ++g_revision;
-  if (g_listener) g_listener(pathKey);
+  if (g_listener) g_listener(path);
 }
 
 void SelectionStore::clear() {
@@ -25,13 +25,13 @@ void SelectionStore::clear() {
 }
 
 bool SelectionStore::hasSelection() { return g_hasSelection; }
-const std::string& SelectionStore::selected() { return g_selected; }
-bool SelectionStore::isSelected(const std::string& pathKey) {
-  return g_hasSelection && g_selected == pathKey;
+const InstancePath& SelectionStore::selected() { return g_selected; }
+bool SelectionStore::isSelected(const InstancePath& path) {
+  return g_hasSelection && g_selected == path;
 }
 SelectionStore::Origin SelectionStore::origin() { return g_origin; }
 unsigned SelectionStore::revision() { return g_revision; }
 
-void SelectionStore::setListener(std::function<void(const std::string&)> listener) {
+void SelectionStore::setListener(std::function<void(const InstancePath&)> listener) {
   g_listener = std::move(listener);
 }

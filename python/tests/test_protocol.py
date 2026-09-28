@@ -43,6 +43,22 @@ def test_design_requests(top):
     assert "" not in names
 
 
+def test_instance_requests_echo_the_instance_path(top):
+    # The viewer tags these requests with the box's instance path, a list of
+    # names (one can contain "/"), and matches the reply by it.
+    (inst,) = handle_request({"request": "load_instances", "design_ref": root(top)["design_ref"]})
+    sub_ref = inst["children"][0]["design_ref"]
+    path = ["u_sub", "a/b"]
+    (terms,) = handle_request({"request": "expand_instance_terms",
+                               "instance_path": path, "design_ref": sub_ref})
+    assert terms["response"] == "expanded_instance_terms"
+    assert terms["instance_path"] == path and terms["terms"]
+    (internals,) = handle_request({"request": "load_instance_internals",
+                                   "instance_path": path, "design_ref": sub_ref})
+    assert internals["response"] == "instance_internals_response"
+    assert internals["instance_path"] == path
+
+
 def test_unknown_design_ref_is_an_error_reply(top):
     bad = {"db_id": 99, "library_id": 99, "design_id": 99}
     (reply,) = handle_request({"request": "load_terms", "design_ref": bad, "gui_id": 3})

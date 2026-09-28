@@ -30,16 +30,16 @@ Equipotential net(const std::string& driver, std::vector<std::string> receivers)
   return eq;
 }
 
-ImVec2 pos(const IncrementalLayout& l, const std::string& key) {
-  auto it = l.positions().find(key);
-  EXPECT_NE(it, l.positions().end()) << key << " was not placed";
+ImVec2 pos(const IncrementalLayout& l, const InstancePath& path) {
+  auto it = l.positions().find(path);
+  EXPECT_NE(it, l.positions().end()) << displayPath(path) << " was not placed";
   return it == l.positions().end() ? ImVec2(NAN, NAN) : it->second;
 }
 
-InstanceShape box(int id, const std::string& name, float x, float y,
+InstanceShape box(int id, const InstancePath& path, float x, float y,
                   float w = kInstW, float h = kInstH) {
   InstanceShape s;
-  s.id = id; s.name = name; s.x = x; s.y = y; s.w = w; s.h = h;
+  s.id = id; s.path = path; s.name = displayPath(path); s.x = x; s.y = y; s.w = w; s.h = h;
   return s;
 }
 
@@ -53,9 +53,9 @@ bool overlaps(const InstanceShape& a, const InstanceShape& b) {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-const InstanceShape& byName(const std::vector<InstanceShape>& v, const std::string& name) {
-  for (const auto& s : v) if (s.name == name) return s;
-  ADD_FAILURE() << "no shape named " << name;
+const InstanceShape& byPath(const std::vector<InstanceShape>& v, const InstancePath& path) {
+  for (const auto& s : v) if (s.path == path) return s;
+  ADD_FAILURE() << "no shape for " << displayPath(path);
   static InstanceShape none;
   return none;
 }
@@ -76,11 +76,11 @@ TEST(SchematicLayoutItems, DriversAreTopInputsAndInstanceOutputs) {
 
   ASSERT_EQ(drivers.size(), 2u);
   EXPECT_TRUE(drivers[0].isTerm);
-  EXPECT_EQ(drivers[0].key(), "clk");
-  EXPECT_EQ(drivers[1].key(), "u1/g");
+  EXPECT_EQ(drivers[0].label, "clk");
+  EXPECT_EQ(drivers[1].path, (InstancePath{"u1", "g"}));
   ASSERT_EQ(receivers.size(), 2u);
-  EXPECT_EQ(receivers[0].key(), "out");
-  EXPECT_EQ(receivers[1].key(), "u2");
+  EXPECT_EQ(receivers[0].label, "out");
+  EXPECT_EQ(receivers[1].path, (InstancePath{"u2"}));
 }
 
 // ---------------------------------------------------------------------------
@@ -92,12 +92,12 @@ TEST(IncrementalLayout, FirstNetPutsDriversLeftAndReceiversRight) {
   auto eq = net("u1", {"u2", "u3"});
   layout.place(&eq);
 
-  EXPECT_EQ(pos(layout, "u1").x, kLeftMargin);
-  EXPECT_EQ(pos(layout, "u1").y, 0.f);
-  EXPECT_EQ(pos(layout, "u2").x, kLeftMargin + kColStep);
-  EXPECT_EQ(pos(layout, "u2").y, 0.f);
-  EXPECT_EQ(pos(layout, "u3").x, kLeftMargin + kColStep);
-  EXPECT_EQ(pos(layout, "u3").y, kRowStep);
+  EXPECT_EQ(pos(layout, {"u1"}).x, kLeftMargin);
+  EXPECT_EQ(pos(layout, {"u1"}).y, 0.f);
+  EXPECT_EQ(pos(layout, {"u2"}).x, kLeftMargin + kColStep);
+  EXPECT_EQ(pos(layout, {"u2"}).y, 0.f);
+  EXPECT_EQ(pos(layout, {"u3"}).x, kLeftMargin + kColStep);
+  EXPECT_EQ(pos(layout, {"u3"}).y, kRowStep);
 }
 
 TEST(IncrementalLayout, TopLevelTermsAreNotPlaced) {
@@ -107,9 +107,9 @@ TEST(IncrementalLayout, TopLevelTermsAreNotPlaced) {
   layout.place(&eq);
 
   EXPECT_EQ(layout.positions().size(), 1u);
-  EXPECT_EQ(layout.positions().count("in"), 0u);
+  EXPECT_EQ(layout.positions().count(InstancePath{"in"}), 0u);
   // The instance is a receiver: right column, even with no instance driver.
-  EXPECT_EQ(pos(layout, "u1").x, kLeftMargin + kColStep);
+  EXPECT_EQ(pos(layout, {"u1"}).x, kLeftMargin + kColStep);
 }
 
 TEST(IncrementalLayout, PlacingTheSameNetTwiceIsANoOp) {
@@ -123,7 +123,7 @@ TEST(IncrementalLayout, PlacingTheSameNetTwiceIsANoOp) {
   // ...and it doesn't advance the "below existing content" cursor either.
   auto other = net("v1", {"v2"});
   layout.place(&other);
-  EXPECT_EQ(pos(layout, "v1").y, kRowStep + kNetVGap);
+  EXPECT_EQ(pos(layout, {"v1"}).y, kRowStep + kNetVGap);
 }
 
 TEST(IncrementalLayout, UnrelatedNetGoesBelowTheTallestColumn) {
@@ -134,9 +134,9 @@ TEST(IncrementalLayout, UnrelatedNetGoesBelowTheTallestColumn) {
   layout.place(&b);
 
   const float expectedY = 2 * kRowStep + kNetVGap;
-  EXPECT_EQ(pos(layout, "v1").x, kLeftMargin);
-  EXPECT_EQ(pos(layout, "v1").y, expectedY);
-  EXPECT_EQ(pos(layout, "v2").y, expectedY);
+  EXPECT_EQ(pos(layout, {"v1"}).x, kLeftMargin);
+  EXPECT_EQ(pos(layout, {"v1"}).y, expectedY);
+  EXPECT_EQ(pos(layout, {"v2"}).y, expectedY);
 }
 
 TEST(IncrementalLayout, DriverOfAPlacedReceiverGoesOneColumnLeft) {
@@ -146,10 +146,10 @@ TEST(IncrementalLayout, DriverOfAPlacedReceiverGoesOneColumnLeft) {
   layout.place(&a);
   layout.place(&b);
 
-  EXPECT_EQ(pos(layout, "src").x, pos(layout, "g").x - kColStep);
-  EXPECT_EQ(pos(layout, "src").y, pos(layout, "g").y);
+  EXPECT_EQ(pos(layout, {"src"}).x, pos(layout, {"g"}).x - kColStep);
+  EXPECT_EQ(pos(layout, {"src"}).y, pos(layout, {"g"}).y);
   // The anchor itself never moves.
-  EXPECT_EQ(pos(layout, "g").x, kLeftMargin);
+  EXPECT_EQ(pos(layout, {"g"}).x, kLeftMargin);
 }
 
 TEST(IncrementalLayout, ReceiversOfAPlacedDriverGoOneColumnRight) {
@@ -159,10 +159,10 @@ TEST(IncrementalLayout, ReceiversOfAPlacedDriverGoOneColumnRight) {
   layout.place(&a);
   layout.place(&b);
 
-  const float x = pos(layout, "sink").x + kColStep;
-  EXPECT_EQ(pos(layout, "r1").x, x);
-  EXPECT_EQ(pos(layout, "r2").x, x);
-  EXPECT_EQ(pos(layout, "r2").y, pos(layout, "r1").y + kRowStep);
+  const float x = pos(layout, {"sink"}).x + kColStep;
+  EXPECT_EQ(pos(layout, {"r1"}).x, x);
+  EXPECT_EQ(pos(layout, {"r2"}).x, x);
+  EXPECT_EQ(pos(layout, {"r2"}).y, pos(layout, {"r1"}).y + kRowStep);
 }
 
 // A driver trace through a 2-input gate: each input net anchors on the gate
@@ -176,9 +176,9 @@ TEST(IncrementalLayout, FanInNetsAnchoredOnTheSameGateDoNotStack) {
   layout.place(&inA);
   layout.place(&inB);
 
-  EXPECT_EQ(pos(layout, "a").x, pos(layout, "b").x);
-  EXPECT_EQ(pos(layout, "a").y, pos(layout, "g").y);
-  EXPECT_EQ(pos(layout, "b").y, pos(layout, "a").y + kRowStep);
+  EXPECT_EQ(pos(layout, {"a"}).x, pos(layout, {"b"}).x);
+  EXPECT_EQ(pos(layout, {"a"}).y, pos(layout, {"g"}).y);
+  EXPECT_EQ(pos(layout, {"b"}).y, pos(layout, {"a"}).y + kRowStep);
 }
 
 TEST(IncrementalLayout, NoTwoPlacedBoxesOverlapInADeeperTrace) {
@@ -205,7 +205,7 @@ TEST(IncrementalLayout, ClearForgetsPositionsAndTheVerticalCursor) {
   EXPECT_TRUE(layout.positions().empty());
 
   layout.place(&a);  // placeable again after clear, back at the top
-  EXPECT_EQ(pos(layout, "u1").y, 0.f);
+  EXPECT_EQ(pos(layout, {"u1"}).y, 0.f);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,9 +215,9 @@ TEST(IncrementalLayout, ClearForgetsPositionsAndTheVerticalCursor) {
 TEST(IncrementalLayout, TallBoxPushesTheNextOneInItsColumnDown) {
   IncrementalLayout layout;
   std::vector<InstanceShape> shapes = {
-      box(1, "tall", 20.f, 0.f, kInstW, 200.f),
-      box(2, "below", 20.f, kRowStep),
-      box(3, "otherColumn", 320.f, kRowStep),
+      box(1, {"tall"}, 20.f, 0.f, kInstW, 200.f),
+      box(2, {"below"}, 20.f, kRowStep),
+      box(3, {"otherColumn"}, 320.f, kRowStep),
   };
   layout.resolveColumnOverlaps(shapes);
 
@@ -225,18 +225,18 @@ TEST(IncrementalLayout, TallBoxPushesTheNextOneInItsColumnDown) {
   EXPECT_EQ(shapes[1].y, 200.f + kRowSpacing);
   EXPECT_EQ(shapes[2].y, kRowStep);  // different column: untouched
   // Persisted, so the next place() anchors on the drawn position.
-  EXPECT_EQ(pos(layout, "below").y, 200.f + kRowSpacing);
+  EXPECT_EQ(pos(layout, {"below"}).y, 200.f + kRowSpacing);
 }
 
 TEST(IncrementalLayout, ColumnOverlapsIgnoreZeroWidthTermStubs) {
   IncrementalLayout layout;
   std::vector<InstanceShape> shapes = {
-      box(1, "u1", 20.f, 0.f),
-      box(2, "term:in", 20.f, 10.f, 0.f, 0.f),
+      box(1, {"u1"}, 20.f, 0.f),
+      box(2, {}, 20.f, 10.f, 0.f, 0.f),
   };
   layout.resolveColumnOverlaps(shapes);
   EXPECT_EQ(shapes[1].y, 10.f);
-  EXPECT_EQ(layout.positions().count("term:in"), 0u);
+  EXPECT_EQ(layout.positions().count(InstancePath{}), 0u);
 }
 
 // ---------------------------------------------------------------------------
@@ -246,32 +246,30 @@ TEST(IncrementalLayout, ColumnOverlapsIgnoreZeroWidthTermStubs) {
 namespace {
 
 // Leaves at logic column `col` (as IncrementalLayout would have placed them).
-struct LeafSpec { std::vector<std::string> path; std::vector<std::string> models; int col; float y; };
+struct LeafSpec { InstancePath path; std::vector<std::string> models; int col; float y; };
 
 struct HierFixture {
   std::vector<InstanceShape>         shapes;
-  std::map<std::string, LeafHier>    leafHier;
-  std::map<std::string, int>         keyToInstId;
+  std::map<InstancePath, LeafHier>   leafHier;
+  std::map<InstancePath, int>        pathToInstId;
   int                                nextInstId = 1;
 
   explicit HierFixture(const std::vector<LeafSpec>& leaves) {
     for (const auto& l : leaves) {
-      std::string key;
-      for (const auto& seg : l.path) key += (key.empty() ? "" : "/") + seg;
       int id = nextInstId++;
-      shapes.push_back(box(id, key, kLeftMargin + float(l.col) * kColStep, l.y));
-      leafHier[key]    = {l.path, l.models};
-      keyToInstId[key] = id;
+      shapes.push_back(box(id, l.path, kLeftMargin + float(l.col) * kColStep, l.y));
+      leafHier[l.path]     = {l.path, l.models};
+      pathToInstId[l.path] = id;
     }
   }
   std::vector<HierFrame> run() {
-    return layoutHierarchyGroups(leafHier, shapes, keyToInstId, nextInstId);
+    return layoutHierarchyGroups(leafHier, shapes, pathToInstId, nextInstId);
   }
 };
 
-const HierFrame& frame(const std::vector<HierFrame>& frames, const std::string& pathKey) {
-  for (const auto& f : frames) if (f.pathKey == pathKey) return f;
-  ADD_FAILURE() << "no frame for " << pathKey;
+const HierFrame& frame(const std::vector<HierFrame>& frames, const InstancePath& path) {
+  for (const auto& f : frames) if (f.shape.path == path) return f;
+  ADD_FAILURE() << "no frame for " << displayPath(path);
   static HierFrame none;
   return none;
 }
@@ -299,15 +297,15 @@ TEST(HierarchyGroups, OneModuleFrameWrapsItsLeaves) {
 
   ASSERT_EQ(frames.size(), 1u);
   const auto& f = frames[0].shape;
-  EXPECT_EQ(frames[0].pathKey, "core");
+  EXPECT_EQ(frames[0].shape.path, (InstancePath{"core"}));
   EXPECT_EQ(f.name, "core (Core)");
   EXPECT_TRUE(f.isHierGroup);
   EXPECT_EQ(f.hierDepth, 1);
   EXPECT_EQ(f.id, firstFreeId);
   EXPECT_EQ(fx.nextInstId, firstFreeId + 1);
 
-  const auto& g1 = byName(fx.shapes, "core/g1");
-  const auto& g2 = byName(fx.shapes, "core/g2");
+  const auto& g1 = byPath(fx.shapes, {"core", "g1"});
+  const auto& g2 = byPath(fx.shapes, {"core", "g2"});
   EXPECT_TRUE(contains(f, g1));
   EXPECT_TRUE(contains(f, g2));
   // Room for the frame's label above its contents.
@@ -330,9 +328,9 @@ TEST(HierarchyGroups, LogicColumnsStayLeftToRightInsideAFrame) {
                   {{"core", "rcv"}, {}, 2, 0.f}});
   fx.run();
 
-  const auto& drv = byName(fx.shapes, "core/drv");
-  const auto& mid = byName(fx.shapes, "core/mid");
-  const auto& rcv = byName(fx.shapes, "core/rcv");
+  const auto& drv = byPath(fx.shapes, {"core", "drv"});
+  const auto& mid = byPath(fx.shapes, {"core", "mid"});
+  const auto& rcv = byPath(fx.shapes, {"core", "rcv"});
   EXPECT_EQ(mid.x - (drv.x + drv.w), kGroupColGap);
   EXPECT_EQ(rcv.x - (mid.x + mid.w), kGroupColGap);
   EXPECT_EQ(drv.y, mid.y);
@@ -344,8 +342,8 @@ TEST(HierarchyGroups, SameColumnLeavesKeepTheirVerticalOrder) {
   HierFixture fx({{{"core", "b"}, {}, 0, 0.f},
                   {{"core", "a"}, {}, 0, 3 * kRowStep}});
   fx.run();
-  EXPECT_LT(byName(fx.shapes, "core/b").y, byName(fx.shapes, "core/a").y);
-  EXPECT_FALSE(overlaps(byName(fx.shapes, "core/a"), byName(fx.shapes, "core/b")));
+  EXPECT_LT(byPath(fx.shapes, {"core", "b"}).y, byPath(fx.shapes, {"core", "a"}).y);
+  EXPECT_FALSE(overlaps(byPath(fx.shapes, {"core", "a"}), byPath(fx.shapes, {"core", "b"})));
 }
 
 TEST(HierarchyGroups, NestedModulesNestTheirFramesParentFirst) {
@@ -354,8 +352,8 @@ TEST(HierarchyGroups, NestedModulesNestTheirFramesParentFirst) {
   auto frames = fx.run();
 
   ASSERT_EQ(frames.size(), 2u);
-  EXPECT_EQ(frames[0].pathKey, "top_a");  // parent first: drawn underneath
-  EXPECT_EQ(frames[1].pathKey, "top_a/sub");
+  EXPECT_EQ(frames[0].shape.path, (InstancePath{"top_a"}));  // parent first: drawn underneath
+  EXPECT_EQ(frames[1].shape.path, (InstancePath{"top_a", "sub"}));
   EXPECT_EQ(frames[0].shape.hierDepth, 1);
   EXPECT_EQ(frames[1].shape.hierDepth, 2);
   EXPECT_EQ(frames[1].shape.name, "sub (S)");
@@ -363,9 +361,9 @@ TEST(HierarchyGroups, NestedModulesNestTheirFramesParentFirst) {
   const auto& outer = frames[0].shape;
   const auto& inner = frames[1].shape;
   EXPECT_TRUE(contains(outer, inner));
-  EXPECT_TRUE(contains(inner, byName(fx.shapes, "top_a/sub/g")));
-  EXPECT_TRUE(contains(outer, byName(fx.shapes, "top_a/h")));
-  EXPECT_FALSE(overlaps(inner, byName(fx.shapes, "top_a/h")));
+  EXPECT_TRUE(contains(inner, byPath(fx.shapes, {"top_a", "sub", "g"})));
+  EXPECT_TRUE(contains(outer, byPath(fx.shapes, {"top_a", "h"})));
+  EXPECT_FALSE(overlaps(inner, byPath(fx.shapes, {"top_a", "h"})));
 }
 
 TEST(HierarchyGroups, SiblingModulesDoNotOverlap) {
@@ -375,16 +373,16 @@ TEST(HierarchyGroups, SiblingModulesDoNotOverlap) {
   auto frames = fx.run();
 
   ASSERT_EQ(frames.size(), 2u);
-  const auto& m1 = frame(frames, "m1").shape;
-  const auto& m2 = frame(frames, "m2").shape;
+  const auto& m1 = frame(frames, {"m1"}).shape;
+  const auto& m2 = frame(frames, {"m2"}).shape;
   EXPECT_FALSE(overlaps(m1, m2));
-  for (auto name : {"m1/a", "m1/b"}) {
-    EXPECT_TRUE(contains(m1, byName(fx.shapes, name))) << name;
-    EXPECT_FALSE(overlaps(m2, byName(fx.shapes, name))) << name;
+  for (const InstancePath& path : {InstancePath{"m1", "a"}, InstancePath{"m1", "b"}}) {
+    EXPECT_TRUE(contains(m1, byPath(fx.shapes, path))) << displayPath(path);
+    EXPECT_FALSE(overlaps(m2, byPath(fx.shapes, path))) << displayPath(path);
   }
-  for (auto name : {"m2/c", "m2/d"}) {
-    EXPECT_TRUE(contains(m2, byName(fx.shapes, name))) << name;
-    EXPECT_FALSE(overlaps(m1, byName(fx.shapes, name))) << name;
+  for (const InstancePath& path : {InstancePath{"m2", "c"}, InstancePath{"m2", "d"}}) {
+    EXPECT_TRUE(contains(m2, byPath(fx.shapes, path))) << displayPath(path);
+    EXPECT_FALSE(overlaps(m1, byPath(fx.shapes, path))) << displayPath(path);
   }
 }
 
@@ -396,8 +394,8 @@ TEST(HierarchyGroups, TopLevelLeavesStayOutsideFramesAndKeepTheirLabel) {
 
   ASSERT_EQ(frames.size(), 1u);
   const auto& core = frames[0].shape;
-  const auto& src  = byName(fx.shapes, "src");
-  const auto& dst  = byName(fx.shapes, "dst");
+  const auto& src  = byPath(fx.shapes, {"src"});
+  const auto& dst  = byPath(fx.shapes, {"dst"});
   EXPECT_FALSE(overlaps(core, src));
   EXPECT_FALSE(overlaps(core, dst));
   EXPECT_TRUE(src.label.empty());
@@ -408,8 +406,8 @@ TEST(HierarchyGroups, TopLevelLeavesStayOutsideFramesAndKeepTheirLabel) {
 
 TEST(HierarchyGroups, LeavesWithoutAShapeAreIgnored) {
   HierFixture fx({{{"core", "g"}, {}, 0, 0.f}});
-  fx.leafHier["ghost/x"] = {{"ghost", "x"}, {}};   // no keyToInstId entry
+  fx.leafHier[{"ghost", "x"}] = {{"ghost", "x"}, {}};   // no pathToInstId entry
   auto frames = fx.run();
   ASSERT_EQ(frames.size(), 1u);
-  EXPECT_EQ(frames[0].pathKey, "core");
+  EXPECT_EQ(frames[0].shape.path, (InstancePath{"core"}));
 }

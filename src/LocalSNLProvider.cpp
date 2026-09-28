@@ -820,7 +820,8 @@ std::string LocalSNLProvider::buildTraceDriverResponse(const json& req) const {
 }
 
 std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) const {
-  std::string pathKey = req.value("path_key", std::string(""));
+  // The requesting box's instance path, echoed back as is.
+  json instancePath = req.value("instance_path", json::array());
   unsigned dbId = 0, libId = 0, designId = 0;
   if (req.contains("design_ref")) {
     dbId     = req["design_ref"].value("db_id",      0u);
@@ -831,7 +832,7 @@ std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) 
   auto* design = findDesign(dbId, libId, designId);
   return json{
     {"response", "expanded_instance_terms"},
-    {"path_key", pathKey},
+    {"instance_path", instancePath},
     {"terms",    design ? allBitTermsJson(design) : json::array()}
   }.dump();
 }
@@ -888,7 +889,8 @@ std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) cons
 // wiring them together (and, for a net that also reaches one of the model's
 // own boundary ports, that pass-through connection too).
 std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) const {
-  std::string pathKey = req.value("path_key", std::string(""));
+  // The requesting box's instance path, echoed back as is.
+  json instancePath = req.value("instance_path", json::array());
   unsigned dbId = 0, libId = 0, designId = 0;
   if (req.contains("design_ref")) {
     dbId     = req["design_ref"].value("db_id",      0u);
@@ -976,7 +978,7 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
 
   return json{
     {"response",  "instance_internals_response"},
-    {"path_key",  pathKey},
+    {"instance_path", instancePath},
     {"children",  children},
     {"nets",      nets}
   }.dump();
@@ -1011,11 +1013,10 @@ std::string LocalSNLProvider::buildSourceResponse(const json& req) const {
 
 // General name/value property inspector for whatever object the UI asks
 // about (an instance or a term/pin). The object is identified the same way
-// DiagnosisItem identifies things -- a slash-joined instance-name path, root
+// DiagnosisItem identifies things -- a list of instance names, root
 // excluded -- rather than provider-specific numeric child_ids, so it's
 // resolved here by walking instance names down from the top design (see
-// Types.h's splitPathKey() on the client side, and CLAUDE.md's "Path
-// matching convention"). Unknown/unresolvable objects yield an empty
+// CLAUDE.md's "Path matching convention"). Unknown/unresolvable objects yield an empty
 // properties list rather than an error, matching "no properties" semantics.
 std::string LocalSNLProvider::buildPropertiesResponse(const json& req) const {
   json properties = json::array();
