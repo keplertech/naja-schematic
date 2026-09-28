@@ -22,6 +22,21 @@ endif()
 message(STATUS "naja-schematic commit: ${NAJA_SCHEMATIC_GIT_HASH}")
 
 # ------------------------------------------------------------
+# naja-schematic version: single source of truth is the Python package's
+# __version__ (what hatch builds the wheel from and CI checks the release
+# tag against), so the app's About dialog can't drift from the release
+# ------------------------------------------------------------
+file(STRINGS ${CMAKE_SOURCE_DIR}/python/naja_schematic/__init__.py
+  NAJA_SCHEMATIC_VERSION_LINE REGEX "^__version__ = \"[^\"]*\"")
+string(REGEX REPLACE ".*\"([^\"]*)\".*" "\\1" NAJA_SCHEMATIC_VERSION
+  "${NAJA_SCHEMATIC_VERSION_LINE}")
+if(NOT NAJA_SCHEMATIC_VERSION)
+  message(FATAL_ERROR
+    "Could not read __version__ from python/naja_schematic/__init__.py")
+endif()
+message(STATUS "naja-schematic version: ${NAJA_SCHEMATIC_VERSION}")
+
+# ------------------------------------------------------------
 # naja version (read from the submodule's literal, not built — needed on
 # both targets since both interface with naja: native links it directly,
 # WASM talks to najaeda_server.py, which wraps the same naja/najaeda code)
@@ -149,6 +164,7 @@ if(EMSCRIPTEN_BUILD)
   set_target_properties(naja-schematic  PROPERTIES SUFFIX ${NAJA_SCHEMATIC_WASM_SUFFIX})
   target_compile_definitions(naja-schematic PRIVATE
     NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
+    NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
     NAJA_VERSION_STRING="${NAJA_VERSION}"
   )
 
@@ -198,6 +214,7 @@ else()
 
   target_compile_definitions(naja-schematic-standalone PRIVATE
     NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
+    NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
     NAJA_VERSION_STRING="${NAJA_VERSION}"
   )
 
