@@ -11,6 +11,9 @@ pip install naja-schematic
 
 ## In a notebook (Jupyter, Google Colab, VSCode)
 
+[Try it in Colab](https://colab.research.google.com/github/najaeda/naja-schematic/blob/main/python/notebooks/colab_test.ipynb):
+a walkthrough of every widget feature below, runnable as is.
+
 ```python
 from najaeda import netlist
 import naja_schematic
