@@ -74,6 +74,7 @@ set(CORE_SOURCES
   src/GUIData.cpp
   src/NetlistTree.cpp
   src/EquipotentialView.cpp
+  src/SchematicLayout.cpp
   src/SchematicView.cpp
   src/DiagnosisStore.cpp
   src/DiagnosisView.cpp
@@ -206,7 +207,7 @@ endif()
 # Target 3: naja-schematic-tests — GUI-independent unit tests
 # ============================================================
 # Native only: exercises the logic layer (JSON parsing, DiagnosisStore,
-# SourceStore, NetlistTree structure) without SDL/OpenGL/naja. Links only
+# SourceStore, NetlistTree structure, SchematicLayout geometry) without SDL/OpenGL/naja. Links only
 # ImGui's core (imgui.cpp/imgui_draw.cpp/imgui_tables.cpp/imgui_widgets.cpp),
 # not the SDL2/OpenGL3 backends, since none of the tested code needs a real
 # render backend -- render()/draw calls are never invoked from tests.
@@ -233,6 +234,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/DiagnosisStore.cpp
       src/SourceStore.cpp
       src/PropertiesStore.cpp
+      src/SchematicLayout.cpp
       ${IMGUI_DIR}/imgui.cpp
       ${IMGUI_DIR}/imgui_draw.cpp
       ${IMGUI_DIR}/imgui_tables.cpp
