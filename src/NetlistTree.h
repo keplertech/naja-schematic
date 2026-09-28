@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 #include "imgui.h"
@@ -49,12 +51,33 @@ class NetlistTree {
 
     void render();
     void insertNodeInMap(NetlistTreeNode* node);
+
+    // Opens the tree down to the instance at `pathKey` (slash-joined
+    // instance names, "" = root) and scrolls to it. Levels load on demand, so
+    // this is asynchronous: each level's Instances/Primitives groups are
+    // requested as needed and advanceReveal() continues once their replies
+    // have created the child nodes. A new reveal replaces a pending one.
+    void reveal(const std::string& pathKey);
+    // One step of a pending reveal; called by render() every frame (public
+    // so tests can drive it without an ImGui frame).
+    void advanceReveal();
+    bool isRevealPending() const { return revealPath_.has_value(); }
+    // The instance node at `pathKey`, if its level is already loaded.
+    NetlistTreeNode* findInstance(const std::string& pathKey) const;
   private:
+    friend class NetlistTreeNode;
     INetlistProvider*       ws_                    {nullptr};
     std::function<void()>   onEquipotentialRequest_;
     NetlistTreeNode*        root_       {nullptr};
     unsigned                nextGUIID_ {0};
     NodesMap                nodes_;
+    // Pending reveal: the instance names still to walk down from the root.
+    std::optional<std::vector<std::string>> revealPath_;
+    // Nodes render() must open (once each) / scroll to, after a reveal.
+    std::set<unsigned>      forceOpen_;
+    std::optional<unsigned> scrollTo_;
+    // Last SelectionStore revision render() reacted to.
+    unsigned                seenSelectionRevision_ {0};
 };
 
 class NetlistTreeInstanceNode;
@@ -211,6 +234,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual std::vector<const DiagnosisItem*> getDiagnostics() const override;
     virtual std::optional<SourceLoc> getSourceLoc() const override { return sourceLoc_; }
     virtual bool isInstanceNode() const override { return true; }
+    const std::string& getName() const { return name_; }
   private:
     bool        isRoot_         {false};
     std::string name_           {};
@@ -234,6 +258,7 @@ class NetlistTreeGroupNode : public NetlistTreeNode {
     };
     NetlistTreeGroupNode(NetlistTreeNode* parent, Type type);
 
+    Type getType() const { return type_; }
     virtual std::string getLabel() const override;
     virtual void sendLoadRequest() const override;
     virtual bool isLeaf() const override {

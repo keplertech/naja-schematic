@@ -5,6 +5,7 @@
 #include "Console.h"
 #include "DiagnosisStore.h"
 #include "INetlistProvider.h"
+#include "SelectionStore.h"
 
 void NetlistTree::createRootNode(
   const std::string& name,
@@ -18,11 +19,92 @@ void NetlistTree::createRootNode(
 }
 
 void NetlistTree::render() {
+  // A selection made elsewhere (schematic click, host focus_instance) is
+  // revealed here; one made by clicking this tree is already visible.
+  if (SelectionStore::revision() != seenSelectionRevision_) {
+    seenSelectionRevision_ = SelectionStore::revision();
+    if (SelectionStore::hasSelection() &&
+        SelectionStore::origin() != SelectionStore::Origin::Tree)
+      reveal(SelectionStore::selected());
+  }
+  advanceReveal();
   if (root_) {
     root_->render();
   } else {
     ImGui::Text("Loading Root Node...");
   }
+}
+
+void NetlistTree::reveal(const std::string& pathKey) {
+  revealPath_ = splitPathKey(pathKey);
+}
+
+void NetlistTree::advanceReveal() {
+  if (!revealPath_ || !root_) return;
+  NetlistTreeNode* node = root_;
+  std::vector<NetlistTreeNode*> toOpen;
+  for (const auto& name : *revealPath_) {
+    node->expand();  // an instance node's groups are created locally
+    std::vector<NetlistTreeGroupNode*> groups;
+    for (auto* child : *node->children_) {
+      auto* g = dynamic_cast<NetlistTreeGroupNode*>(child);
+      if (g && (g->getType() == NetlistTreeGroupNode::Type::Instances ||
+                g->getType() == NetlistTreeGroupNode::Type::Primitives))
+        groups.push_back(g);
+    }
+    NetlistTreeNode* next = nullptr;
+    NetlistTreeGroupNode* via = nullptr;
+    for (auto* g : groups) {
+      if (!g->children_) continue;
+      for (auto* c : *g->children_) {
+        auto* inst = dynamic_cast<NetlistTreeInstanceNode*>(c);
+        if (inst && inst->getName() == name) { next = inst; via = g; break; }
+      }
+      if (next) break;
+    }
+    if (!next) {
+      // Not among the loaded levels: load the ones still missing and wait.
+      bool waiting = false;
+      for (auto* g : groups) {
+        if (g->children_) continue;
+        if (!g->hasRequestedChildren_) {
+          g->hasRequestedChildren_ = true;
+          g->sendLoadRequest();
+        }
+        waiting = true;
+      }
+      if (!waiting) {
+        Console::Error("Cannot reveal instance: no '" + name + "' under " +
+                       (node->getPathKey().empty() ? node->getLabel() : node->getPathKey()));
+        revealPath_.reset();
+      }
+      return;
+    }
+    toOpen.push_back(node);
+    toOpen.push_back(via);
+    node = next;
+  }
+  for (auto* n : toOpen) forceOpen_.insert(n->guiID_);
+  scrollTo_ = node->guiID_;
+  revealPath_.reset();
+}
+
+NetlistTreeNode* NetlistTree::findInstance(const std::string& pathKey) const {
+  NetlistTreeNode* node = root_;
+  for (const auto& name : splitPathKey(pathKey)) {
+    if (!node || !node->children_) return nullptr;
+    NetlistTreeNode* next = nullptr;
+    for (auto* group : *node->children_) {
+      if (!group->children_) continue;
+      for (auto* c : *group->children_) {
+        auto* inst = dynamic_cast<NetlistTreeInstanceNode*>(c);
+        if (inst && inst->getName() == name) { next = inst; break; }
+      }
+      if (next) break;
+    }
+    node = next;
+  }
+  return node;
 }
 
 void NetlistTree::insertNodeInMap(NetlistTreeNode* node) {
@@ -53,9 +135,16 @@ std::string NetlistTreeNode::getPathKey() const {
 
 void NetlistTreeNode::render() {
   expand();
-  ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow;
+  NetlistTree* tree = getTree();
+  ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
   if (isLeaf()) {
     flags = flags | ImGuiTreeNodeFlags_Leaf;
+  }
+  if (isInstanceNode() && SelectionStore::isSelected(getPathKey())) {
+    flags = flags | ImGuiTreeNodeFlags_Selected;
+  }
+  if (tree->forceOpen_.erase(guiID_)) {
+    ImGui::SetNextItemOpen(true);
   }
   if (getColor() != 0) {
     ImGui::PushStyleColor(ImGuiCol_Text, getColor());
@@ -63,6 +152,14 @@ void NetlistTreeNode::render() {
   auto isOpen = ImGui::TreeNodeEx((void*)(intptr_t)guiID_, flags, "%s", getLabel().c_str());
   if (getColor() != 0) {
     ImGui::PopStyleColor();
+  }
+  if (tree->scrollTo_ == guiID_) {
+    ImGui::SetScrollHereY(0.5f);
+    tree->scrollTo_.reset();
+  }
+  // Clicking an instance's label (not its open/close arrow) selects it.
+  if (isInstanceNode() && ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
+    SelectionStore::select(getPathKey(), SelectionStore::Origin::Tree);
   }
   if (ImGui::IsItemHovered()) {
     auto diagnostics = getDiagnostics();

@@ -83,6 +83,7 @@ set(CORE_SOURCES
   src/SourceView.cpp
   src/PropertiesStore.cpp
   src/PropertiesView.cpp
+  src/SelectionStore.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
 )
@@ -236,6 +237,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/DiagnosisStore.cpp
       src/SourceStore.cpp
       src/PropertiesStore.cpp
+      src/SelectionStore.cpp
       src/SchematicLayout.cpp
       src/SchematicInteraction.cpp
       src/EquipotentialView.cpp

@@ -77,6 +77,10 @@ class IncrementalLayout {
   public:
     // No-op if `eq` was already placed.
     void place(const Equipotential* eq);
+    // Places one instance on its own (a starting point with no net shown
+    // yet) in the left column below everything placed so far. No-op if
+    // `key` is already placed.
+    void placeAlone(const std::string& key);
 
     // Push boxes down within each column (same x) so none overlaps the one
     // above it -- place() reserves a fixed kInstH slot per instance, but a box

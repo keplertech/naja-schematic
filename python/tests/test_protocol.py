@@ -101,3 +101,36 @@ def test_diagnosis_response_accepts_document_or_list():
     item = {"kind": "instance", "path": ["u_sub"], "severity": "error", "message": "m"}
     assert protocol.diagnosis_response([item]) == {"response": "diagnosis_response", "items": [item]}
     assert protocol.diagnosis_response({"items": [item]})["items"] == [item]
+
+
+def test_resolve_instance(top):
+    (reply,) = handle_request({"request": "resolve_instance", "path": ["u_sub", "u_and"]})
+    assert reply["response"] == "instance_resolved" and reply["found"]
+    inst = reply["instance"]
+    assert [level[0] for level in inst["path"]] == ["u_sub", "u_and"]
+    assert [level[2] for level in inst["path"]] == ["sub", "LUT2"]
+    assert not inst["has_instances"]
+    assert {t["name"] for t in inst["terms"]} == {"I0", "I1", "O"}
+
+    (reply,) = handle_request({"request": "resolve_instance", "path": ["u_sub"]})
+    assert reply["instance"]["has_instances"]  # u_and is a visible primitive
+    # Ids are the ones every other request addresses the instance with.
+    (props,) = handle_request({"request": "get_properties", "kind": "instance", "path": ["u_sub"]})
+    assert {"name": "Model", "value": "sub"} in props["properties"]
+
+
+def test_resolve_instance_top_and_unknown(top):
+    (reply,) = handle_request({"request": "resolve_instance", "path": []})
+    assert reply["found"] and "instance" not in reply
+
+    (reply,) = handle_request({"request": "resolve_instance", "path": ["u_sub", "nope"]})
+    assert reply == {"response": "instance_resolved", "path": ["u_sub", "nope"], "found": False}
+
+
+def test_instance_selected_is_a_notification(top):
+    assert handle_request({"request": "instance_selected", "path": ["u_sub"]}) == []
+
+
+def test_focus_instance_message():
+    assert protocol.focus_instance(["u_sub", "u_and"]) == {
+        "response": "focus_instance", "path": ["u_sub", "u_and"]}

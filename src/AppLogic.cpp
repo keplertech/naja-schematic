@@ -23,6 +23,7 @@ using json = nlohmann::json;
 #include "SourceStore.h"
 #include "SourceView.h"
 #include "PropertiesStore.h"
+#include "SelectionStore.h"
 #include "PropertiesView.h"
 #include "DroidSansFont.h"
 #include "Version.h"
@@ -63,6 +64,21 @@ void setupProvider(AppState& state) {
   EquipotentialView::setProvider(state.provider);
   attachTreeCallbacks(state);
 
+  // Every selection change (tree click, schematic click, host focus) shows
+  // the instance's properties and is reported to the host, which scripts
+  // on it (the notebook widget's Schematic.selected).
+  SelectionStore::setListener([&state](const std::string& pathKey) {
+    json note;
+    note["request"] = "instance_selected";
+    note["path"]    = splitPathKey(pathKey);
+    state.provider->send(note.dump());
+    json props;
+    props["request"] = "get_properties";
+    props["kind"]    = "instance";
+    props["path"]    = splitPathKey(pathKey);
+    state.provider->send(props.dump());
+  });
+
   state.provider->on_open([&state]() {
     state.connected = true;
     Console::Log("Connected to netlist provider");
@@ -98,6 +114,7 @@ void setupProvider(AppState& state) {
       Console::Log("Root node data received");
       DiagnosisStore::clear();  // stale diagnoses reference the old design
       PropertiesStore::clear(); // stale properties reference the old design
+      SelectionStore::clear();  // so does a stale selection
       const auto& root = j["root"];
       if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
         InstanceResponseJson data = root.get<InstanceResponseJson>();
@@ -293,6 +310,30 @@ void setupProvider(AppState& state) {
       Console::Log("Diagnosis received: " + std::to_string(items.size()) + " item(s)");
       DiagnosisStore::setDiagnostics(std::move(items));
       state.focusDiagnosisTab = true;
+    } else if (resp == "focus_instance") {
+      // Host push (notebook show_instance()): resolve the path, then
+      // instance_resolved below reveals and draws it.
+      json req;
+      req["request"] = "resolve_instance";
+      req["path"]    = j.contains("path") && j["path"].is_array() ? j["path"] : json::array();
+      state.provider->send(req.dump());
+    } else if (resp == "instance_resolved") {
+      std::vector<std::string> path;
+      if (j.contains("path") && j["path"].is_array())
+        for (const auto& seg : j["path"]) path.push_back(seg.get<std::string>());
+      std::string pathKey;
+      for (const auto& seg : path) pathKey += (pathKey.empty() ? "" : "/") + seg;
+      if (!j.value("found", false)) {
+        Console::Error("No instance '" + pathKey + "' in the design");
+        return;
+      }
+      // Start a fresh schematic from the instance alone, all pins open.
+      if (auto start = EquipotentialView::startInstanceFromResolved(j)) {
+        state.guiData->clearEquipotentials();
+        EquipotentialView::resetLayout();
+        EquipotentialView::showInstance(*start);
+      }
+      SelectionStore::select(pathKey, SelectionStore::Origin::Host);
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }
