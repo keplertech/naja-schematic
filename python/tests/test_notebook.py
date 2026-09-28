@@ -51,6 +51,8 @@ assert view.selected.get_name() == "ha2"
 
 @pytest.fixture
 def notebook_env(tmp_path, monkeypatch):
+    # Keeps the install cell from upgrading over the wheel under test.
+    monkeypatch.setenv("NAJA_SCHEMATIC_NOTEBOOK_TEST", "1")
     # Without a built bundle (a source checkout), give the widget a stub:
     # nothing renders it here anyway. The kernel inherits the environment.
     if bundle_path() is None:
