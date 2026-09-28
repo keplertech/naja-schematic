@@ -15,6 +15,7 @@
 #include "DiagnosisStore.h"
 #include "SchematicLayout.h"
 #include "SchematicInteraction.h"
+#include "SelectionStore.h"
 
 // Net/instance placement and hierarchy frames live in SchematicLayout
 // (pure geometry, unit-tested); this file turns them into drawn shapes.
@@ -106,6 +107,8 @@ static std::string g_pendingZoomGroup;
 
 // Persistent layout state: where each instance has been placed so far.
 static IncrementalLayout g_layout;
+// Instances shown on their own (showInstance), by pathKey.
+static std::map<std::string, EquipotentialView::StartInstance> g_startInstances;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -375,6 +378,7 @@ void EquipotentialView::clearNets() { g_pendingClear = true; }
 
 void EquipotentialView::resetLayout() {
     g_layout.clear();
+    g_startInstances.clear();
     g_expandedInstances.clear();
     g_pendingExpansions.clear();
     g_expandedBuses.clear();
@@ -405,6 +409,48 @@ void EquipotentialView::setShowHierarchy(bool on) {
     if (g_showHierarchy == on) return;
     g_showHierarchy = on;
     g_pendingFit    = true;
+}
+
+void EquipotentialView::showInstance(const StartInstance& start) {
+    std::string key;
+    for (const auto& seg : start.path) key += (key.empty() ? "" : "/") + seg;
+    if (key.empty()) return;  // the top design has no box of its own
+    g_startInstances[key]  = start;
+    g_expandedInstances[key] = start.ports;
+}
+
+std::optional<EquipotentialView::StartInstance>
+EquipotentialView::startInstanceFromResolved(const json& reply) {
+    if (!reply.value("found", false) || !reply.contains("instance") || !reply["instance"].is_object())
+        return std::nullopt;
+    const auto& inst = reply["instance"];
+    StartInstance start;
+    for (const auto& level : inst.value("path", json::array())) {
+        if (!level.is_array() || level.size() < 2) continue;
+        start.path.push_back(level[0].get<std::string>());
+        start.pathIds.push_back(level[1].get<unsigned>());
+        start.pathModels.push_back(level.size() > 2 ? level[2].get<std::string>() : "");
+    }
+    if (start.path.empty()) return std::nullopt;
+    if (inst.contains("design_ref")) start.designRef = inst["design_ref"].get<DesignRef>();
+    start.hasInstances = inst.value("has_instances", false);
+    if (inst.contains("source_loc") && inst["source_loc"].is_object()) {
+        const auto& loc = inst["source_loc"];
+        start.sourceLoc = SourceLoc{loc.value("file", std::string("")), loc.value("line", 0),
+                                    loc.value("end_line", 0), loc.value("column", 0),
+                                    loc.value("end_column", 0)};
+    }
+    for (const auto& t : inst.value("terms", json::array())) {
+        ExpandedPort ep;
+        ep.name    = t.value("name", std::string(""));
+        ep.childId = t.value("child_id", 0u);
+        if (t.contains("bit") && !t["bit"].is_null()) ep.bit = t["bit"].get<int>();
+        int dirInt   = t.value("direction", 0);
+        ep.direction = dirInt == 1 ? Direction::Output
+                     : dirInt == 2 ? Direction::Inout : Direction::Input;
+        start.ports.push_back(std::move(ep));
+    }
+    return start;
 }
 
 void EquipotentialView::applyInstanceExpansion(
@@ -582,7 +628,19 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
             break;
         }
-        if (!glyphHit) clickPin(wp);
+        if (!glyphHit && !clickPin(wp)) {
+            // On a box body: select that instance (or module frame). Reverse
+            // scan so the innermost box under the cursor wins.
+            for (auto rit = g_schematic.instances.rbegin(); rit != g_schematic.instances.rend(); ++rit) {
+                if (rit->w <= 0.f || rit->h <= 0.f) continue;
+                if (wp.x < rit->x || wp.x > rit->x + rit->w) continue;
+                if (wp.y < rit->y || wp.y > rit->y + rit->h) continue;
+                auto occIt = g_occInfoByShapeId.find(rit->id);
+                if (occIt != g_occInfoByShapeId.end())
+                    SelectionStore::select(occIt->second.pathKey, SelectionStore::Origin::Schematic);
+                break;
+            }
+        }
     }
 
     // Double-click on a box body (not a pin -- those act on single click
@@ -630,6 +688,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // -----------------------------------------------------------------------
     for (Equipotential* eq : equipotentials)
         if (eq) g_layout.place(eq);
+    for (const auto& [key, start] : g_startInstances)
+        g_layout.placeAlone(key);
 
     // -----------------------------------------------------------------------
     // Rebuild geometry: merged instances + per-equip wires
@@ -661,6 +721,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         std::optional<SourceLoc> sourceLoc;
         std::vector<std::string> path;
         std::vector<std::string> pathModels;
+        std::vector<unsigned>    pathIds;   // child_ids down to this instance
         std::vector<PortSlot> ports;
     };
     std::map<std::string, MInst> minsts;
@@ -701,6 +762,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     mi.sourceLoc     = item.sourceLoc;
                     mi.path          = item.path;
                     mi.pathModels    = item.pathModels;
+                    mi.pathIds       = item.pathIds;
                     auto pit = g_layout.positions().find(item.key());
                     mi.pos = pit != g_layout.positions().end()
                         ? pit->second : ImVec2{kLeftMargin, 0.f};
@@ -730,6 +792,25 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         }
     }
 
+    // Instances shown on their own (showInstance): a box even with no net
+    // through it yet. Their pins come from g_expandedInstances, all open
+    // until a net reaches them.
+    for (const auto& [key, start] : g_startInstances) {
+        ++totalItems;
+        auto& mi = minsts[key];
+        if (mi.initialized) continue;
+        mi.initialized  = true;
+        mi.designRef    = start.designRef;
+        mi.hasInstances = start.hasInstances;
+        mi.bitTermCount = start.ports.size();
+        mi.sourceLoc    = start.sourceLoc;
+        mi.path         = start.path;
+        mi.pathModels   = start.pathModels;
+        mi.pathIds      = start.pathIds;
+        auto pit = g_layout.positions().find(key);
+        mi.pos = pit != g_layout.positions().end() ? pit->second : ImVec2{kLeftMargin, 0.f};
+    }
+
     // Pass 2: build InstanceShapes from merged data
     std::map<std::string, int> keyToInstId;
     // Per-bit port id (as assigned in pass 1, or freshly allocated below for
@@ -750,6 +831,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.name      = key;
         inst.modelName = modelNameFromLeaf(leafSegment(key));
         inst.diagOutline = DiagnosisStore::instanceColor(key);
+        inst.selected    = SelectionStore::isSelected(key);
         g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.sourceLoc };
         keyToInstId[key] = inst.id;
 
@@ -798,8 +880,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     if (ps.name == ep.name && ps.direction == ep.direction)
                         { pid = ps.portId; nextPortId--; open = false; break; }
                 }
-                auto pathIds = mi.ports.empty() ? std::vector<unsigned>{} : mi.ports[0].pathIds;
-                g_portEquiByPortId[pid] = { pathIds, ep.childId, ep.bit };
+                g_portEquiByPortId[pid] = { mi.pathIds, ep.childId, ep.bit };
                 resolved.push_back({ &ep, pid, open });
             }
 
@@ -945,6 +1026,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         std::vector<InstanceShape> frameShapes;
         for (auto& f : frames) {
             f.shape.diagOutline = DiagnosisStore::instanceColor(f.pathKey);
+            f.shape.selected    = SelectionStore::isSelected(f.pathKey);
             g_occInfoByShapeId[f.shape.id] = { f.pathKey, DesignRef{}, std::nullopt };
             frameShapes.push_back(std::move(f.shape));
         }
@@ -1239,7 +1321,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
 
     g_schematic.render(dl, cpos, inner);
-    if (equipotentials.empty()) {
+    if (equipotentials.empty() && g_startInstances.empty()) {
         // Nothing drawn yet: the schematic is only ever filled from a pin's
         // context menu, which a first-time user has no way to guess.
         const char* hint = "Right-click a pin in the Netlist Hierarchy (e.g. top > Terms > a port)\n"

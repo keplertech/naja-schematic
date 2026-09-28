@@ -45,6 +45,18 @@ class EquipotentialView {
       std::vector<InternalNet>   nets;
     };
 
+    // One instance to draw on its own, with its full interface and no net
+    // yet -- a starting point to extend pin by pin (see showInstance()).
+    struct StartInstance {
+      std::vector<std::string> path;        // instance names, top excluded
+      std::vector<unsigned>    pathIds;     // matching child_ids
+      std::vector<std::string> pathModels;  // matching model names
+      DesignRef                designRef{}; // the instance's model
+      bool                     hasInstances = false;
+      std::optional<SourceLoc> sourceLoc;
+      std::vector<ExpandedPort> ports;      // every pin, bus bits expanded
+    };
+
     static void renderSchematic(const std::vector<Equipotential*>& equipotentials);
     static void renderTable(const std::vector<Equipotential*>& equipotentials);
     static void zoomIn();
@@ -68,6 +80,14 @@ class EquipotentialView {
     // Called by AppLogic when an expanded_instance_terms response arrives.
     static void applyInstanceExpansion(const std::string& pathKey,
                                        const std::vector<ExpandedPort>& ports);
+
+    // Adds `start` to the view as a lone box showing all its pins, each
+    // "open" until its net is loaded. Call resetLayout() first to start a
+    // fresh view from it (as a host's focus_instance does).
+    static void showInstance(const StartInstance& start);
+    // The StartInstance described by an instance_resolved reply, or nullopt
+    // when it has none (not found, or the top design).
+    static std::optional<StartInstance> startInstanceFromResolved(const json& reply);
 
     // Called by AppLogic when an instance_internals_response arrives.
     static void applyInstanceInternals(const std::string& pathKey,

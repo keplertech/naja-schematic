@@ -454,6 +454,31 @@ def _handle_trace_driver(u, request):
     }]
 
 
+def bit_terms_json(design):
+    # Every pin of a design, bus terms expanded bit by bit ("data[3]", with
+    # "bit" set) so each gets its own schematic pin.
+    terms = []
+    for term in design.getTerms():
+        if isinstance(term, naja.SNLBusTerm):
+            lo, hi = sorted((term.getLSB(), term.getMSB()))
+            for b in range(lo, hi + 1):
+                bit_term = term.getBusTermBit(b)
+                if bit_term:
+                    terms.append({
+                        "name": f"{term.getName()}[{b}]",
+                        "child_id": bit_term.getID(),
+                        "direction": direction_to_int(bit_term.getDirection()),
+                        "bit": b,
+                    })
+        else:
+            terms.append({
+                "name": term.getName(),
+                "child_id": term.getID(),
+                "direction": direction_to_int(term.getDirection()),
+            })
+    return terms
+
+
 def _handle_expand_instance_terms(u, request):
     path_key = request.get("path_key", "")
     design_ref = get_design_ref(request.get("design_ref"))
@@ -461,33 +486,55 @@ def _handle_expand_instance_terms(u, request):
     design = u.getSNLDesign(design_ref) if design_ref else None
     if not design:
         log.warning("expand_instance_terms: design not found for %s", design_ref)
-    terms = []
-
-    if design:
-        for term in design.getTerms():
-            if isinstance(term, naja.SNLBusTerm):
-                lo, hi = sorted((term.getLSB(), term.getMSB()))
-                for b in range(lo, hi + 1):
-                    bit_term = term.getBusTermBit(b)
-                    if bit_term:
-                        terms.append({
-                            "name": f"{term.getName()}[{b}]",
-                            "child_id": bit_term.getID(),
-                            "direction": direction_to_int(bit_term.getDirection()),
-                            "bit": b,
-                        })
-            else:
-                terms.append({
-                    "name": term.getName(),
-                    "child_id": term.getID(),
-                    "direction": direction_to_int(term.getDirection()),
-                })
-
     return [{
         "response": "expanded_instance_terms",
         "path_key": path_key,
-        "terms": terms
+        "terms": bit_terms_json(design) if design else []
     }]
+
+
+def _handle_resolve_instance(u, request):
+    # Everything the viewer needs to show one instance, given only its
+    # instance-name path (the same convention as get_properties and
+    # diagnosis items): the child_id/model of each path level, to reveal it
+    # in the tree and address its pins, plus its full pin list, to draw it
+    # alone in the schematic as a starting point.
+    path = [str(name) for name in request.get("path", [])]
+    top = u.getTopDesign()
+    design, instance = resolve_instance_path(top, path) if top else (None, None)
+    reply = {"response": "instance_resolved", "path": path,
+             "found": top is not None and (instance is not None or not path)}
+    if instance is None:
+        if top is not None and path:
+            log.warning("resolve_instance: could not resolve instance path %s", path)
+        return [reply]
+    levels = []
+    current = top
+    for name in path:
+        inst = current.getInstance(name)
+        levels.append([inst.getName(), inst.getID(), inst.getModel().getName()])
+        current = inst.getModel()
+    reply["instance"] = {
+        "path": levels,
+        "design_ref": {
+            "db_id": design.getDB().getID(),
+            "library_id": design.getLibrary().getID(),
+            "design_id": design.getID(),
+        },
+        "has_instances": (design.hasNonPrimitiveInstances() or
+                          has_visible_primitive_instances(design)),
+        "source_loc": get_source_loc(instance),
+        "terms": bit_terms_json(design),
+    }
+    return [reply]
+
+
+def _handle_instance_selected(u, request):
+    # A notification, not a request: the viewer reports the instance the
+    # user selected. The notebook widget intercepts it (Schematic.selected);
+    # elsewhere it's only logged.
+    log.info("Viewer selected instance: %s", "/".join(request.get("path") or []) or "<top>")
+    return []
 
 
 def _handle_load_instance_internals(u, request):
@@ -670,6 +717,8 @@ _HANDLERS = {
     "load_instance_internals": _handle_load_instance_internals,
     "load_source": _handle_load_source,
     "get_properties": _handle_get_properties,
+    "resolve_instance": _handle_resolve_instance,
+    "instance_selected": _handle_instance_selected,
 }
 
 
@@ -709,3 +758,10 @@ def diagnosis_response(items):
     if isinstance(items, dict):
         items = items.get("items", [])
     return {"response": "diagnosis_response", "items": list(items)}
+
+
+def focus_instance(path):
+    """Build a focus_instance push message: the viewer resolves `path` (a
+    list of instance names, top excluded; [] = the top design), reveals and
+    selects it in the tree, and draws it alone in the schematic."""
+    return {"response": "focus_instance", "path": [str(name) for name in path]}

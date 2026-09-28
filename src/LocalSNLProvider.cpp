@@ -137,6 +137,35 @@ static json bitTermJson(const SNLBitTerm* bt) {
 // RTL source location for an elaborated object, if naja has one recorded
 // (SNLRTLInfos -- populated today only by the SystemVerilog/slang frontend).
 // Returns JSON null when unavailable, which the client treats as "no link".
+// Every pin of a design, bus terms expanded bit by bit ("data[3]", with
+// "bit" set) so each gets its own schematic pin.
+static json allBitTermsJson(const SNLDesign* design) {
+  json terms = json::array();
+  for (auto* term : design->getTerms()) {
+    if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
+      int lo = std::min(static_cast<int>(bus->getLSB()),
+                        static_cast<int>(bus->getMSB()));
+      int hi = std::max(static_cast<int>(bus->getLSB()),
+                        static_cast<int>(bus->getMSB()));
+      for (int b = lo; b <= hi; ++b) {
+        if (auto* bit = bus->getBit(b)) {
+          json t = bitTermJson(bit);
+          // Append the bit index to the name for display ("data[3]"),
+          // but keep the "bit" field so the client can build requests.
+          if (t.contains("bit")) {
+            t["name"] = t["name"].get<std::string>() +
+                        "[" + std::to_string(t["bit"].get<int>()) + "]";
+          }
+          terms.push_back(std::move(t));
+        }
+      }
+    } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
+      terms.push_back(bitTermJson(st));
+    }
+  }
+  return terms;
+}
+
 static json sourceLocJson(const SNLDesignObject* obj) {
   if (!obj || !obj->hasRTLInfos()) return nullptr;
   auto* rtl = obj->getRTLInfos();
@@ -422,6 +451,11 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildSourceResponse(req));
   } else if (request == "get_properties") {
     msgCb_(buildPropertiesResponse(req));
+  } else if (request == "resolve_instance") {
+    msgCb_(buildResolveInstanceResponse(req));
+  } else if (request == "instance_selected") {
+    // A notification (the user's selection), for hosts that script the
+    // viewer -- nothing to answer in the standalone app.
   } else {
     Console::Error("LocalSNLProvider: unknown request: " + request);
   }
@@ -794,39 +828,57 @@ std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) 
     designId = req["design_ref"].value("design_id",  0u);
   }
 
-  json terms = json::array();
   auto* design = findDesign(dbId, libId, designId);
-  if (design) {
-    for (auto* term : design->getTerms()) {
-      if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
-        // Expand bus into individual bits so each gets its own port indicator.
-        int lo = std::min(static_cast<int>(bus->getLSB()),
-                          static_cast<int>(bus->getMSB()));
-        int hi = std::max(static_cast<int>(bus->getLSB()),
-                          static_cast<int>(bus->getMSB()));
-        for (int b = lo; b <= hi; ++b) {
-          if (auto* bit = bus->getBit(b)) {
-            json t = bitTermJson(bit);
-            // Append the bit index to the name for display ("data[3]"),
-            // but keep the "bit" field so the client can build requests.
-            if (t.contains("bit")) {
-              t["name"] = t["name"].get<std::string>() +
-                          "[" + std::to_string(t["bit"].get<int>()) + "]";
-            }
-            terms.push_back(std::move(t));
-          }
-        }
-      } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
-        terms.push_back(bitTermJson(st));
-      }
-    }
-  }
-
   return json{
     {"response", "expanded_instance_terms"},
     {"path_key", pathKey},
-    {"terms",    terms}
+    {"terms",    design ? allBitTermsJson(design) : json::array()}
   }.dump();
+}
+
+// Everything the viewer needs to show one instance given only its
+// instance-name path (same convention as get_properties): each path level's
+// [name, child_id, model_name], and the instance's model and full pin list,
+// to reveal it in the tree and draw it alone in the schematic. Mirrors
+// protocol.py's _handle_resolve_instance.
+std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) const {
+  std::vector<std::string> path;
+  if (req.contains("path") && req["path"].is_array())
+    for (auto& seg : req["path"]) path.push_back(seg.get<std::string>());
+
+  json reply = {{"response", "instance_resolved"}, {"path", path}, {"found", false}};
+  auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
+  if (!topDesign) return reply.dump();
+
+  SNLDesign*   design   = topDesign;
+  SNLInstance* instance = nullptr;
+  json levels = json::array();
+  for (const auto& name : path) {
+    instance = design ? design->getInstance(NLName(name)) : nullptr;
+    if (!instance) {
+      Console::Error("resolve_instance: could not resolve instance path");
+      return reply.dump();
+    }
+    design = instance->getModel();
+    levels.push_back(json::array({instance->getString(),
+                                  static_cast<unsigned>(instance->getID()),
+                                  designName(design)}));
+  }
+  reply["found"] = true;
+  if (!instance) return reply.dump();  // the top design itself
+
+  reply["instance"] = {
+    {"path",       std::move(levels)},
+    {"design_ref", {
+      {"db_id",      static_cast<unsigned>(design->getDB()->getID())},
+      {"library_id", static_cast<unsigned>(design->getLibrary()->getID())},
+      {"design_id",  static_cast<unsigned>(design->getID())}
+    }},
+    {"has_instances", hasAnySubInstances(design)},
+    {"source_loc",    sourceLocJson(instance)},
+    {"terms",         allBitTermsJson(design)}
+  };
+  return reply.dump();
 }
 
 // Resolve an instance's own model (the request's design_ref, exactly as the
