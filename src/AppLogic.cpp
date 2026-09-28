@@ -189,22 +189,28 @@ void setupProvider(AppState& state) {
         parent->createNetNode(net.name, net.msb, net.lsb);
       }
     } else if (resp == "equipotential_response") {
-      Console::Log("Equipotential data received");
-      state.guiData->addEquipotential(new Equipotential(j.get<Equipotential>()));
-      state.tableEquipotentialCount = 1;
+      if (state.guiData->addEquipotential(new Equipotential(j.get<Equipotential>()))) {
+        Console::Log("Equipotential data received");
+        state.tableEquipotentialCount = 1;
+      } else {
+        Console::Log("Equipotential already shown");
+      }
     } else if (resp == "trace_driver_response") {
       // Nets arrive breadth-first from the traced net toward the drivers, so
       // adding them in order lets the layout chain each one off an instance
       // that's already placed.
-      size_t n = 0;
+      // Nets already on screen (e.g. the one the trace started from, when
+      // it's launched from a schematic pin) are skipped rather than drawn twice.
+      size_t n = 0, added = 0;
       if (j.contains("equipotentials") && j["equipotentials"].is_array()) {
         for (const auto& e : j["equipotentials"]) {
-          state.guiData->addEquipotential(new Equipotential(e.get<Equipotential>()));
           ++n;
+          if (state.guiData->addEquipotential(new Equipotential(e.get<Equipotential>()))) ++added;
         }
       }
-      state.tableEquipotentialCount = std::max<size_t>(n, 1);
-      Console::Log("Driver trace received: " + std::to_string(n) + " net(s)" +
+      state.tableEquipotentialCount = std::max<size_t>(added, 1);
+      Console::Log("Driver trace received: " + std::to_string(n) + " net(s), " +
+                   std::to_string(added) + " new" +
                    (j.value("truncated", false) ? " (truncated)" : ""));
     } else if (resp == "expanded_instance_terms") {
       std::string pathKey = j.value("path_key", std::string(""));

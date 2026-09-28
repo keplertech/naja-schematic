@@ -75,6 +75,7 @@ set(CORE_SOURCES
   src/NetlistTree.cpp
   src/EquipotentialView.cpp
   src/SchematicLayout.cpp
+  src/SchematicInteraction.cpp
   src/SchematicView.cpp
   src/DiagnosisStore.cpp
   src/DiagnosisView.cpp
@@ -209,8 +210,9 @@ endif()
 # Native only: exercises the logic layer (JSON parsing, DiagnosisStore,
 # SourceStore, NetlistTree structure, SchematicLayout geometry) without SDL/OpenGL/naja. Links only
 # ImGui's core (imgui.cpp/imgui_draw.cpp/imgui_tables.cpp/imgui_widgets.cpp),
-# not the SDL2/OpenGL3 backends, since none of the tested code needs a real
-# render backend -- render()/draw calls are never invoked from tests.
+# not the SDL2/OpenGL3 backends: tests that do run UI code (e.g.
+# EquipotentialViewTest) drive a headless ImGui context with simulated input
+# and never need anything actually drawn to a screen.
 if(NOT EMSCRIPTEN_BUILD)
   option(NAJA_SCHEMATIC_BUILD_TESTS "Build naja-schematic-tests" ON)
   if(NAJA_SCHEMATIC_BUILD_TESTS)
@@ -235,6 +237,9 @@ if(NOT EMSCRIPTEN_BUILD)
       src/SourceStore.cpp
       src/PropertiesStore.cpp
       src/SchematicLayout.cpp
+      src/SchematicInteraction.cpp
+      src/EquipotentialView.cpp
+      src/SchematicView.cpp
       ${IMGUI_DIR}/imgui.cpp
       ${IMGUI_DIR}/imgui_draw.cpp
       ${IMGUI_DIR}/imgui_tables.cpp

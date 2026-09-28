@@ -133,6 +133,13 @@ struct Equipotential {
   std::vector<InstTermOccurrence> occurrences;
 };
 
+// True when every endpoint (top-level term or instance pin) of `candidate` is
+// already one of `shown`'s -- adding it to the view would only redraw wires
+// already there. Covers exact duplicates (clicking a pin whose net is shown)
+// and the partial nets of a driver trace (which list only the receivers the
+// trace entered through) whose full net is already displayed.
+bool equipotentialCovers(const Equipotential& shown, const Equipotential& candidate);
+
 //
 // --- Diagnosis overlay types ---
 // A diagnosis_response annotates an already-loaded netlist with findings from
@@ -234,8 +241,14 @@ struct Port {
     ImU32 color = 0;      // optional explicit color override (0 == no override)
     // True when this pin represents multiple merged bus bits rather than a
     // single bit/scalar terminal — drives a distinct draw style and expands
-    // the bus (instead of load_equipotential) on double-click.
+    // the bus (instead of load_equipotential) on click.
     bool isBus = false;
+    // True when this pin's net isn't in the view yet (only revealed by
+    // expanding the instance's full interface): clicking it adds that net.
+    // Drawn with an open-circle stub so it reads as "more to see here".
+    bool open = false;
+    // An open pin whose net has been requested but hasn't arrived yet.
+    bool pending = false;
 };
 
 struct InstanceShape {
@@ -311,6 +324,13 @@ struct NetWire {
     // the bus slash mark on a merged bus wire -- see SchematicView::drawNet.
     std::string netName;
 };
+
+// World-space point where a pin meets its box (and where its wire attaches):
+// lx/ly are normalized -0.5..0.5 across the box, 0 at its center.
+inline ImVec2 portAnchor(const InstanceShape& inst, const Port& port) {
+    return ImVec2(inst.x + inst.w * (0.5f + port.lx),
+                  inst.y + inst.h * (0.5f + port.ly));
+}
 
 // World-space rect of an instance's hierarchy expand/collapse glyph
 // (a small square straddling the top-center of the box). Shared by
