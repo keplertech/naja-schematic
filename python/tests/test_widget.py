@@ -53,7 +53,7 @@ def sent_kinds(sent):
     return [json.loads(m["json"])["response"] for m in sent]
 
 
-@pytest.mark.parametrize("target", ["u_sub/u_and", ["u_sub", "u_and"], ("u_sub", "u_and")])
+@pytest.mark.parametrize("target", [["u_sub", "u_and"], ("u_sub", "u_and")])
 def test_show_instance_pushes_focus(top, view, target):
     v, sent = view
     v.show_instance(target)
@@ -70,11 +70,19 @@ def test_show_instance_accepts_a_najaeda_instance(top, view):
 
 def test_show_instance_rejects_unknown_paths(top, view):
     v, sent = view
-    with pytest.raises(ValueError, match="u_sub/nope"):
-        v.show_instance("u_sub/nope")
+    with pytest.raises(ValueError, match="nope"):
+        v.show_instance(["u_sub", "nope"])
+    with pytest.raises(ValueError):  # a string is one name, never split
+        v.show_instance("u_sub/u_and")
     with pytest.raises(TypeError):
         v.show_instance(42)
     assert sent == []
+
+
+def test_show_instance_takes_a_string_as_one_name(top, view):
+    v, sent = view
+    v.show_instance("u_sub")
+    assert json.loads(sent[0]["json"])["path"] == ["u_sub"]
 
 
 def test_focus_is_reapplied_after_each_root(top, view):
