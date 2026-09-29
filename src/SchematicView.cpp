@@ -2,10 +2,12 @@
 
 #include <imgui.h>
 #include <algorithm>
+#include <cctype>
 #include <cfloat>
 #include <cmath>
 #include <functional>
 #include <string>
+#include <vector>
 
 namespace {
 inline float clampf(float v, float lo, float hi) {
@@ -42,7 +44,7 @@ constexpr float kMinPortTickLen   = 2.5f;
 constexpr float kWireBaseThickness = 2.0f; // world-space "1x zoom" wire thickness
 constexpr float kMinWireThickness  = 0.75f;
 
-// Schematic-style junction dot: a filled circle marks a real electrical branch
+// Junction dot: a filled circle marks a real electrical branch
 // (one driver pin feeding more than one receiver) -- two wires that merely
 // cross on screen without sharing a pin get no dot, so a dot always means
 // "connected here" and a bare crossing always means "not connected."
@@ -56,7 +58,7 @@ constexpr float kMinJunctionDotR  = 1.25f;
 constexpr float kBoundaryPortHalfHBase = 8.0f;
 constexpr float kMinBoundaryPortHalfH  = 3.0f;
 
-// Schematic-style near-monochrome palette: every instance shares the same flat
+// Near-monochrome palette: every instance shares the same flat
 // neutral "paper" fill rather than an arbitrary per-category color, so color
 // stays reserved for diagnosis/selection highlighting rather than decorating
 // every box. The canvas itself is the same convention taken one step
@@ -67,6 +69,10 @@ constexpr ImU32 kCanvasBgColor      = IM_COL32(255, 255, 255, 255);
 constexpr ImU32 kInstanceFillColor  = IM_COL32(214, 216, 220, 255);
 constexpr ImU32 kInstanceLineColor  = IM_COL32(35, 35, 38, 235);
 constexpr ImU32 kPinLineColor       = IM_COL32(40, 40, 40, 235);
+constexpr ImU32 kPinLabelColor      = IM_COL32(45, 45, 50, 235);
+constexpr ImU32 kInstanceNameColor  = IM_COL32(30, 40, 90, 235);
+// World-space radius of a gate's negation bubble (NAND/NOR/XNOR/INV).
+constexpr float kBubbleR = 4.0f;
 // Top-level design ports get their own tint so they can't be mistaken for an
 // instance pin or a small instance box. Green on purpose: diagnosis severities
 // use red/amber/blue (DiagnosisStore.cpp), so it doesn't read as a finding.
@@ -128,6 +134,51 @@ std::string truncateToWidth(ImFont* font, float fontSize, const std::string& tex
         if (w + ellipsisWidth <= maxWidth) lo = mid; else hi = mid - 1;
     }
     return text.substr(0, lo) + kEllipsis;
+}
+
+// Screen-space point sampling for gate body outlines (§ standard shapes
+// library, below): a plain vector of points rather than ImDrawList's own
+// Path*() buffer, since a shape needs its points twice (once filled, once
+// stroked as the outline) and Path*() consumes its buffer on Fill/Stroke.
+void appendArcPoints(std::vector<ImVec2>& pts, ImVec2 center, float radius,
+                     float a0, float a1, int segments) {
+    for (int i = 0; i <= segments; ++i) {
+        float t = a0 + (a1 - a0) * (float(i) / float(segments));
+        pts.push_back(ImVec2(center.x + cosf(t) * radius, center.y + sinf(t) * radius));
+    }
+}
+
+void appendQuadBezierPoints(std::vector<ImVec2>& pts, ImVec2 p0, ImVec2 c, ImVec2 p1, int segments) {
+    for (int i = 0; i <= segments; ++i) {
+        float t = float(i) / float(segments);
+        float u = 1.0f - t;
+        pts.push_back(ImVec2(u * u * p0.x + 2.0f * u * t * c.x + t * t * p1.x,
+                              u * u * p0.y + 2.0f * u * t * c.y + t * t * p1.y));
+    }
+}
+
+// Draws a sampled body outline both filled and stroked (plus a thicker
+// diagnosis-severity stroke on top, when flagged) -- shared tail end of every
+// standard gate shape below.
+void fillAndStrokeBody(ImDrawList* dl, std::vector<ImVec2> pts,
+                       ImU32 fillColor, ImU32 diagOutline) {
+    // Curves appended back to back repeat their joint point, which breaks
+    // the concave fill's triangulation.
+    auto same = [](ImVec2 a, ImVec2 b) { return std::abs(a.x - b.x) < 0.01f && std::abs(a.y - b.y) < 0.01f; };
+    pts.erase(std::unique(pts.begin(), pts.end(), same), pts.end());
+    while (pts.size() > 1 && same(pts.front(), pts.back())) pts.pop_back();
+    dl->AddConcavePolyFilled(pts.data(), int(pts.size()), fillColor);
+    dl->AddPolyline(pts.data(), int(pts.size()), kInstanceLineColor, 1.25f, ImDrawFlags_Closed);
+    if (diagOutline != 0)
+        dl->AddPolyline(pts.data(), int(pts.size()), diagOutline, 3.0f, ImDrawFlags_Closed);
+}
+
+// Draws a bubble (small negation circle), touching the tip of a gate body's
+// output side -- shared by NAND/NOR/XNOR/INV.
+void drawNegationBubble(ImDrawList* dl, ImVec2 tip, float radius, ImU32 fillColor) {
+    ImVec2 center(tip.x + radius, tip.y);
+    dl->AddCircleFilled(center, radius, fillColor);
+    dl->AddCircle(center, radius, kInstanceLineColor, 16, 1.25f);
 }
 
 // Draws a dashed rectangle in screen space (no corner rounding).
@@ -200,9 +251,13 @@ ImVec2 SchematicView::portWorldPos(const InstanceShape& inst, const Port& port) 
 // ---------------------------------------------------------------------------
 // Shared port drawing (used by all gate renderers)
 // ---------------------------------------------------------------------------
+// Pin labels: inside a box, next to the pin (the box is sized
+// to hold them); a gate symbol's pins are unlabeled, as on a printed
+// schematic -- except a merged bus pin, whose range is labeled outside.
 static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
                       const SchematicView& sv,
-                      const ImVec2& canvasPos, const ImVec2& canvasSize) {
+                      const ImVec2& canvasPos, const ImVec2& canvasSize,
+                      bool namesInside) {
     for (const auto& p : inst.ports) {
         float tickLen = zoomedSizeOrHidden(kPortTickBaseLen, sv.transform.scale, kMinPortTickLen);
         if (tickLen <= 0.0f) continue; // too small to matter at this zoom -- same fade policy as labels
@@ -228,13 +283,11 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
         // An open pin (net not in the view yet) ends in a hollow circle, a
         // loading one in a filled circle: "click here to see more" without
         // needing color for the resting state.
-        ImVec2 labelAt = tickEnd;
         if (p.open) {
             float r = std::max(kMinOpenPinR, kOpenPinBaseR * sv.transform.scale);
             ImVec2 c(tickEnd.x + (isLeft ? -r : r), tickEnd.y);
             dl->AddCircleFilled(c, r, p.pending ? portColor : kCanvasBgColor);
             dl->AddCircle(c, r, portColor, 0, std::max(1.0f, tickThickness * 0.8f));
-            labelAt.x += isLeft ? -2.0f * r : 2.0f * r; // label goes past the circle
         }
         // A merged bus pin gets the classic diagonal bus slash across its
         // tick instead of a plain line, in addition to its "[hi:lo]" label.
@@ -246,29 +299,41 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
                         portColor, tickThickness);
         }
 
+        if (p.name.empty() || (!namesInside && !p.isBus)) continue;
         float fontSize = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
-        if (!p.name.empty() && fontSize > 0.0f) {
-            ImFont* font = ImGui::GetFont();
-            // Cap label width (in screen px, scaled with zoom like everything
-            // else) so a long bus name can't sprawl across neighboring pins.
-            const float kPortLabelMaxWorldWidth = 90.0f;
-            std::string label = truncateToWidth(font, fontSize, p.name,
-                                                 kPortLabelMaxWorldWidth * sv.transform.scale);
-            if (!label.empty()) {
-                ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str());
-                // Anchored past the tick's tip (not the box edge) so the
-                // label doesn't sit on top of the pin's own tick line.
-                ImVec2 lblPos   = isLeft
-                    ? ImVec2(labelAt.x - 3.0f - textSize.x, labelAt.y - textSize.y * 0.5f)
-                    : ImVec2(labelAt.x + 3.0f,               labelAt.y - textSize.y * 0.5f);
-                dl->AddRectFilled(
-                    ImVec2(lblPos.x - 2.0f, lblPos.y - 1.0f),
-                    ImVec2(lblPos.x + textSize.x + 2.0f, lblPos.y + textSize.y + 1.0f),
-                    hovered ? kPinHoverColor : IM_COL32(30, 30, 30, 190));
-                dl->AddText(font, fontSize, lblPos, IM_COL32(225, 225, 225, 235), label.c_str());
-            }
-        }
+        if (fontSize <= 0.0f) continue;
+        ImFont* font = ImGui::GetFont();
+        const float pad = 4.0f * sv.transform.scale;
+        // Inside: at most half the box, so left and right names never meet.
+        const float maxWidth = namesInside ? inst.w * 0.5f * sv.transform.scale - pad * 1.5f
+                                           : 90.0f * sv.transform.scale;
+        std::string label = truncateToWidth(font, fontSize, p.name, maxWidth);
+        if (label.empty()) continue;
+        ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str());
+        ImVec2 lblPos;
+        // A clock pin's name starts past drawDffInstance()'s notch.
+        const float notch = p.clock ? 7.0f * sv.transform.scale : 0.0f;
+        if (namesInside)
+            lblPos = isLeft ? ImVec2(screenP.x + pad + notch, screenP.y - textSize.y * 0.5f)
+                            : ImVec2(screenP.x - pad - textSize.x, screenP.y - textSize.y * 0.5f);
+        else  // above the tick, outside the symbol
+            lblPos = isLeft ? ImVec2(tickEnd.x - textSize.x, screenP.y - textSize.y - 1.0f)
+                            : ImVec2(tickEnd.x, screenP.y - textSize.y - 1.0f);
+        dl->AddText(font, fontSize, lblPos, hovered ? kPinHoverColor : kPinLabelColor, label.c_str());
     }
+}
+
+// Instance name above its symbol: a box's inside holds its pin
+// names, and a gate symbol has no room for text.
+static void drawInstanceName(ImDrawList* dl, const InstanceShape& inst,
+                             const SchematicView& sv, ImVec2 rmin) {
+    float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
+    const std::string& shown = inst.label.empty() ? inst.name : inst.label;
+    if (shown.empty() || fontSize <= 0.0f) return;
+    ImFont* font = ImGui::GetFont();
+    ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, shown.c_str());
+    dl->AddText(font, fontSize, ImVec2(rmin.x, rmin.y - ts.y - 2.0f * sv.transform.scale),
+                kInstanceNameColor, shown.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -281,14 +346,14 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
     sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
 
     if (inst.w > 0.0f && inst.h > 0.0f) {
-        // Schematic-style flat fill: a neutral "paper" tone shared by every
+        // Flat fill: a neutral "paper" tone shared by every
         // box, not a per-category color -- color stays reserved for
         // diagnosis/selection highlighting rather than decorating every
         // instance. Sharp corners (no rounding).
         dl->AddRectFilled(rmin, rmax, kInstanceFillColor, 0.0f);
 
         if (inst.partialInterface)
-            // Schematic-style: dashing alone (not a color) signals "only a
+            // Dashing alone (not a color) signals "only a
             // subset of the interface is shown" -- same ink as a fully
             // expanded box's solid border, since color stays reserved for
             // diagnosis/selection highlighting.
@@ -302,20 +367,7 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
             dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, 3.5f);
         if (inst.selected) addSelectionOutline(dl, rmin, rmax);
 
-        float instFontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
-        const std::string& shown = inst.label.empty() ? inst.name : inst.label;
-        if (!shown.empty() && instFontSize > 0.0f) {
-            ImFont* font = ImGui::GetFont();
-            float padding = std::max(2.0f, 6.0f * sv.transform.scale);
-            float maxWidth = (rmax.x - rmin.x) - 2.0f * padding;
-            std::string label = truncateToWidth(font, instFontSize, shown, maxWidth);
-            if (!label.empty()) {
-                ImVec2 textSize = font->CalcTextSizeA(instFontSize, FLT_MAX, 0.0f, label.c_str());
-                ImVec2 textPos  = ImVec2((rmin.x + rmax.x) * 0.5f - textSize.x * 0.5f,
-                                         rmin.y + padding);
-                dl->AddText(font, instFontSize, textPos, contrastingTextColor(kInstanceFillColor), label.c_str());
-            }
-        }
+        drawInstanceName(dl, inst, sv, rmin);
 
         if (inst.partialInterface) {
             float boxH = rmax.y - rmin.y;
@@ -331,7 +383,7 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
         }
 
         // Hierarchy expand/collapse glyph: a small "+"/"-" square straddling
-        // the top-center of the box. Its world-space rect is shared with
+        // the top border. Its world-space rect is shared with
         // EquipotentialView's click hit-test via hierToggleGlyphRect().
         if (canShowHierToggle(inst)) {
             float gx0, gy0, gx1, gy1;
@@ -347,45 +399,163 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
         }
     }
 
-    drawPorts(dl, inst, sv, canvasPos, canvasSize);
+    drawPorts(dl, inst, sv, canvasPos, canvasSize, /*namesInside=*/true);
 }
 
 // ---------------------------------------------------------------------------
-// assign / buffer — triangle pointing right (input left, output apex right)
+// Standard shapes library
+//
+// Traditional (non-IEC) gate symbols for PrimitiveType::{And,Nand,Or,Nor,
+// Xor,Xnor,Inv,Buf,Assign}. Each body fills its instance's box exactly --
+// flat back on the left edge where the input pins attach, output tip (or
+// negation bubble) on the right edge where the output pin attaches -- so the
+// pin ticks drawn by drawPorts() always touch the body. Box size and pin
+// positions come from SchematicLayout::symbolGeometry().
 // ---------------------------------------------------------------------------
-static void drawAssignInstance(ImDrawList* dl, const InstanceShape& inst,
-                               const SchematicView& sv,
-                               const ImVec2& canvasPos, const ImVec2& canvasSize) {
-    ImVec2 tl = sv.worldToScreen(ImVec2(inst.x,          inst.y),          canvasPos, canvasSize);
-    ImVec2 bl = sv.worldToScreen(ImVec2(inst.x,          inst.y + inst.h), canvasPos, canvasSize);
-    ImVec2 mr = sv.worldToScreen(ImVec2(inst.x + inst.w, inst.y + inst.h * 0.5f), canvasPos, canvasSize);
 
-    // Symbol shape (not fill color) carries the gate identity, schematic-style:
-    // same flat neutral fill as every other box.
-    dl->AddTriangleFilled(tl, bl, mr, kInstanceFillColor);
-    dl->AddTriangle(tl, bl, mr, kInstanceLineColor, 1.25f);
-    if (inst.diagOutline != 0)
-        dl->AddTriangle(tl, bl, mr, inst.diagOutline, 3.0f);
-    if (inst.selected) {
-        ImVec2 rmin, rmax;
-        sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
-        addSelectionOutline(dl, rmin, rmax);
+// Right end of a gate body: the box's right edge, less a negation bubble.
+static float bodyRight(const ImVec2& rmax, bool negated, float scale) {
+    return rmax.x - (negated ? 2.0f * kBubbleR * scale : 0.0f);
+}
+
+// Shared tail of every gate: selection, name, bubble, pins.
+static void finishGate(ImDrawList* dl, const InstanceShape& inst, const SchematicView& sv,
+                       const ImVec2& canvasPos, const ImVec2& canvasSize,
+                       ImVec2 rmin, ImVec2 rmax, bool negated) {
+    if (negated) {
+        float r = kBubbleR * sv.transform.scale;
+        drawNegationBubble(dl, ImVec2(bodyRight(rmax, true, sv.transform.scale), (rmin.y + rmax.y) * 0.5f),
+                           r, kInstanceFillColor);
     }
+    if (inst.selected) addSelectionOutline(dl, rmin, rmax);
+    drawInstanceName(dl, inst, sv, rmin);
+    drawPorts(dl, inst, sv, canvasPos, canvasSize, /*namesInside=*/false);
+}
 
-    // Label ("assign") near top-left of the bounding box, small and subtle
-    ImVec2 lblPos = ImVec2(tl.x + 4.0f, tl.y + 4.0f);
-    dl->AddText(lblPos, contrastingTextColor(kInstanceFillColor, 180), "=");
+// AND / NAND — flat back, semicircular (bulging right) front. NAND adds a
+// negation bubble at the tip.
+static void drawAndLikeInstance(ImDrawList* dl, const InstanceShape& inst,
+                                const SchematicView& sv,
+                                const ImVec2& canvasPos, const ImVec2& canvasSize,
+                                bool negated) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    float cy = (rmin.y + rmax.y) * 0.5f;
+    float r  = (rmax.y - rmin.y) * 0.5f;
+    float xm = std::max(rmin.x, bodyRight(rmax, negated, sv.transform.scale) - r);
 
-    drawPorts(dl, inst, sv, canvasPos, canvasSize);
+    std::vector<ImVec2> pts;
+    pts.push_back(ImVec2(rmin.x, rmin.y));
+    appendArcPoints(pts, ImVec2(xm, cy), r, -1.5707963f, 1.5707963f, 24);
+    pts.push_back(ImVec2(rmin.x, rmax.y));
+    fillAndStrokeBody(dl, pts, kInstanceFillColor, inst.diagOutline);
+    finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
+}
+
+// OR / NOR / XOR / XNOR — concave back, curved sides meeting in a point on
+// the right; NOR/XNOR add a negation bubble at the tip; XOR/XNOR add the
+// extra curved line behind the back. Input pins are extended from the box
+// edge to the concave back so they visibly reach the body.
+static void drawOrLikeInstance(ImDrawList* dl, const InstanceShape& inst,
+                               const SchematicView& sv,
+                               const ImVec2& canvasPos, const ImVec2& canvasSize,
+                               bool negated, bool exclusive) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    const float s  = sv.transform.scale;
+    const float cy = (rmin.y + rmax.y) * 0.5f;
+    const float sh = rmax.y - rmin.y;
+    const float x0 = rmin.x + (exclusive ? 8.0f * s : 0.0f);   // body back
+    const float x1 = bodyRight(rmax, negated, s);              // body tip
+    const float sw = x1 - x0;
+    const float depth = std::min(sw * 0.25f, sh * 0.2f);       // concavity of the back
+    ImVec2 tip(x1, cy);
+
+    std::vector<ImVec2> pts;
+    appendQuadBezierPoints(pts, ImVec2(x0, rmin.y), ImVec2(x0 + sw * 0.6f, rmin.y), tip, 16);
+    appendQuadBezierPoints(pts, tip, ImVec2(x0 + sw * 0.6f, rmax.y), ImVec2(x0, rmax.y), 16);
+    appendQuadBezierPoints(pts, ImVec2(x0, rmax.y), ImVec2(x0 + 2.0f * depth, cy), ImVec2(x0, rmin.y), 12);
+    pts.pop_back(); // closes back onto the first point
+    fillAndStrokeBody(dl, pts, kInstanceFillColor, inst.diagOutline);
+
+    // The back curve at height y (a quadratic whose control point sits at
+    // mid-height, so y is linear in t): x = x0 + 2t(1-t) * 2*depth.
+    auto backX = [&](float xBase, float y) {
+        float t = sh > 0.0f ? (y - rmin.y) / sh : 0.5f;
+        return xBase + 4.0f * depth * t * (1.0f - t);
+    };
+    const float thickness = std::max(1.0f, 1.5f * s);
+    for (const auto& p : inst.ports) {
+        if (p.lx >= 0.0f) continue;
+        ImVec2 at = sv.worldToScreen(sv.portWorldPos(inst, p), canvasPos, canvasSize);
+        dl->AddLine(at, ImVec2(backX(x0, at.y), at.y), kPinLineColor, thickness);
+    }
+    if (exclusive) {
+        std::vector<ImVec2> arc;
+        appendQuadBezierPoints(arc, ImVec2(rmin.x, rmax.y), ImVec2(rmin.x + 2.0f * depth, cy),
+                               ImVec2(rmin.x, rmin.y), 12);
+        dl->AddPolyline(arc.data(), int(arc.size()), kInstanceLineColor, 1.25f, 0);
+    }
+    finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
+}
+
+// INV / BUF / assign — triangle pointing right; INV adds a negation bubble at
+// the tip, an assign is marked with "=".
+static void drawBufLikeInstance(ImDrawList* dl, const InstanceShape& inst,
+                                const SchematicView& sv,
+                                const ImVec2& canvasPos, const ImVec2& canvasSize,
+                                bool negated, bool isAssign = false) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    ImVec2 tl = rmin, bl(rmin.x, rmax.y);
+    ImVec2 mr(bodyRight(rmax, negated, sv.transform.scale), (rmin.y + rmax.y) * 0.5f);
+
+    std::vector<ImVec2> pts{ tl, mr, bl };
+    fillAndStrokeBody(dl, pts, kInstanceFillColor, inst.diagOutline);
+    if (isAssign) {
+        float fs = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
+        if (fs > 0.0f) {
+            ImFont* font = ImGui::GetFont();
+            ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "=");
+            dl->AddText(font, fs, ImVec2(tl.x + (mr.x - tl.x) * 0.3f - ts.x * 0.5f, mr.y - ts.y * 0.5f),
+                        contrastingTextColor(kInstanceFillColor, 200), "=");
+        }
+    }
+    finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
+}
+
+// DFF (and other clocked sequential cells) — the generic box, plus the
+// standard clock-triangle notch on the left edge at the clock pin's
+// position, so a flop reads differently from a plain unclassified
+// hierarchical/blackbox instance even though its outline is the same.
+static void drawDffInstance(ImDrawList* dl, const InstanceShape& inst,
+                            const SchematicView& sv,
+                            const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    drawGenericInstance(dl, inst, sv, canvasPos, canvasSize);
+
+    for (const auto& p : inst.ports) {
+        if (!p.clock) continue;
+        ImVec2 world  = sv.portWorldPos(inst, p);
+        float  notchH = std::min(inst.h * 0.3f, 10.0f);
+        ImVec2 top  = sv.worldToScreen(ImVec2(inst.x,               world.y - notchH * 0.5f), canvasPos, canvasSize);
+        ImVec2 bot  = sv.worldToScreen(ImVec2(inst.x,               world.y + notchH * 0.5f), canvasPos, canvasSize);
+        ImVec2 apex = sv.worldToScreen(ImVec2(inst.x + notchH * 0.6f, world.y),               canvasPos, canvasSize);
+        dl->AddLine(top, apex, kInstanceLineColor, 1.25f);
+        dl->AddLine(apex, bot, kInstanceLineColor, 1.25f);
+        break; // one clock pin is enough to draw the notch once
+    }
 }
 
 // ---------------------------------------------------------------------------
-// Top-level design port — schematic-style "flag": a small pentagon sized to its
-// name, flat base toward the design (where the net wire attaches, at the
-// pseudo-instance's own x/y -- see the zero-size term box built in
-// EquipotentialView.cpp), pointed tip facing outward, off the edge of the
-// design. Replaces the generic tick-line pin drawn by drawPorts() for every
-// other kind of port: a boundary port isn't a pin on a box, it *is* the box.
+// Top-level design port — a "flag": a small pentagon sized to its
+// name, pointing the way the signal flows. The wire attaches at the
+// pseudo-instance's own x/y (the zero-size term box built in
+// EquipotentialView.cpp). Inputs sit on the sheet's left edge: the flag lies
+// left of that point with its tip on it, pointing into the design. Outputs
+// sit on the right edge: the flag's flat base is on the point and its tip
+// points away, off the sheet. Replaces the generic tick-line pin drawn by
+// drawPorts() for every other kind of port: a boundary port isn't a pin on a
+// box, it *is* the box.
 // ---------------------------------------------------------------------------
 static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
                                      const SchematicView& sv,
@@ -398,13 +568,6 @@ static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
     float halfH = std::max(kBoundaryPortHalfHBase * sv.transform.scale, kMinBoundaryPortHalfH);
 
     ImVec2 anchor = sv.worldToScreen(ImVec2(inst.x, inst.y), canvasPos, canvasSize);
-    // This layout is a fixed left-to-right flow (see EquipotentialView.cpp's
-    // termLx/termRx placement: primary inputs sit left of the design,
-    // primary outputs sit right of it). Every boundary port's tip points
-    // rightward -- the direction signal continues past this port, whether
-    // that's on into the design (an input) or on off the sheet's right edge
-    // (an output) -- flat base toward `anchor`, where the wire attaches.
-    float outDir = 1.0f;
 
     const bool hovered = p.id == sv.hoveredPortId;
     ImU32 outline = hovered ? kPinHoverColor : p.color != 0 ? p.color : kBoundaryPortLineColor;
@@ -424,9 +587,10 @@ static void drawBoundaryPortInstance(ImDrawList* dl, const InstanceShape& inst,
     float bodyLen = std::max(halfH * 2.0f, textSize.x + 10.0f);
     float tipLen  = halfH;
 
-    float baseX = anchor.x;
-    float bodyX = anchor.x + outDir * bodyLen;
-    float tipX  = bodyX + outDir * tipLen;
+    // Input: [base .. body] tip on the anchor. Output: base on the anchor.
+    float baseX = p.isInput ? anchor.x - tipLen - bodyLen : anchor.x;
+    float bodyX = baseX + bodyLen;
+    float tipX  = bodyX + tipLen;
 
     ImVec2 pts[5] = {
         { baseX, anchor.y - halfH },
@@ -478,26 +642,64 @@ static void drawHierGroupInstance(ImDrawList* dl, const InstanceShape& inst,
 }
 
 // ---------------------------------------------------------------------------
-// Gate dispatcher — add new model names here as the library grows
+// Gate dispatcher — add new PrimitiveType values here as the library grows
 // ---------------------------------------------------------------------------
 // To add a new gate type:
 //   1. Write a static drawXxxInstance() function above with the same signature
-//   2. Add an else-if branch below matching its modelName string
+//   2. Add a case below matching its PrimitiveType
 // ---------------------------------------------------------------------------
 void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst,
                                  const ImVec2& canvasPos, const ImVec2& canvasSize) const {
     if (inst.isHierGroup) {
         drawHierGroupInstance(dl, inst, *this, canvasPos, canvasSize);
-    } else if (inst.modelName == "assign") {
-        drawAssignInstance(dl, inst, *this, canvasPos, canvasSize);
-    } else if (inst.modelName == "port") {
-        drawBoundaryPortInstance(dl, inst, *this, canvasPos, canvasSize);
+        return;
     }
-    // else if (inst.modelName == "and2")  { drawAnd2Instance (...); }
-    // else if (inst.modelName == "or2")   { drawOr2Instance  (...); }
-    // else if (inst.modelName == "dff")   { drawDffInstance  (...); }
-    else {
+    if (inst.modelName == "port") {
+        drawBoundaryPortInstance(dl, inst, *this, canvasPos, canvasSize);
+        return;
+    }
+    // A gate with several outputs has no symbol (symbolGeometry sized it as
+    // a box): draw the box.
+    int rightPins = 0;
+    for (const auto& p : inst.ports) if (p.lx >= 0.0f) ++rightPins;
+    if (rightPins > 1 && SchematicLayout::isGateSymbol(inst.primitiveType)) {
         drawGenericInstance(dl, inst, *this, canvasPos, canvasSize);
+        return;
+    }
+    switch (inst.primitiveType) {
+        case PrimitiveType::Assign:
+            drawBufLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false, /*isAssign=*/true);
+            break;
+        case PrimitiveType::And:
+            drawAndLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false);
+            break;
+        case PrimitiveType::Nand:
+            drawAndLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true);
+            break;
+        case PrimitiveType::Or:
+            drawOrLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false, /*exclusive=*/false);
+            break;
+        case PrimitiveType::Nor:
+            drawOrLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true, /*exclusive=*/false);
+            break;
+        case PrimitiveType::Xor:
+            drawOrLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false, /*exclusive=*/true);
+            break;
+        case PrimitiveType::Xnor:
+            drawOrLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true, /*exclusive=*/true);
+            break;
+        case PrimitiveType::Buf:
+            drawBufLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/false);
+            break;
+        case PrimitiveType::Inv:
+            drawBufLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true);
+            break;
+        case PrimitiveType::Dff:
+            drawDffInstance(dl, inst, *this, canvasPos, canvasSize);
+            break;
+        default:
+            drawGenericInstance(dl, inst, *this, canvasPos, canvasSize);
+            break;
     }
 }
 
@@ -558,7 +760,7 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
         }
     }
 
-    // Bus slash mark across the horizontal run, schematic-style, plus the net
+    // Bus slash mark across the horizontal run, plus the net
     // name if we have one.
     if (net.isBus) {
         ImVec2 mid = ImVec2(midX, (p1.y + p4.y) * 0.5f);
@@ -581,6 +783,59 @@ void SchematicView::drawNet(ImDrawList* dl, const NetWire& net, const ImVec2& ca
     }
 }
 
+void SchematicView::drawRoute(ImDrawList* dl, const NetRoute& route,
+                              const ImVec2& canvasPos, const ImVec2& canvasSize) const {
+    float thickness = zoomedSizeOrHidden(kWireBaseThickness, transform.scale, kMinWireThickness);
+    if (thickness <= 0.0f) return;
+    if (route.isBus) thickness *= 2.0f;
+    for (const auto& seg : route.segments) {
+        ImVec2 a = worldToScreen(seg.a, canvasPos, canvasSize);
+        ImVec2 b = worldToScreen(seg.b, canvasPos, canvasSize);
+        dl->AddLine(a, b, route.color, thickness);
+    }
+    // A square cap where a horizontal and a vertical segment end at the same
+    // point, so the corner isn't notched (butt-ended thick lines).
+    auto same = [](ImVec2 a, ImVec2 b) { return std::abs(a.x - b.x) < 0.5f && std::abs(a.y - b.y) < 0.5f; };
+    for (const auto& h : route.segments) {
+        if (std::abs(h.a.y - h.b.y) > 0.5f) continue;
+        for (ImVec2 w : { h.a, h.b }) {
+            bool corner = false;
+            for (const auto& v : route.segments)
+                if (std::abs(v.a.x - v.b.x) < 0.5f && (same(v.a, w) || same(v.b, w))) { corner = true; break; }
+            if (!corner) continue;
+            ImVec2 p = worldToScreen(w, canvasPos, canvasSize);
+            float r = thickness * 0.5f;
+            dl->AddRectFilled(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), route.color);
+        }
+    }
+    float dotR = zoomedSizeOrHidden(kJunctionDotBaseR, transform.scale, kMinJunctionDotR);
+    if (dotR > 0.0f)
+        for (const auto& j : route.junctions)
+            dl->AddCircleFilled(worldToScreen(j, canvasPos, canvasSize), route.isBus ? dotR * 1.5f : dotR, route.color);
+
+    // Bus slash mark on the longest horizontal run, plus the
+    // net name if we have one.
+    if (!route.isBus) return;
+    const SchematicLayout::RouteSegment* best = nullptr;
+    for (const auto& seg : route.segments)
+        if (std::abs(seg.a.y - seg.b.y) < 0.5f &&
+            (!best || std::abs(seg.b.x - seg.a.x) > std::abs(best->b.x - best->a.x)))
+            best = &seg;
+    if (!best) return;
+    ImVec2 mid = worldToScreen(ImVec2((best->a.x + best->b.x) * 0.5f, best->a.y), canvasPos, canvasSize);
+    float slashLen = std::max(6.0f, 9.0f * transform.scale);
+    dl->AddLine(ImVec2(mid.x - slashLen * 0.35f, mid.y + slashLen * 0.5f),
+                ImVec2(mid.x + slashLen * 0.35f, mid.y - slashLen * 0.5f),
+                route.color, thickness * 0.5f);
+    float fontSize = labelFontSize(kPortLabelBaseSize, transform.scale);
+    if (!route.netName.empty() && fontSize > 0.0f) {
+        ImFont* font = ImGui::GetFont();
+        ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, route.netName.c_str());
+        dl->AddText(font, fontSize, ImVec2(mid.x + 6.0f, mid.y - ts.y - 3.0f), kPinLabelColor,
+                    route.netName.c_str());
+    }
+}
+
 // Main render entry
 bool SchematicView::computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const {
     if (instances.empty()) return false;
@@ -589,11 +844,22 @@ bool SchematicView::computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const {
     float maxX = instances[0].x + instances[0].w;
     float maxY = instances[0].y + instances[0].h;
     for (const auto& inst : instances) {
-        minX = std::min(minX, inst.x);
-        minY = std::min(minY, inst.y);
-        maxX = std::max(maxX, inst.x + inst.w);
+        // Room for what's drawn outside the shape itself: a port's flag, an
+        // instance's name above it.
+        const bool  port = inst.modelName == "port";
+        const float flag = port ? 60.0f : 0.0f;
+        const float name = port || inst.isHierGroup ? 0.0f : 18.0f;
+        minX = std::min(minX, inst.x - flag);
+        minY = std::min(minY, inst.y - name);
+        maxX = std::max(maxX, inst.x + inst.w + flag);
         maxY = std::max(maxY, inst.y + inst.h);
     }
+    for (const auto& route : routes)
+        for (const auto& seg : route.segments)
+            for (ImVec2 p : { seg.a, seg.b }) {
+                minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
+                minY = std::min(minY, p.y); maxY = std::max(maxY, p.y);
+            }
     outMin = ImVec2(minX, minY);
     outMax = ImVec2(maxX, maxY);
     return true;
@@ -728,7 +994,7 @@ void SchematicView::handleInteraction(const ImVec2& canvasPos, const ImVec2& /*c
 void SchematicView::render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2& canvasSize) {
     dl->PushClipRect(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), true);
 
-    // Schematic-style white "paper" canvas -- see kCanvasBgColor.
+    // White "paper" canvas -- see kCanvasBgColor.
     dl->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), kCanvasBgColor);
 
     // Hierarchy group frames go under everything else -- they only outline
@@ -742,8 +1008,9 @@ void SchematicView::render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2
     // before. A net nested inside an expanded instance (containerShapeId set)
     // is drawn later instead -- see drawSubtree below -- so that instance's
     // opaque box fill doesn't get painted over it afterward.
+    for (const auto& route : routes) drawRoute(dl, route, canvasPos, canvasSize);
     for (const auto& net : nets) {
-        if (net.containerShapeId < 0) drawNet(dl, net, canvasPos, canvasSize);
+        if (net.containerShapeId < 0 && !net.routed) drawNet(dl, net, canvasPos, canvasSize);
     }
 
     // Recursive draw: a box, then the nets internal to it, then its nested

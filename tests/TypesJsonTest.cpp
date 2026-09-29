@@ -240,7 +240,7 @@ TEST(DiagnosisItemJson, ParsesNetKindAndUnknownSeverityDefaultsInfo) {
   EXPECT_TRUE(d.path.empty());
 }
 
-TEST(GeometryHelpers, HierToggleGlyphRectIsCenteredOnTop) {
+TEST(GeometryHelpers, HierToggleGlyphRectStraddlesTheTopRightCorner) {
   InstanceShape inst;
   inst.x = 100.0f;
   inst.y = 50.0f;
@@ -252,8 +252,11 @@ TEST(GeometryHelpers, HierToggleGlyphRectIsCenteredOnTop) {
 
   EXPECT_FLOAT_EQ(x1 - x0, 16.0f);
   EXPECT_FLOAT_EQ(y1 - y0, 16.0f);
-  // Centered on inst's horizontal midpoint.
-  EXPECT_FLOAT_EQ((x0 + x1) / 2.0f, inst.x + inst.w * 0.5f);
+  // Straddling the top border near the right corner, inside the box's width.
+  EXPECT_LT(y0, inst.y);
+  EXPECT_GT(y1, inst.y);
+  EXPECT_GT(x0, inst.x + inst.w * 0.5f);
+  EXPECT_LE(x1, inst.x + inst.w);
 }
 
 TEST(GeometryHelpers, CanShowHierToggleRequiresChildrenAndMinSize) {

@@ -126,6 +126,7 @@ def test_resolve_instance(top):
     assert [level[0] for level in inst["path"]] == ["u_sub", "u_and"]
     assert [level[2] for level in inst["path"]] == ["sub", "LUT2"]
     assert not inst["has_instances"]
+    assert inst["primitive_type"] == "unknown"  # LUT2 isn't a named gate
     assert {t["name"] for t in inst["terms"]} == {"I0", "I1", "O"}
 
     (reply,) = handle_request({"request": "resolve_instance", "path": ["u_sub"]})
@@ -150,3 +151,19 @@ def test_instance_selected_is_a_notification(top):
 def test_focus_instance_message():
     assert protocol.focus_instance(["u_sub", "u_and"]) == {
         "response": "focus_instance", "path": ["u_sub", "u_and"]}
+
+
+def test_get_primitive_type_uses_naja_modeling_not_names():
+    checks = ("isAssign", "isSequential", "isInv", "isBuf", "isAnd", "isNand",
+              "isOr", "isNor", "isXor", "isXnor")
+
+    def model(name, *true_checks):
+        return SimpleNamespace(getName=lambda: name,
+                               **{c: (lambda c=c: c in true_checks) for c in checks})
+    assert protocol.get_primitive_type(None) == "unknown"
+    assert protocol.get_primitive_type(model("x", "isAssign")) == "assign"
+    assert protocol.get_primitive_type(model("x", "isSequential")) == "dff"
+    assert protocol.get_primitive_type(model("ND2", "isNand")) == "nand"
+    assert protocol.get_primitive_type(model("OAI", "isXnor")) == "xnor"
+    # The name never matters: an unmodelled "AND2" is just a box.
+    assert protocol.get_primitive_type(model("AND2_X1")) == "unknown"

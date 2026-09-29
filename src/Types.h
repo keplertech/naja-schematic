@@ -28,10 +28,67 @@ struct SourceLoc {
   int endColumn = 0;
 };
 
+// Coarse gate/cell function classification for an instance, used to pick a
+// standard schematic symbol instead of a generic box (see
+// SchematicView::drawInstance()). It comes from naja's modeling of the cell
+// -- SNLDesignModeling's truth-table checks (isAnd, isNor, ...) and
+// isSequential -- never from its name: both LocalSNLProvider
+// (getPrimitiveType()) and python/naja_schematic/protocol.py
+// (get_primitive_type()) compute it the same way. Unknown is the default for
+// anything naja has no such model for -- hierarchical modules, blackboxes,
+// cells loaded without Liberty -- and always falls back to the generic box.
+// Gate arity (2..N inputs) is NOT part of this enum: the actual input port
+// count already carried on InstanceShape::ports is used instead, so no
+// separate arity field needs to travel over the wire.
+enum class PrimitiveType {
+  Unknown = 0,
+  And,
+  Nand,
+  Or,
+  Nor,
+  Xor,
+  Xnor,
+  Inv,
+  Buf,
+  Dff,
+  Assign,
+};
+
+inline const char* toString(PrimitiveType t) {
+  switch (t) {
+    case PrimitiveType::And:    return "and";
+    case PrimitiveType::Nand:   return "nand";
+    case PrimitiveType::Or:     return "or";
+    case PrimitiveType::Nor:    return "nor";
+    case PrimitiveType::Xor:    return "xor";
+    case PrimitiveType::Xnor:   return "xnor";
+    case PrimitiveType::Inv:    return "inv";
+    case PrimitiveType::Buf:    return "buf";
+    case PrimitiveType::Dff:    return "dff";
+    case PrimitiveType::Assign: return "assign";
+    default:                    return "unknown";
+  }
+}
+
+inline PrimitiveType primitiveTypeFromString(const std::string& s) {
+  if (s == "and")    return PrimitiveType::And;
+  if (s == "nand")   return PrimitiveType::Nand;
+  if (s == "or")     return PrimitiveType::Or;
+  if (s == "nor")    return PrimitiveType::Nor;
+  if (s == "xor")    return PrimitiveType::Xor;
+  if (s == "xnor")   return PrimitiveType::Xnor;
+  if (s == "inv")    return PrimitiveType::Inv;
+  if (s == "buf")    return PrimitiveType::Buf;
+  if (s == "dff")    return PrimitiveType::Dff;
+  if (s == "assign") return PrimitiveType::Assign;
+  return PrimitiveType::Unknown;
+}
+
 struct InstanceResponseJson {
   std::string name;
   unsigned child_id;
   std::string model_name;
+  PrimitiveType primitive_type = PrimitiveType::Unknown;
   DesignRef design_ref;
   bool has_primitives;
   bool has_instances;
@@ -66,6 +123,7 @@ struct BitTerm {
   unsigned child_id;
   Direction direction;
   std::optional<int> bit;
+  bool clock = false;  // a sequential cell's clock pin (naja's isClock)
 
   std::string getString() const {
     return name + (bit.has_value() ? ("[" + std::to_string(bit.value()) + "]") : "");
@@ -86,6 +144,7 @@ struct InstTermOccurrence {
   std::vector<std::string> pathModels; // model name per path entry ("" when the provider omits it)
   BitTerm term;
   DesignRef designRef;             // model of the tail instance — used to fetch its full interface
+  PrimitiveType primitiveType = PrimitiveType::Unknown;  // tail instance's model, see PrimitiveType
   // True when the tail instance's own model has sub-instances worth showing
   // in a nested schematic — drives the hierarchy expand/collapse glyph.
   bool has_instances = false;
@@ -247,6 +306,9 @@ struct Port {
     bool open = false;
     // An open pin whose net has been requested but hasn't arrived yet.
     bool pending = false;
+    // A sequential cell's clock pin, as naja models it (never guessed from
+    // the pin name) -- drawDffInstance() marks it with the clock notch.
+    bool clock = false;
 };
 
 struct InstanceShape {
@@ -259,7 +321,12 @@ struct InstanceShape {
     // leaf name when a hierarchy frame around the box already shows the
     // rest of the path).
     std::string label;
-    std::string modelName;  // gate/cell type — drives the icon dispatcher in drawInstance()
+    // Gate/cell function classification — drives the standard-shape dispatch
+    // in SchematicView::drawInstance(); PrimitiveType::Unknown draws the
+    // generic box. Actual input-pin count (2..N) comes from `ports` below,
+    // not from this enum.
+    PrimitiveType primitiveType = PrimitiveType::Unknown;
+    std::string modelName;  // "port" for a top-level port stub, else empty
     float x = 0.0f;
     float y = 0.0f;  // world coords (top-left)
     float w = 100.0f;
@@ -308,7 +375,7 @@ struct NetWire {
     int srcPortId = 0;
     int dstInstance = 0;
     int dstPortId = 0;
-    // Schematic-style default: near-monochrome. Color is reserved for
+    // Default: near-monochrome. Color is reserved for
     // highlighting (diagnosis severity, selection) via an explicit override
     // further down the pipeline -- see EquipotentialView.cpp's srcPort/
     // dstPort->color checks -- rather than being a per-net decoration.
@@ -322,6 +389,9 @@ struct NetWire {
     // wiring nested inside it, but before that instance's children so the
     // children still render on top.
     int containerShapeId = -1;
+    // Drawn as part of its driver pin's routed tree (SchematicView::routes)
+    // rather than on its own.
+    bool routed = false;
 
     // Best-effort display name for the underlying net (driver pin/port name,
     // or the InternalNet name for hierarchy-embedded nets), shown next to
@@ -337,12 +407,13 @@ inline ImVec2 portAnchor(const InstanceShape& inst, const Port& port) {
 }
 
 // World-space rect of an instance's hierarchy expand/collapse glyph
-// (a small square straddling the top-center of the box). Shared by
+// (a small square straddling the box's top border, near its right corner,
+// clear of the instance name drawn above the left corner). Shared by
 // SchematicView's draw code and EquipotentialView's click hit-test so the
 // two never drift apart.
 inline void hierToggleGlyphRect(const InstanceShape& inst,
                                 float& x0, float& y0, float& x1, float& y1) {
-    x0 = inst.x + inst.w * 0.5f - 8.0f;
+    x0 = inst.x + inst.w - 20.0f;
     x1 = x0 + 16.0f;
     y0 = inst.y - 2.0f;
     y1 = y0 + 16.0f;

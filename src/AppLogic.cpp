@@ -238,6 +238,7 @@ void setupProvider(AppState& state) {
           ep.childId = t.value("child_id", 0u);
           if (t.contains("bit") && !t["bit"].is_null())
             ep.bit = t["bit"].get<int>();
+          ep.clock = t.value("clock", false);
           int dirInt   = t.value("direction", 0);
           ep.direction = dirInt == 1 ? Direction::Output
                        : dirInt == 2 ? Direction::Inout
@@ -256,6 +257,7 @@ void setupProvider(AppState& state) {
           ic.childId = c.value("child_id", 0u);
           if (c.contains("design_ref"))
             ic.designRef = c["design_ref"].get<DesignRef>();
+          ic.primitiveType = primitiveTypeFromString(c.value("primitive_type", std::string("unknown")));
           ic.hasInstances = c.value("has_instances", false) || c.value("has_primitives", false);
           data.children.push_back(std::move(ic));
         }

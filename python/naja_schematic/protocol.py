@@ -55,6 +55,39 @@ def has_visible_primitive_instances(design):
     return any(not instance.getModel().isAssign()
                for instance in design.getPrimitiveInstances())
 
+# Gate/cell function classification, from naja's own modeling of the cell
+# (the truth table a Liberty `function` or an NLDB0 gate defines, and its
+# sequential model) -- never from its name. A cell naja has no model for is
+# "unknown" and draws as the generic box. LocalSNLProvider.cpp's
+# getPrimitiveType() mirrors this, same as the rest of the wire protocol.
+_PRIMITIVE_TYPE_CHECKS = (
+    ("isSequential", "dff"),
+    ("isInv", "inv"),
+    ("isBuf", "buf"),
+    ("isAnd", "and"),
+    ("isNand", "nand"),
+    ("isOr", "or"),
+    ("isNor", "nor"),
+    ("isXor", "xor"),
+    ("isXnor", "xnor"),
+)
+
+def get_primitive_type(model):
+    if model is None:
+        return "unknown"
+    if model.isAssign():
+        return "assign"
+    for check, ptype in _PRIMITIVE_TYPE_CHECKS:
+        if getattr(model, check)():
+            return ptype
+    return "unknown"
+
+def with_clock(entry, term):
+    # Only sent when set: marks a flip-flop's clock pin (see drawDffInstance).
+    if term.is_clock():
+        entry["clock"] = True
+    return entry
+
 def is_anonymous_constant_net(net):
     # Anonymous scalar constant nets (1'b0/1'b1 tie-offs, e.g. an unconnected
     # input najaeda ties off implicitly) are structural noise, not
@@ -92,6 +125,7 @@ def serialize_model(model, child_id, name, source_loc=None):
         "name": name,
         "child_id": child_id,
         "model_name": model.getName(),
+        "primitive_type": get_primitive_type(model),
         "design_ref": {
             "db_id": model.getDB().getID(),
             "library_id": model.getLibrary().getID(),
@@ -223,7 +257,7 @@ def equipotential_to_json(equipotential, sinks=None):
         inst_model = instTerm.getInstance().getModel()
         has_instances = (inst_model.hasNonPrimitiveInstances() or
                          has_visible_primitive_instances(inst_model))
-        occurrences.append({
+        occurrences.append(with_clock({
             "path": path,
             "term_id": term.getID(),
             "name": term.getName(),
@@ -234,6 +268,7 @@ def equipotential_to_json(equipotential, sinks=None):
                 "library_id": inst_model.getLibrary().getID(),
                 "design_id": inst_model.getID(),
             },
+            "primitive_type": get_primitive_type(inst_model),
             "has_instances": has_instances,
             # Lets the view tell whether every pin of this instance is already
             # on screen (solid box) or only a subset (dashed, expandable).
@@ -242,7 +277,7 @@ def equipotential_to_json(equipotential, sinks=None):
             # Net on this inst term inside the instance's parent design --
             # shown in the schematic's pin hover tooltip.
             "net": net_display_name(instTerm.getNet())
-        })
+        }, term))
     for term in equipotential.getTerms():
         # A top-level output is a receiver of the net; an input/inout drives it.
         if (sinks is not None
@@ -464,18 +499,18 @@ def bit_terms_json(design):
             for b in range(lo, hi + 1):
                 bit_term = term.getBusTermBit(b)
                 if bit_term:
-                    terms.append({
+                    terms.append(with_clock({
                         "name": f"{term.getName()}[{b}]",
                         "child_id": bit_term.getID(),
                         "direction": direction_to_int(bit_term.getDirection()),
                         "bit": b,
-                    })
+                    }, bit_term))
         else:
-            terms.append({
+            terms.append(with_clock({
                 "name": term.getName(),
                 "child_id": term.getID(),
                 "direction": direction_to_int(term.getDirection()),
-            })
+            }, term))
     return terms
 
 
@@ -516,6 +551,7 @@ def _handle_resolve_instance(u, request):
         current = inst.getModel()
     reply["instance"] = {
         "path": levels,
+        "primitive_type": get_primitive_type(design),
         "design_ref": {
             "db_id": design.getDB().getID(),
             "library_id": design.getLibrary().getID(),

@@ -3,6 +3,7 @@
 #include <vector>
 #include <imgui.h>
 #include "Types.h"   // ensures InstanceShape, Port, NetWire are known
+#include "SchematicLayout.h"
 
 struct Transform {
     float scale = 1.0f;
@@ -16,6 +17,17 @@ public:
 
     std::vector<InstanceShape> instances;
     std::vector<NetWire> nets;
+    // A routed net: one orthogonal wire tree from a driving pin to all its
+    // receivers, in world coordinates (SchematicLayout::routeNets). Its
+    // NetWires are marked `routed` and aren't drawn on their own.
+    struct NetRoute {
+        std::vector<SchematicLayout::RouteSegment> segments;
+        std::vector<ImVec2> junctions;   // three or more directions meet here
+        ImU32       color = NetWire{}.color;
+        bool        isBus = false;
+        std::string netName;
+    };
+    std::vector<NetRoute> routes;
     Transform transform;
     // Pin under the cursor (drawn highlighted), -1 = none. Set each frame by
     // the owning view, which does the hit-testing.
@@ -50,6 +62,8 @@ public:
                       const ImVec2& canvasPos, const ImVec2& canvasSize) const;
     void drawNet(ImDrawList* dl, const NetWire& net,
                  const ImVec2& canvasPos, const ImVec2& canvasSize) const;
+    void drawRoute(ImDrawList* dl, const NetRoute& route,
+                   const ImVec2& canvasPos, const ImVec2& canvasSize) const;
 
     // Main render entry (parameters by const reference)
     void render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2& canvasSize);

@@ -312,6 +312,7 @@ nlohmann::json resolvedU7() {
     "instance": {
       "path": [["core", 5, "Core"], ["u7", 7, "AND2"]],
       "design_ref": {"db_id": 1, "library_id": 2, "design_id": 3},
+      "primitive_type": "and",
       "has_instances": false, "source_loc": null,
       "terms": [{"name": "A", "child_id": 0, "direction": 0},
                 {"name": "B", "child_id": 1, "direction": 0},
@@ -328,6 +329,7 @@ TEST(StartInstance, ParsedFromAnInstanceResolvedReply) {
   EXPECT_EQ(start->pathIds, (std::vector<unsigned>{5, 7}));
   EXPECT_EQ(start->pathModels, (std::vector<std::string>{"Core", "AND2"}));
   EXPECT_EQ(start->designRef.design_id, 3u);
+  EXPECT_EQ(start->primitiveType, PrimitiveType::And);
   ASSERT_EQ(start->ports.size(), 3u);
   EXPECT_EQ(start->ports[2].name, "Y");
   EXPECT_EQ(start->ports[2].direction, Direction::Output);
@@ -345,6 +347,7 @@ TEST_F(SchematicClicks, StartInstanceIsDrawnAloneWithAllPinsOpen) {
   const InstanceShape* u7 = shape({"core", "u7"});
   ASSERT_NE(u7, nullptr);
   EXPECT_FALSE(u7->partialInterface);  // its whole interface is shown
+  EXPECT_EQ(u7->primitiveType, PrimitiveType::And);  // drawn as an AND gate
   for (auto name : {"A", "B", "Y"}) {
     ASSERT_NE(pin({"core", "u7"}, name), nullptr) << name;
     EXPECT_TRUE(pin({"core", "u7"}, name)->open) << name;

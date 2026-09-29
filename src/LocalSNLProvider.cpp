@@ -68,6 +68,31 @@ static std::string instanceName(const SNLInstance* i) {
   return i->getString();
 }
 
+// Gate/cell function classification, from naja's own modeling of the cell
+// (the truth table a Liberty `function` or an NLDB0 gate defines, and its
+// sequential model) -- never from its name. A cell naja has no model for
+// (e.g. gate-level Verilog loaded without Liberty) is Unknown and draws as
+// the generic box. protocol.py's get_primitive_type() mirrors this, same as
+// the rest of the wire protocol (see CLAUDE.md).
+static PrimitiveType getPrimitiveType(const SNLDesign* model) {
+  if (!model) return PrimitiveType::Unknown;
+  if (NLDB0::isAssign(model)) return PrimitiveType::Assign;
+  if (SNLDesignModeling::isSequential(model)) return PrimitiveType::Dff;
+  if (SNLDesignModeling::isInv(model))  return PrimitiveType::Inv;
+  if (SNLDesignModeling::isBuf(model))  return PrimitiveType::Buf;
+  if (SNLDesignModeling::isAnd(model))  return PrimitiveType::And;
+  if (SNLDesignModeling::isNand(model)) return PrimitiveType::Nand;
+  if (SNLDesignModeling::isOr(model))   return PrimitiveType::Or;
+  if (SNLDesignModeling::isNor(model))  return PrimitiveType::Nor;
+  if (SNLDesignModeling::isXor(model))  return PrimitiveType::Xor;
+  if (SNLDesignModeling::isXnor(model)) return PrimitiveType::Xnor;
+  return PrimitiveType::Unknown;
+}
+
+static PrimitiveType getPrimitiveType(const SNLInstance* instance) {
+  return instance ? getPrimitiveType(instance->getModel()) : PrimitiveType::Unknown;
+}
+
 static bool hasVisiblePrimitiveInstances(const SNLDesign* d) {
   for (auto* inst : d->getPrimitiveInstances()) {
     auto* model = inst->getModel();
@@ -131,6 +156,8 @@ static json bitTermJson(const SNLBitTerm* bt) {
   };
   if (auto* btb = dynamic_cast<const SNLBusTermBit*>(bt))
     t["bit"] = static_cast<int>(btb->getBit());
+  // Only sent when set: marks a flip-flop's clock pin (see drawDffInstance).
+  if (SNLDesignModeling::isClock(bt)) t["clock"] = true;
   return t;
 }
 
@@ -515,9 +542,10 @@ std::string LocalSNLProvider::buildInstancesResponse(
         continue;
       }
       children.push_back({
-        {"name",       instanceName(inst)},
-        {"model_name", model ? designName(model) : ""},
-        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"name",           instanceName(inst)},
+        {"model_name",     model ? designName(model) : ""},
+        {"primitive_type", toString(getPrimitiveType(model))},
+        {"child_id",       static_cast<unsigned>(inst->getID())},
         {"design_ref", {
           {"db_id",      model ? static_cast<unsigned>(model->getDB()->getID()) : 0u},
           {"library_id", model ? static_cast<unsigned>(model->getLibrary()->getID()) : 0u},
@@ -659,6 +687,7 @@ static json equipotentialJson(const SNLEquipotential& equi,
         {"design_id",  static_cast<unsigned>(model->getID())}
       };
     }
+    entry["primitive_type"] = toString(getPrimitiveType(theInst));
     entry["has_instances"] = hasAnySubInstances(theInst->getModel());
     // Lets the view tell whether every pin of this instance is already on
     // screen (solid box) or only a subset (dashed, double-click to expand).
@@ -875,6 +904,7 @@ std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) cons
       {"library_id", static_cast<unsigned>(design->getLibrary()->getID())},
       {"design_id",  static_cast<unsigned>(design->getID())}
     }},
+    {"primitive_type", toString(getPrimitiveType(design))},
     {"has_instances", hasAnySubInstances(design)},
     {"source_loc",    sourceLocJson(instance)},
     {"terms",         allBitTermsJson(design)}
@@ -908,9 +938,10 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
     for (auto* inst : model->getNonPrimitiveInstances()) {
       auto* sub = inst->getModel();
       children.push_back({
-        {"name",       instanceName(inst)},
-        {"model_name", sub ? designName(sub) : ""},
-        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"name",           instanceName(inst)},
+        {"model_name",     sub ? designName(sub) : ""},
+        {"primitive_type", toString(getPrimitiveType(sub))},
+        {"child_id",       static_cast<unsigned>(inst->getID())},
         {"design_ref", {
           {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
           {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
@@ -926,9 +957,10 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
       auto* sub = inst->getModel();
       if (sub && NLDB0::isAssign(sub)) continue;
       children.push_back({
-        {"name",       instanceName(inst)},
-        {"model_name", sub ? designName(sub) : ""},
-        {"child_id",   static_cast<unsigned>(inst->getID())},
+        {"name",           instanceName(inst)},
+        {"model_name",     sub ? designName(sub) : ""},
+        {"primitive_type", toString(getPrimitiveType(sub))},
+        {"child_id",       static_cast<unsigned>(inst->getID())},
         {"design_ref", {
           {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
           {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},

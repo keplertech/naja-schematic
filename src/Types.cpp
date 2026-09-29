@@ -42,6 +42,7 @@ void from_json(const json& j, InstanceResponseJson& r) {
     r.name = j["name"].get<std::string>();
   if (j.contains("model_name") && !j["model_name"].is_null())
     r.model_name = j["model_name"].get<std::string>();
+  r.primitive_type = primitiveTypeFromString(j.value("primitive_type", std::string("unknown")));
 
   r.child_id = j.value("child_id", 0u);
   j.at("design_ref").get_to(r.design_ref);
@@ -172,6 +173,7 @@ void from_json(const json& j, Equipotential& e) {
       if (occJson.contains("direction") && !occJson["direction"].is_null()) {
         term.direction = intToDirection(occJson["direction"].get<int>());
       }
+      term.clock = occJson.value("clock", false);
       if (occJson.contains("bit") && !occJson["bit"].is_null()) {
         term.bit = occJson["bit"].get<int>();
       } else {
@@ -185,6 +187,7 @@ void from_json(const json& j, Equipotential& e) {
       if (occJson.contains("design_ref") && occJson["design_ref"].is_object())
         occurrence.designRef = occJson["design_ref"].get<DesignRef>();
 
+      occurrence.primitiveType = primitiveTypeFromString(occJson.value("primitive_type", std::string("unknown")));
       occurrence.has_instances = occJson.value("has_instances", false);
       if (occJson.contains("bit_term_count") && occJson["bit_term_count"].is_number_unsigned())
         occurrence.bit_term_count = occJson["bit_term_count"].get<size_t>();

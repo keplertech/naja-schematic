@@ -24,8 +24,6 @@ using namespace SchematicLayout;
 // ---------------------------------------------------------------------------
 // Layout geometry constants (see SchematicLayout.h for the placement ones)
 // ---------------------------------------------------------------------------
-static constexpr float kPortSpacing = 18.0f;
-
 // Hierarchy embedding (nested boxes) geometry.
 static constexpr float kHierChildW    = 110.0f;
 static constexpr float kHierChildH    = 44.0f;
@@ -107,8 +105,6 @@ static bool g_showHierarchy = true;
 // of the frame to fit the view to once this frame's layout is known.
 static std::optional<InstancePath> g_pendingZoomGroup;
 
-// Persistent layout state: where each instance has been placed so far.
-static IncrementalLayout g_layout;
 // Instances shown on their own (showInstance), by instance path.
 static std::map<InstancePath, EquipotentialView::StartInstance> g_startInstances;
 
@@ -137,19 +133,25 @@ static std::string busLabel(const std::string& base, std::vector<int> bits) {
     return base + " (*" + std::to_string(bits.size()) + ")";
 }
 
-// Derive the gate/cell model name from the leaf instance name.
-// Naja SNL encodes assign statements as "<assign:N>".
-// Additional primitives can be detected here as the library grows.
-static std::string modelNameFromLeaf(const std::string& leaf) {
-    if (leaf.find("assign") != std::string::npos) return "assign";
-    // Add more patterns here:
-    //   if (leaf.find("DFF") != std::string::npos) return "dff";
-    //   if (leaf == "AND2")                        return "and2";
-    return "";  // generic box
-}
-
 static float portLy(int i, int n) {
     return n > 1 ? -0.4f + 0.8f * float(i) / float(n - 1) : 0.0f;
+}
+
+// Sizes `inst` as its symbol (SchematicLayout::symbolGeometry) and puts its
+// pins on the pin grid: inputs down the left side, the rest down the right,
+// each in their current order. `extraH` grows the box below its pins, to
+// make room for nested internals.
+static void applySymbolGeometry(InstanceShape& inst, float extraH) {
+    std::vector<std::string> left, right;
+    for (const auto& p : inst.ports) (p.lx < 0.f ? left : right).push_back(p.name);
+    const SymbolGeometry g = symbolGeometry(inst.primitiveType, left, right);
+    inst.w = g.w;
+    inst.h = g.h + extraH;
+    size_t li = 0, ri = 0;
+    for (auto& p : inst.ports) {
+        const float y = p.lx < 0.f ? g.leftY[li++] : g.rightY[ri++];
+        p.ly = y / inst.h - 0.5f;
+    }
 }
 
 // Screen-space mouse position converted to schematic world coordinates.
@@ -259,7 +261,7 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         cs.path          = parent.path;
         cs.path.push_back(c.name);
         cs.name          = displayPath(cs.path);
-        cs.modelName     = modelNameFromLeaf(c.name);
+        cs.primitiveType = c.primitiveType;
         cs.w             = kHierChildW;
         cs.h             = kHierChildH;
         cs.parentShapeId = parent.id;
@@ -337,9 +339,13 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
     // Sub-pass 4: position children top-to-bottom in a single column,
     // recursing into an already-expanded child *before* moving on to the
     // next sibling so a grown height pushes later siblings down correctly.
+    // Below the parent's own pin rows (applySymbolGeometry reserved the room).
+    float header = kHierHeaderGap;
+    for (const auto& p : parent.ports)
+        header = std::max(header, (p.ly + 0.5f) * parent.h + kPinPitch);
     std::vector<InstanceShape> descendants;
     float x = parent.x + kHierMargin;
-    float y = parent.y + kHierHeaderGap;
+    float y = parent.y + header;
     for (auto& cs : children) {
         cs.x = x;
         cs.y = y;
@@ -351,7 +357,7 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         y += cs.h + kHierGap;
     }
 
-    float bottom = children.empty() ? (parent.y + kHierHeaderGap) : (y - kHierGap);
+    float bottom = children.empty() ? (parent.y + header) : (y - kHierGap);
     parent.h = std::max(parent.h, (bottom - parent.y) + kHierMargin);
     parent.w = std::max(parent.w, kHierChildW + 2.0f * kHierMargin);
 
@@ -370,7 +376,6 @@ void EquipotentialView::fitView()   { g_pendingFit = true; }
 void EquipotentialView::clearNets() { g_pendingClear = true; }
 
 void EquipotentialView::resetLayout() {
-    g_layout.clear();
     g_startInstances.clear();
     g_expandedInstances.clear();
     g_pendingExpansions.clear();
@@ -424,6 +429,7 @@ EquipotentialView::startInstanceFromResolved(const json& reply) {
     }
     if (start.path.empty()) return std::nullopt;
     if (inst.contains("design_ref")) start.designRef = inst["design_ref"].get<DesignRef>();
+    start.primitiveType = primitiveTypeFromString(inst.value("primitive_type", std::string("unknown")));
     start.hasInstances = inst.value("has_instances", false);
     if (inst.contains("source_loc") && inst["source_loc"].is_object()) {
         const auto& loc = inst["source_loc"];
@@ -436,6 +442,7 @@ EquipotentialView::startInstanceFromResolved(const json& reply) {
         ep.name    = t.value("name", std::string(""));
         ep.childId = t.value("child_id", 0u);
         if (t.contains("bit") && !t["bit"].is_null()) ep.bit = t["bit"].get<int>();
+        ep.clock   = t.value("clock", false);
         int dirInt   = t.value("direction", 0);
         ep.direction = dirInt == 1 ? Direction::Output
                      : dirInt == 2 ? Direction::Inout : Direction::Input;
@@ -675,14 +682,6 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
 
     // -----------------------------------------------------------------------
-    // Layout new equips (once each, stores positions)
-    // -----------------------------------------------------------------------
-    for (Equipotential* eq : equipotentials)
-        if (eq) g_layout.place(eq);
-    for (const auto& [path, start] : g_startInstances)
-        g_layout.placeAlone(path);
-
-    // -----------------------------------------------------------------------
     // Rebuild geometry: merged instances + per-equip wires
     // -----------------------------------------------------------------------
     g_schematic.instances.clear();
@@ -701,12 +700,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         Direction             direction;
         unsigned              termChildId;
         std::optional<int>    termBit;
+        bool                  clock = false;
         std::vector<unsigned> pathIds;
     };
     struct MInst {
-        ImVec2                pos{};
         bool                  initialized = false;
         DesignRef             designRef{};
+        PrimitiveType         primitiveType = PrimitiveType::Unknown;
         bool                  hasInstances = false;
         std::optional<size_t> bitTermCount;
         std::optional<SourceLoc> sourceLoc;
@@ -719,7 +719,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
 
     // Per-equip wire endpoints: an instance pin (by instance path), or a
     // top-level term (by name, its stub shape id filled in by pass 3).
-    struct WireEnd { bool isTerm; InstancePath path; std::string term; int portId; int termInstId = -1; };
+    struct WireEnd { bool isTerm; InstancePath path; std::string term; int portId; int termInstId = -1;
+                     bool drives = false; };
     std::vector<std::vector<WireEnd>> equiEnds(equipotentials.size());
     // Best-effort net-name label per equipotential, shown next to a merged
     // bus wire's slash mark in pass 4 below -- the driving pin's name is the
@@ -741,7 +742,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             for (const auto& item : items) {
                 if (item.isTerm) {
                     int pid = nextPortId++;
-                    equiEnds[ei].push_back({ true, {}, item.label, pid });
+                    equiEnds[ei].push_back({ true, {}, item.label, pid, -1, pass == 0 });
                     g_portEquiByPortId[pid] = { item.pathIds, item.termChildId, item.termBit };
                     continue;
                 }
@@ -749,15 +750,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 if (!mi.initialized) {
                     mi.initialized   = true;
                     mi.designRef     = item.designRef;
+                    mi.primitiveType = item.primitiveType;
                     mi.hasInstances  = item.hasInstances;
                     mi.bitTermCount  = item.bitTermCount;
                     mi.sourceLoc     = item.sourceLoc;
                     mi.path          = item.path;
                     mi.pathModels    = item.pathModels;
                     mi.pathIds       = item.pathIds;
-                    auto pit = g_layout.positions().find(item.path);
-                    mi.pos = pit != g_layout.positions().end()
-                        ? pit->second : ImVec2{kLeftMargin, 0.f};
                 }
                 // Find or create port slot for this port
                 int pid = -1;
@@ -773,13 +772,14 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     ps.direction   = item.direction;
                     ps.termChildId = item.termChildId;
                     ps.termBit     = item.termBit;
+                    ps.clock       = item.clock;
                     ps.pathIds     = item.pathIds;
                     mi.ports.push_back(std::move(ps));
                     g_portEquiByPortId[pid] = { item.pathIds, item.termChildId, item.termBit };
                     // This pin's net is in the view now: its request is done.
                     g_pendingPinNets.resolve(pinRequestKey(g_portEquiByPortId[pid]));
                 }
-                equiEnds[ei].push_back({ false, item.path, "", pid });
+                equiEnds[ei].push_back({ false, item.path, "", pid, -1, pass == 0 });
             }
         }
     }
@@ -793,14 +793,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         if (mi.initialized) continue;
         mi.initialized  = true;
         mi.designRef    = start.designRef;
+        mi.primitiveType = start.primitiveType;
         mi.hasInstances = start.hasInstances;
         mi.bitTermCount = start.ports.size();
         mi.sourceLoc    = start.sourceLoc;
         mi.path         = start.path;
         mi.pathModels   = start.pathModels;
         mi.pathIds      = start.pathIds;
-        auto pit = g_layout.positions().find(path);
-        mi.pos = pit != g_layout.positions().end() ? pit->second : ImVec2{kLeftMargin, 0.f};
     }
 
     // Pass 2: build InstanceShapes from merged data
@@ -817,12 +816,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
 
         InstanceShape inst;
         inst.id    = nextInstId++;
-        inst.x     = mi.pos.x;
-        inst.y     = mi.pos.y;
-        inst.w     = kInstW;
         inst.path      = key;
         inst.name      = displayPath(key);
-        inst.modelName = modelNameFromLeaf(key.empty() ? std::string() : key.back());
+        inst.primitiveType = mi.primitiveType;
         inst.diagOutline = DiagnosisStore::instanceColor(key);
         inst.selected    = SelectionStore::isSelected(key);
         g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.sourceLoc };
@@ -834,13 +830,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         // finalizes positions, below) or kick off the request for them.
         inst.hasChildren  = mi.hasInstances;
         inst.hierExpanded = inst.hasChildren && g_hierExpanded.count(key) > 0;
+        float internalsH = 0.f;
         if (inst.hierExpanded) {
             auto internalsIt = g_instanceInternals.find(key);
             if (internalsIt != g_instanceInternals.end()) {
                 size_t n = internalsIt->second.children.size();
                 float blockH = n ? float(n) * kHierChildH + float(n - 1) * kHierGap : 0.f;
-                inst.h += kHierHeaderGap + blockH + kHierMargin;
-                inst.w  = std::max(inst.w, kHierChildW + 2.0f * kHierMargin);
+                internalsH = blockH + kHierMargin;
             } else if (!g_hierPending.count(key) && g_provider) {
                 g_hierPending.insert(key);
                 json req;
@@ -902,12 +898,6 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 }
             }
 
-            int nL = 0, nR = 0;
-            for (const auto& row : rows)
-                (row.members[0]->ep->direction == Direction::Input ? nL : nR)++;
-            inst.h = std::max(kInstH, float(std::max(nL, nR)) * kPortSpacing + 10.f);
-
-            int li = 0, ri = 0;
             for (const auto& row : rows) {
                 bool isIn = row.members[0]->ep->direction == Direction::Input;
                 Port p;
@@ -924,6 +914,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 } else {
                     p.id   = row.members[0]->pid;
                     p.name = row.members[0]->ep->name;
+                    p.clock = row.members[0]->ep->clock;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->ep->name));
                     if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
                     p.open    = row.members[0]->open;
@@ -931,7 +922,6 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                                     pinRequestKey(g_portEquiByPortId[p.id]), ImGui::GetTime());
                 }
                 p.lx = isIn ? -0.5f : 0.5f;
-                p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
                 p.direction = row.members[0]->ep->direction;
                 p.isInput   = !isIn;
                 inst.ports.push_back(p);
@@ -972,12 +962,6 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 }
             }
 
-            int nL = 0, nR = 0;
-            for (const auto& row : rows)
-                (row.members[0]->direction == Direction::Input ? nL : nR)++;
-            inst.h = std::max(kInstH, float(std::max(nL, nR)) * kPortSpacing + 10.f);
-
-            int li = 0, ri = 0;
             for (const auto& row : rows) {
                 bool isIn = row.members[0]->direction == Direction::Input;
                 Port p;
@@ -993,27 +977,72 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 } else {
                     p.id   = row.members[0]->portId;
                     p.name = row.members[0]->name;
+                    p.clock = row.members[0]->clock;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->name));
                     if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
                 }
                 p.lx = isIn ? -0.5f : 0.5f;
-                p.ly = isIn ? portLy(li++, nL) : portLy(ri++, nR);
                 p.direction = row.members[0]->direction;
                 p.isInput   = !isIn;
                 inst.ports.push_back(p);
             }
         }
+        applySymbolGeometry(inst, internalsH);
+        if (internalsH > 0.f) inst.w = std::max(inst.w, kHierChildW + 2.0f * kHierMargin);
         g_schematic.instances.push_back(std::move(inst));
     }
 
-    // Either wrap the leaves in module frames (which re-lays them out), or
-    // keep the flat incremental layout and just resolve vertical overlaps
-    // from boxes drawn taller than their reserved slot (persisted, so Pass 3's
-    // term-column bandY and later anchoring match what's actually drawn).
+    auto renderedPort = [&](int pid) {
+        auto it = logicalToRenderedPortId.find(pid);
+        return it != logicalToRenderedPortId.end() ? it->second : pid;
+    };
+    // World position of an instance end's (rendered) pin, if it's drawn.
+    auto pinWorld = [&](const WireEnd& we) -> std::optional<ImVec2> {
+        auto kit = pathToInstId.find(we.path);
+        InstanceShape* s = kit != pathToInstId.end() ? g_schematic.findInstanceById(kit->second) : nullptr;
+        const Port* p = s ? g_schematic.findPortById(*s, renderedPort(we.portId)) : nullptr;
+        if (!p) return std::nullopt;
+        return portAnchor(*s, *p);
+    };
+
+    // Layered placement of the instance boxes (see SchematicLayout): every
+    // net between two instances is an edge from its driver pin to each
+    // receiver pin.
+    std::map<int, int> nodeOfShape;
+    std::vector<PlaceNode> placeNodes;
+    for (const auto& inst : g_schematic.instances) {
+        nodeOfShape[inst.id] = int(placeNodes.size());
+        placeNodes.push_back({ inst.w, inst.h });
+    }
+    std::vector<PlaceNet> placeNets;
+    for (const auto& ends : equiEnds) {
+        PlaceNet pn;
+        for (const auto& we : ends) {
+            if (we.isTerm) continue;
+            auto kit = pathToInstId.find(we.path);
+            if (kit == pathToInstId.end()) continue;
+            InstanceShape* s = g_schematic.findInstanceById(kit->second);
+            const Port* p = s ? g_schematic.findPortById(*s, renderedPort(we.portId)) : nullptr;
+            if (!p) continue;
+            PlacePin pin{ nodeOfShape[s->id], (p->ly + 0.5f) * s->h };
+            (we.drives ? pn.drivers : pn.receivers).push_back(pin);
+        }
+        if (!pn.drivers.empty() && !pn.receivers.empty()) placeNets.push_back(std::move(pn));
+    }
+    const Placement placement = layeredPlacement(placeNodes, placeNets);
+    for (auto& inst : g_schematic.instances) {
+        const ImVec2 pos = placement.pos[nodeOfShape[inst.id]];
+        inst.x = pos.x;
+        inst.y = pos.y;
+    }
+
+    // With Show Hierarchy, wrap the leaves in module frames (which re-lays
+    // them out, keeping each one's logic level).
     bool grouped = false;
     if (g_showHierarchy) {
         std::map<InstancePath, LeafHier> leafHier;
-        for (const auto& [path, mi] : minsts) leafHier[path] = { mi.path, mi.pathModels };
+        for (const auto& [path, mi] : minsts)
+            leafHier[path] = { mi.path, mi.pathModels, placement.level[nodeOfShape[pathToInstId[path]]] };
         auto frames = layoutHierarchyGroups(leafHier, g_schematic.instances, pathToInstId, nextInstId);
         grouped = !frames.empty();
         std::vector<InstanceShape> frameShapes;
@@ -1029,14 +1058,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                                      std::make_move_iterator(frameShapes.begin()),
                                      std::make_move_iterator(frameShapes.end()));
     }
-    if (!grouped) g_layout.resolveColumnOverlaps(g_schematic.instances);
 
-    // Hierarchy embedding: now that top-level positions are finalized (the
-    // deoverlap pass above may have shifted a box's y), lay out and append
-    // the nested children/internal-nets of every expanded, loaded instance.
-    // Collected as ids first (not pointers) since emission appends to the
-    // very vectors we're about to iterate, which would invalidate iterators
-    // held across a push_back.
+    // Hierarchy embedding: now that top-level positions are final, lay out
+    // and append the nested children/internal-nets of every expanded, loaded
+    // instance. Collected as ids first (not pointers) since emission appends
+    // to the very vectors we're about to iterate, which would invalidate
+    // iterators held across a push_back.
     {
         std::vector<int> hierExpandIds;
         for (const auto& inst : g_schematic.instances)
@@ -1052,105 +1079,85 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         }
     }
 
-    // Pass 3: build term InstanceShapes per equip (not merged)
-    // Port flags already placed, so two nets whose band lands on the same
-    // spot (e.g. two inputs feeding the same cell) stack instead of overlap.
-    std::vector<ImVec2> placedTermPos;
+    // Pass 3: top-level ports, on the sheet's edges -- inputs
+    // left of everything, outputs right of it -- each level with the pin it
+    // connects to (a straight wire) unless that would crowd another port.
+    float sheetX0 = 1e30f, sheetX1 = -1e30f;
+    for (const auto& inst : g_schematic.instances) {
+        if (inst.parentShapeId >= 0 || inst.w <= 0.f) continue;
+        sheetX0 = std::min(sheetX0, inst.x);
+        sheetX1 = std::max(sheetX1, inst.x + inst.w);
+    }
+    if (sheetX0 > sheetX1) { sheetX0 = kLeftMargin; sheetX1 = kLeftMargin; }
+    struct PortStub { size_t ei; std::string label; Direction direction; int portId; float wantY; };
+    std::vector<PortStub> leftStubs, rightStubs;
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
         if (!eq) continue;
 
         std::vector<Item> drivers, receivers;
         buildItems(eq, drivers, receivers);
-
-        // Determine column X for this equip's terms from placed instances
-        float lx = kLeftMargin, rx = kLeftMargin + kInstW + kColGap;
-        float bandY = 0.f; int nBand = 0;
-        auto accInst = [&](const Item& item) {
-            if (item.isTerm) return;
-            auto kit = pathToInstId.find(item.path);
-            const InstanceShape* shape =
-                kit != pathToInstId.end() ? g_schematic.findInstanceById(kit->second) : nullptr;
-            if (!shape) return;
-            lx = std::min(lx, shape->x);
-            rx = std::max(rx, shape->x + shape->w);
-            bandY += shape->y; ++nBand;
-        };
-        for (const auto& d : drivers)   accInst(d);
-        for (const auto& r : receivers) accInst(r);
-        if (nBand) bandY /= float(nBand);
-        // With module frames drawn, top-level ports belong outside the
-        // outermost frame, not next to a leaf that sits deep inside one.
-        if (grouped) {
-            for (const auto& inst : g_schematic.instances) {
-                if (!inst.isHierGroup) continue;
-                lx = std::min(lx, inst.x);
-                rx = std::max(rx, inst.x + inst.w);
-            }
-        }
-
-        float termLx = lx  - 40.f;
-        float termRx = rx  + 20.f;
-
         for (int pass = 0; pass < 2; ++pass) {
             const auto& items = pass == 0 ? drivers : receivers;
-            float ty = bandY;
             for (const auto& item : items) {
-                if (!item.isTerm) { ty += kInstH + kRowSpacing; continue; }
-
-                // The first end of this term still without a stub shape
-                // (so a term listed twice gets one stub).
-                int pid = -1;
-                for (const auto& we : equiEnds[ei]) {
-                    if (we.isTerm && we.termInstId < 0 && we.term == item.label) { pid = we.portId; break; }
+                if (!item.isTerm) continue;
+                // The first end of this term not claimed by a stub yet (so a
+                // term listed twice gets one stub).
+                WireEnd* end = nullptr;
+                for (auto& we : equiEnds[ei])
+                    if (we.isTerm && we.termInstId < 0 && we.term == item.label) { end = &we; break; }
+                if (!end) continue;
+                end->termInstId = 0;  // claimed; the real stub id is set below
+                // Level with the first instance pin across the net: a
+                // receiver for an input port, the driver for an output.
+                float wantY = 0.f;
+                const bool isInput = item.direction == Direction::Input;
+                for (int prefer = 0; prefer < 2; ++prefer) {
+                    bool found = false;
+                    for (const auto& we : equiEnds[ei]) {
+                        if (we.isTerm || (prefer == 0 && we.drives == isInput)) continue;
+                        if (auto at = pinWorld(we)) { wantY = at->y; found = true; break; }
+                    }
+                    if (found) break;
                 }
-                if (pid < 0) continue;
-
-                bool isInput = (item.direction == Direction::Input);
-                const float tx = isInput ? termLx : termRx;
-                for (bool moved = true; moved; ) {
-                    moved = false;
-                    for (const auto& p : placedTermPos)
-                        if (std::abs(p.x - tx) < 1.f && std::abs(p.y - ty) < 24.f)
-                            { ty = p.y + 30.f; moved = true; }
-                }
-                placedTermPos.push_back(ImVec2(tx, ty));
-                InstanceShape inst;
-                inst.id = nextInstId++;
-                inst.x  = tx;
-                inst.y  = ty;
-                inst.w  = 0.f; inst.h = 0.f;
-                inst.partialInterface = false;
-                // Draws as a schematic-style boundary-port flag (see
-                // drawBoundaryPortInstance in SchematicView.cpp) rather than
-                // a generic box -- this pseudo-instance only exists to give
-                // the top-level design port a wire anchor point.
-                inst.modelName = "port";
-
-                Port p;
-                p.id = pid; p.name = item.label;
-                p.lx = isInput ? 1.0f : -1.0f;
-                p.ly = 0.f;
-                p.direction = item.direction;
-                p.isInput   = isInput;
-                p.color     = DiagnosisStore::netColor({}, stripBusIndex(item.label));
-                inst.ports.push_back(p);
-                // Wire this term's ends to the stub.
-                for (auto& we : equiEnds[ei]) {
-                    if (we.isTerm && we.termInstId < 0 && we.term == item.label)
-                        we.termInstId = inst.id;
-                }
-                g_schematic.instances.push_back(std::move(inst));
-                ty += 30.f;
+                (isInput ? leftStubs : rightStubs).push_back({ ei, item.label, item.direction, end->portId, wantY });
             }
+        }
+    }
+    for (auto* stubs : { &leftStubs, &rightStubs }) {
+        std::vector<float> want;
+        for (const auto& st : *stubs) want.push_back(st.wantY);
+        const std::vector<float> ys = stackPorts(want);
+        const bool isInput = stubs == &leftStubs;
+        for (size_t i = 0; i < stubs->size(); ++i) {
+            const PortStub& st = (*stubs)[i];
+            InstanceShape inst;
+            inst.id = nextInstId++;
+            inst.x  = isInput ? sheetX0 - kPortGap : sheetX1 + kPortGap;
+            inst.y  = ys[i];
+            inst.w  = 0.f; inst.h = 0.f;
+            inst.partialInterface = false;
+            // Draws as a boundary-port flag (see
+            // drawBoundaryPortInstance in SchematicView.cpp) rather than
+            // a generic box -- this pseudo-instance only exists to give
+            // the top-level design port a wire anchor point.
+            inst.modelName = "port";
+
+            Port p;
+            p.id = st.portId; p.name = st.label;
+            p.lx = isInput ? 1.0f : -1.0f;
+            p.ly = 0.f;
+            p.direction = st.direction;
+            p.isInput   = isInput;
+            p.color     = DiagnosisStore::netColor({}, stripBusIndex(st.label));
+            inst.ports.push_back(p);
+            for (auto& we : equiEnds[st.ei])
+                if (we.isTerm && we.portId == st.portId) we.termInstId = inst.id;
+            g_schematic.instances.push_back(std::move(inst));
         }
     }
 
     // Pass 4: wires per equip
-    auto renderedPort = [&](int pid) {
-        auto it = logicalToRenderedPortId.find(pid);
-        return it != logicalToRenderedPortId.end() ? it->second : pid;
-    };
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         const auto& ends = equiEnds[ei];
         if (ends.size() < 2) continue;
@@ -1214,6 +1221,57 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             // just one wire, not a bus.
         }
         g_schematic.nets = std::move(merged);
+    }
+
+    // Route the top-level wires as one orthogonal tree per driving pin (see
+    // SchematicLayout::routeNets), around the boxes. Wiring nested inside an
+    // expanded instance keeps its simple per-wire drawing.
+    {
+        std::vector<RouteRect> obstacles, keepOut;
+        for (const auto& inst : g_schematic.instances) {
+            if (inst.parentShapeId >= 0 || inst.w <= 0.f || inst.h <= 0.f) continue;
+            if (inst.isHierGroup) {  // its label row
+                keepOut.push_back({ inst.x, inst.y, inst.x + inst.w, inst.y + kGroupHeader - kPinPitch });
+                continue;
+            }
+            obstacles.push_back({ inst.x, inst.y, inst.x + inst.w, inst.y + inst.h });
+            keepOut.push_back({ inst.x, inst.y - kPinPitch, inst.x + inst.w, inst.y });  // its name
+        }
+        std::map<std::pair<int, int>, size_t> routeOfSource;
+        std::vector<RouteNet> routeNetsIn;
+        g_schematic.routes.clear();
+        auto pinOf = [](const InstanceShape& inst, const Port& p) {
+            return RoutePin{ portAnchor(inst, p), p.lx >= 0.f };
+        };
+        for (auto& n : g_schematic.nets) {
+            if (n.containerShapeId >= 0) continue;
+            auto* srcInst = g_schematic.findInstanceById(n.srcInstance);
+            auto* dstInst = g_schematic.findInstanceById(n.dstInstance);
+            auto* srcPort = srcInst ? g_schematic.findPortById(*srcInst, n.srcPortId) : nullptr;
+            auto* dstPort = dstInst ? g_schematic.findPortById(*dstInst, n.dstPortId) : nullptr;
+            if (!srcPort || !dstPort) continue;
+            auto key = std::make_pair(n.srcInstance, n.srcPortId);
+            auto it  = routeOfSource.find(key);
+            if (it == routeOfSource.end()) {
+                it = routeOfSource.emplace(key, routeNetsIn.size()).first;
+                routeNetsIn.push_back({ pinOf(*srcInst, *srcPort), {} });
+                SchematicView::NetRoute r;
+                r.color   = n.color;
+                r.netName = n.netName;
+                g_schematic.routes.push_back(std::move(r));
+            }
+            routeNetsIn[it->second].receivers.push_back(pinOf(*dstInst, *dstPort));
+            auto& r = g_schematic.routes[it->second];
+            // A flagged wire colors the whole tree it belongs to.
+            if (n.color != NetWire{}.color) r.color = n.color;
+            r.isBus = r.isBus || n.isBus;
+            n.routed = true;
+        }
+        auto routed = routeNets(routeNetsIn, obstacles, keepOut);
+        for (size_t i = 0; i < routed.size(); ++i) {
+            g_schematic.routes[i].segments  = std::move(routed[i].segments);
+            g_schematic.routes[i].junctions = std::move(routed[i].junctions);
+        }
     }
 
     static int lastTotal = -1;

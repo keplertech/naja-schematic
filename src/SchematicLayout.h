@@ -20,18 +20,122 @@ namespace SchematicLayout {
 
 // ---------------------------------------------------------------------------
 // Geometry constants (world units)
+//
+// Schematic sheet: every pin sits on a kGrid multiple, so a driver pin and
+// the receiver pin placed level with it are joined by a straight wire.
 // ---------------------------------------------------------------------------
-inline constexpr float kInstW      = 180.0f;
-inline constexpr float kInstH      = 70.0f;
-inline constexpr float kColGap     = 120.0f;
-inline constexpr float kRowSpacing = 24.0f;
+inline constexpr float kGrid       = 10.0f;
+inline constexpr float kPinPitch   = 20.0f;  // distance between neighboring pins
+inline constexpr float kRowSpacing = 30.0f;  // vertical gap between boxes in a column
 inline constexpr float kLeftMargin = 20.0f;
-inline constexpr float kNetVGap    = 80.0f;
+inline constexpr float kChannelMin = 50.0f;  // narrowest routing channel between columns
+inline constexpr float kTrackPitch = 10.0f;  // extra channel width per vertical wire track
+inline constexpr float kPortGap    = 50.0f;  // top-level ports -> nearest box
 
 // Hierarchy grouping (module frames around traced leaves).
-inline constexpr float kGroupHeader = 30.0f; // room for the frame's label
-inline constexpr float kGroupPad    = 18.0f; // inner padding of a frame
-inline constexpr float kGroupColGap = 90.0f; // gap between columns inside a frame
+// Grid multiples, so leaves inside frames keep their pins on the grid.
+inline constexpr float kGroupHeader = 40.0f; // room for the frame's label and a leaf's name
+inline constexpr float kGroupPad    = 20.0f; // inner padding of a frame
+inline constexpr float kGroupColGap = 70.0f; // gap between columns inside a frame
+
+// ---------------------------------------------------------------------------
+// Symbols. A gate (AND/OR/XOR families, INV/BUF, assign) is drawn as its
+// standard symbol, sized by its input count; anything else is a box sized to
+// fit its pin names, which are drawn inside it. Pins sit on the kPinPitch
+// grid: a gate's inputs are centered on its single output, a box's pins run
+// down from the top on each side. Pin offsets are from the symbol's top edge.
+// ---------------------------------------------------------------------------
+struct SymbolGeometry {
+    float              w = 0.f, h = 0.f;
+    std::vector<float> leftY;   // one per left (input) pin, in order
+    std::vector<float> rightY;  // one per right (output/inout) pin, in order
+};
+
+// True for the types drawn as a gate symbol rather than a box.
+bool isGateSymbol(PrimitiveType type);
+
+// A gate with more than one right-side pin can't be drawn as its symbol and
+// falls back to a box.
+SymbolGeometry symbolGeometry(PrimitiveType type,
+                              const std::vector<std::string>& leftNames,
+                              const std::vector<std::string>& rightNames);
+
+// ---------------------------------------------------------------------------
+// Layered placement (Sugiyama-style):
+//   1. cycles are broken (DFS back edges are ignored for layering);
+//   2. each instance gets a logic level: longest path from the sources, then
+//      each source is pulled right next to its nearest receiver;
+//   3. instances are ordered within each level by barycenter sweeps to cut
+//      wire crossings (first-seen order breaks ties, so adding a net mostly
+//      appends to the drawing);
+//   4. levels become columns, with a routing channel between neighbors that
+//      grows with the number of nets crossing it;
+//   5. each column is placed vertically by isotonic regression towards the
+//      heights that put an instance's pins level with the pins they connect
+//      to (straight wires), keeping the column order and spacing.
+// Pure geometry: the result depends only on the inputs, in their order.
+// ---------------------------------------------------------------------------
+struct PlaceNode {
+    float w = 0.f, h = 0.f;
+};
+struct PlacePin {
+    int   node = 0;
+    float dy   = 0.f;   // pin offset from the node's top edge
+};
+struct PlaceNet {
+    std::vector<PlacePin> drivers;
+    std::vector<PlacePin> receivers;
+};
+struct Placement {
+    std::vector<ImVec2> pos;    // top-left per node
+    std::vector<int>    level;  // logic level per node (0 = leftmost column)
+};
+Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vector<PlaceNet>& nets);
+
+// Stacks the top-level port flags of one side of the drawing: each wants the
+// height of the pin it connects to (`desiredY`), and no two may be closer than
+// kPinPitch. Returns the heights, in input order, as close to their desired
+// ones as that spacing allows.
+std::vector<float> stackPorts(const std::vector<float>& desiredY);
+
+// ---------------------------------------------------------------------------
+// Orthogonal net routing. Box rectangles are obstacles, and the vertical
+// strips free of any box between the placed columns are routing channels.
+// Each net is a tree:
+//   - a vertical trunk in the channel next to the driver pin, and one in the
+//     channel next to each group of receivers further away;
+//   - a horizontal spine joining those trunks, at the driver's height when
+//     that line is free, else at the nearest free height;
+//   - a horizontal branch from each pin to its trunk.
+// Trunks sharing a channel are spread over distinct tracks, so two nets never
+// overlap on one vertical line, ordered so that two nets' horizontals at the
+// same height never overlap either (channel routing's vertical constraints);
+// trunks that don't overlap vertically share a track. A
+// junction dot marks every point where three or more wire directions meet.
+// ---------------------------------------------------------------------------
+struct RouteRect {
+    float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
+};
+struct RoutePin {
+    ImVec2 at;
+    bool   right = true;   // the wire leaves the pin to the right (else left)
+};
+struct RouteNet {
+    RoutePin              driver;
+    std::vector<RoutePin> receivers;
+};
+struct RouteSegment {
+    ImVec2 a, b;
+};
+struct RoutedNet {
+    std::vector<RouteSegment> segments;
+    std::vector<ImVec2>       junctions;
+};
+// `keepOut` areas (labels drawn outside boxes) aren't obstacles for channels
+// or pin stubs, but a spine avoids running through them when it can.
+std::vector<RoutedNet> routeNets(const std::vector<RouteNet>& nets,
+                                 const std::vector<RouteRect>& obstacles,
+                                 const std::vector<RouteRect>& keepOut = {});
 
 // ---------------------------------------------------------------------------
 // One endpoint of an equipotential: a top-level term, or a pin on an instance
@@ -43,8 +147,10 @@ struct Item {
     Direction              direction   = Direction::Inout;
     bool                   isTerm      = false;
     DesignRef              designRef{};
+    PrimitiveType          primitiveType = PrimitiveType::Unknown;
     unsigned               termChildId = 0;
     std::optional<int>     termBit;
+    bool                   clock = false;  // a sequential cell's clock pin
     std::vector<unsigned>  pathIds;
     // Only meaningful for instance occurrences (isTerm == false): whether
     // this instance's model has sub-instances worth expanding into a nested
@@ -64,48 +170,13 @@ struct Item {
 void buildItems(const Equipotential* eq, std::vector<Item>& drivers, std::vector<Item>& receivers);
 
 // ---------------------------------------------------------------------------
-// Incremental layout: each equipotential is placed once, the first time it's
-// seen, and its instances keep their position from then on (so the view
-// doesn't reshuffle as nets are added). A net sharing an already-placed
-// instance extends horizontally from it (new receivers to the right of a
-// driver, new drivers to the left of a receiver); an unrelated net gets a
-// fresh two-column block below everything placed so far.
-// ---------------------------------------------------------------------------
-class IncrementalLayout {
-  public:
-    // No-op if `eq` was already placed.
-    void place(const Equipotential* eq);
-    // Places one instance on its own (a starting point with no net shown
-    // yet) in the left column below everything placed so far. No-op if
-    // `path` is already placed.
-    void placeAlone(const InstancePath& path);
-
-    // Push boxes down within each column (same x) so none overlaps the one
-    // above it -- place() reserves a fixed kInstH slot per instance, but a box
-    // with many ports is drawn taller. Zero-width shapes (term stubs) are
-    // ignored. The corrected positions are persisted so later place() calls
-    // anchor on what's actually drawn.
-    void resolveColumnOverlaps(std::vector<InstanceShape>& instances);
-
-    void clear();
-
-    // Instance path -> world top-left.
-    const std::map<InstancePath, ImVec2>& positions() const { return placed_; }
-
-  private:
-    std::map<InstancePath, ImVec2> placed_;
-    std::set<const Equipotential*> laidOut_;
-    float                          nextY_ = 0.f;
-};
-
-// ---------------------------------------------------------------------------
 // Hierarchy grouping: nested frames for the hierarchical modules containing
 // the displayed leaf instances. A driver trace (or any equipotential) spans
 // leaf cells anywhere in the design; without this, they're shown as one flat
 // sea of boxes and the module structure is lost.
 //
-// Each leaf keeps the logic column the incremental layout gave it (its x,
-// i.e. its distance from the traced net), and the modules become a tree of
+// Each leaf keeps the logic level the layered placement gave it, and the
+// modules become a tree of
 // frames laid out bottom-up: inside a frame, its own leaves and sub-frames
 // are bucketed into columns by the (average) logic column of their contents,
 // left to right, and stacked by their original vertical order. That keeps the
@@ -115,6 +186,7 @@ class IncrementalLayout {
 struct LeafHier {
     InstancePath             path;        // full instance-name path, leaf last
     std::vector<std::string> pathModels;  // matching model names ("" if unknown)
+    int                      level = 0;   // logic level (layeredPlacement)
 };
 
 struct HierFrame {
