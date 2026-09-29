@@ -195,8 +195,10 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   than its own page and `allowed_origins`, so other web pages can't read
   the design; `token=None` turns the token off. Pushes go to every
   connected viewer (`websockets` `broadcast`); selection callbacks get
-  `(id_path, path)` on the worker thread with no lock held. After the host
-  swaps or edits the design, `design_changed()` makes every viewer reload
+  `(id_path, path)` in order on a callbacks thread with no lock held. The
+  host swaps or edits the design inside `with server.replacing_design():`
+  (or calls `design_changed()` itself, in the same critical section):
+  every viewer reloads, and requests made for the old design are dropped
   (see `design_changed` under Wire protocol).
 - `widget.py` — `naja_schematic.show()`: an anywidget for Jupyter/Colab/
   VSCode notebooks. Its ES module is the bundle + `static/widget.js`; the
@@ -481,23 +483,52 @@ the same `id_path`/`path` pair as diagnosis items:
   observes the ids, so moving between anonymous siblings fires it). The other hosts only log it (`protocol.py`) or ignore it
   (`LocalSNLProvider`).
 
-`design_changed` is a third server push, `{"response":"design_changed"}`:
-the host replaced or edited the design, so every tree node, instance id
-and schematic box the viewer holds may be stale. The viewer runs
-`reloadNetlist()` (`AppLogic.cpp`; also what native File > Open uses: new
-`NetlistTree`, schematic cleared *immediately* with `resetLayout()` rather
-than the next-frame `clearNets()`, which would wipe a focus drawn in the
-same frame) and sends `load_root`. Until the matching `root_response`,
-`ReloadGuard` (`src/ReloadGuard.h`, tested in `tests/ReloadGuardTest.cpp`)
-drops every other message: replies to requests sent before the reset
-arrive first, since transports answer in order, and the host re-sends
-diagnoses/focus after the root anyway. Overlapping pushes keep only the
-last root. Python sends it with `design_changed()` on `ViewerSession`,
-`ViewerServer` and the widget's `Schematic`, which replaces the kept
-diagnoses/focus (they name the old design) with the ones passed, resolved
-against the new design, and clears the selection (`on_select` callbacks
-get `(None, None)`). `LocalSNLProvider` never sends it: native reloads
-come from its own menu.
+`design_changed` is a third server push, `{"response":"design_changed",
+"generation":N}`: the host replaced or edited the design, so every tree
+node, instance id and schematic box the viewer holds may be stale -- or,
+worse, name something else, since a new design can reuse ids. The viewer
+runs `reloadNetlist()` (`AppLogic.cpp`; also what native File > Open uses:
+new `NetlistTree`, schematic cleared *immediately* with `resetLayout()`
+rather than the next-frame `clearNets()`, which would wipe a focus drawn in
+the same frame) and sends `load_root`.
+
+**Design generations** keep the two designs apart, in both directions. The
+Python host numbers its designs (`ViewerSession.generation`, 0 at start,
++1 per `design_changed()`) and stamps *every* message it sends -- replies
+and pushes -- with `"generation"`: the one current when the request was
+answered. The viewer wraps its transport in `GenerationProvider`
+(`src/GenerationProvider.h`, `main_wasm.cpp`; tested in
+`tests/GenerationProviderTest.cpp`), which adopts the first generation it
+sees, switches on a newer `design_changed` (drops an older/repeated one),
+drops any other message stamped with a different generation (replies to
+requests made for the old design), and stamps every outgoing request with
+its current generation. `ViewerSession.answer()` drops a request stamped
+with a non-current generation *unanswered and without effect* -- a stale
+`instance_selected` never selects or reaches the host's callbacks, a stale
+`get_properties` never queries the new design. Unstamped messages mean "no
+generations" and pass on both sides: a viewer's first `load_root`, older
+viewers/hosts, and `LocalSNLProvider` (no wrapper natively: it never swaps
+the design under the viewer). A viewer whose first `load_root` is overtaken
+by a `design_changed` gets two roots for the new design; `AppLogic` ignores
+a `root_response` when the tree already has a root.
+
+Atomicity is the host's half of the contract: the generation check runs
+inside the session's `run` hook, so the host must swap the design *and*
+call `design_changed()` in one critical section -- under `lock`
+(`ViewerServer.replacing_design()` does both), or on the thread `run` hops
+to. Then a request already queued behind the lock is checked after the
+bump and dropped. The selection is also re-checked when recorded
+(`_commit_selection`, in case a bump lands between answer and record) and
+again when each callback is delivered (`_notify`): `ViewerServer` delivers
+selection callbacks in order on one `naja-schematic-callbacks` thread
+(`dispatch=`; the widget delivers inline), so a selection queued before a
+`design_changed()` is never delivered after it. `design_changed()` also
+replaces the kept diagnoses/focus (they name the old design) with the ones
+passed, resolved against the new design, and clears the selection
+(`on_select` callbacks get `(None, None)`). `tests/test_design_generations.py`
+covers delayed selections, requests queued behind the swap and several
+viewers deterministically; the netlist there is "replaced" by itself, the
+worst case where every stale id still resolves.
 
 `get_properties`/`properties_response` is a general name/value inspector for
 whatever object the UI asks about — an instance (including the top design

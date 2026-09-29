@@ -11,9 +11,13 @@ class FakeNetlistProvider : public INetlistProvider {
   public:
     void send(const std::string& msg) override { sent.push_back(msg); }
     void on_open(std::function<void()>) override {}
-    void on_message(std::function<void(const std::string&)>) override {}
+    void on_message(std::function<void(const std::string&)> cb) override { msg_cb = std::move(cb); }
     void on_close(std::function<void()>) override {}
     void on_error(std::function<void(const std::string&)>) override {}
 
+    // Plays a message from the backend to whoever registered on_message.
+    void deliver(const std::string& msg) { if (msg_cb) msg_cb(msg); }
+
     std::vector<std::string> sent;
+    std::function<void(const std::string&)> msg_cb;
 };

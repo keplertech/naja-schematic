@@ -15,6 +15,7 @@ design is loaded in this process's NLUniverse.
 """
 import argparse
 import asyncio
+import contextlib
 import hmac
 import http
 import json
@@ -124,8 +125,8 @@ class ViewerServer:
         webbrowser.open(server.url)               # or server.open_browser()
         server.annotate(items); server.show_instance(instance)
         server.on_select(lambda id_path, path: ...)
-        ...                                        # host swaps the design
-        server.design_changed()                    # viewers reload it
+        with server.replacing_design():            # viewers reload the new design,
+            netlist.load_verilog(other)            # stale requests are dropped
         server.stop()
 
     It is also a context manager (start on enter, stop on exit).
@@ -162,7 +163,13 @@ class ViewerServer:
         self._port = port
         self._token = secrets.token_urlsafe(16) if token is True else (token or None)
         self._allowed_origins = list(allowed_origins)
-        self._session = ViewerSession(push=self._broadcast, run=run, diagnosis=diagnosis)
+        # Selection callbacks run in order on one thread of their own: the
+        # viewer's selections come from the request worker, design_changed()'s
+        # (None, None) from the host, and neither may overtake the other.
+        self._callbacks = ThreadPoolExecutor(max_workers=1,
+                                             thread_name_prefix="naja-schematic-callbacks")
+        self._session = ViewerSession(push=self._broadcast, run=run, diagnosis=diagnosis,
+                                      dispatch=self._dispatch_callback)
         self._thread = None
         self._loop = None
         self._stopping = None
@@ -254,22 +261,55 @@ class ViewerServer:
         one name for a child of the top."""
         self._session.show_instance(target)
 
+    @property
+    def generation(self):
+        """The current design generation: 0, plus one per design_changed()."""
+        return self._session.generation
+
     def design_changed(self, diagnosis=None, instance=None):
-        """Call after replacing or editing the design: every viewer reloads
-        it from the root, dropping replies meant for the old one. Kept
-        diagnoses and focus are replaced by `diagnosis` and `instance`
-        (resolved against the new design; None: none), and the selection is
-        cleared. Call it where the host's design operations are allowed,
-        after the new design is in place."""
-        self._session.design_changed(diagnosis, instance)
+        """Start the next design generation, after replacing or editing the
+        design: every viewer reloads it from the root, and every request a
+        viewer made for the previous design -- a query or a selection, even
+        one already queued behind the host's lock, even naming ids the new
+        design reuses -- is dropped unanswered. Kept diagnoses and focus are
+        replaced by `diagnosis` and `instance` (resolved against the new
+        design; None: none), and the selection is cleared. Returns the new
+        generation.
+
+        Call it in the same critical section as the swap: before releasing
+        `lock` (see replacing_design()), or, with `run=`, on the thread
+        `run` hands requests to, before it runs another one. Otherwise a
+        queued request could still be answered for the old generation
+        against the new design in between."""
+        return self._session.design_changed(diagnosis, instance)
+
+    @contextlib.contextmanager
+    def replacing_design(self, diagnosis=None, instance=None):
+        """Replace or edit the design inside the block: `lock` is held for
+        it, and design_changed(diagnosis, instance) runs at its end, still
+        under the lock (not if the block raises)::
+
+            with server.replacing_design(diagnosis=items):
+                netlist.load_verilog(new_design)
+
+        Only with `lock` (or the default one): with `run=`, swap on the
+        thread `run` hops to and call design_changed() there."""
+        if self.lock is None:
+            raise RuntimeError("replacing_design() needs a lock; with run=, call "
+                               "design_changed() on the thread run hops to")
+        with self.lock:
+            yield
+            self.design_changed(diagnosis, instance)
 
     def on_select(self, callback):
         """Call `callback(id_path, path)` each time a viewer selects an
-        instance: its instance ids and names, top excluded ([] = the top
-        design; a name is "" for an anonymous instance), or (None, None)
-        when design_changed() clears the selection. Called on the server's
-        worker thread (or design_changed()'s caller), with no lock held.
-        Returns `callback`, for remove_select_callback()."""
+        instance of the current design: its instance ids and names, top
+        excluded ([] = the top design; a name is "" for an anonymous
+        instance), or (None, None) when design_changed() clears the
+        selection. Called in order, on a thread of the server's own, with no
+        lock held; a selection is not delivered once design_changed() has
+        started a newer generation. Returns `callback`, for
+        remove_select_callback()."""
         return self._session.on_select(callback)
 
     def remove_select_callback(self, callback):
@@ -379,6 +419,12 @@ class ViewerServer:
             log.info("Viewer disconnected: %s", e)
         finally:
             self._clients.discard(websocket)
+
+    def _dispatch_callback(self, fn):
+        try:
+            self._callbacks.submit(fn)
+        except RuntimeError:  # interpreter shutting down
+            pass
 
     def _broadcast(self, message):
         # Called on the host's thread: hand the message to the server loop.

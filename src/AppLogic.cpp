@@ -70,7 +70,6 @@ static void reloadNetlist(AppState& state) {
   delete state.guiData->netlist_;
   state.guiData->netlist_ = new NetlistTree(state.provider);
   attachTreeCallbacks(state);
-  state.reloadGuard.reloadStarted();
   state.provider->send(R"({"request":"load_root"})");
 }
 
@@ -128,16 +127,21 @@ void setupProvider(AppState& state) {
     if (resp == "design_changed") {
       // Host push: the design behind the provider was replaced (or edited
       // in place), so every node and id the viewer holds may be stale.
+      // GenerationProvider has already switched to the new generation, so
+      // replies for the old one no longer get here, and the load_root
+      // below goes out stamped with the new one.
       Console::Log("Design changed by the host: reloading");
       reloadNetlist(state);
       return;
     }
-    if (!state.reloadGuard.accept(resp)) {
-      Console::Log("Dropping " + resp + " for the previous design");
-      return;
-    }
 
     if (resp == "root_response" || resp == "root_loaded") {
+      if (state.guiData->netlist_->getRoot()) {
+        // A design_changed that overtook the very first load_root: both
+        // that load_root and the reload's are answered for the new design.
+        Console::Log("Ignoring a second root for the same design");
+        return;
+      }
       Console::Log("Root node data received");
       DiagnosisStore::clear();  // stale diagnoses reference the old design
       PropertiesStore::clear(); // stale properties reference the old design

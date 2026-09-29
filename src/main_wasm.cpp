@@ -17,6 +17,7 @@
 
 #include "AppLogic.h"
 #include "GUIData.h"
+#include "GenerationProvider.h"
 #include "JsBridgeProvider.h"
 #include "WebSocketProvider.h"
 #include "Console.h"
@@ -111,10 +112,12 @@ int main() {
   ImGui_ImplOpenGL3_Init("#version 300 es");
 
   g_state.guiData  = new GUIData();
+  // Wrapped so replies for a design the host has since replaced are dropped
+  // and requests carry the design generation they were made for.
   if (JsBridgeProvider::available())
-    g_state.provider = new JsBridgeProvider();
+    g_state.provider = new GenerationProvider(new JsBridgeProvider());
   else
-    g_state.provider = new WebSocketProvider(webSocketUrl());
+    g_state.provider = new GenerationProvider(new WebSocketProvider(webSocketUrl()));
 
   try {
     setupProvider(g_state);

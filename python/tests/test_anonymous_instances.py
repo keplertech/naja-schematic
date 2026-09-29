@@ -241,7 +241,8 @@ def test_show_instance_accepts_an_id_path(view):
     v, sent = view
     v.show_instance([1, 1])
     assert json.loads(sent[-1]["json"]) == {
-        "response": "focus_instance", "path": ["", ""], "id_path": [1, 1]}
+        "response": "focus_instance", "path": ["", ""], "id_path": [1, 1],
+        "generation": 0}
     v.show_instance(("a/b",))
     assert json.loads(sent[-1]["json"])["id_path"] == [2]
 

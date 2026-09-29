@@ -59,7 +59,7 @@ def test_show_instance_pushes_focus(top, view, target):
     v.show_instance(target)
     (msg,) = sent
     assert json.loads(msg["json"]) == {"response": "focus_instance", "path": ["u_sub", "u_and"],
-                                       "id_path": [0, 0]}
+                                       "id_path": [0, 0], "generation": 0}
 
 
 def test_show_instance_accepts_a_najaeda_instance(top, view):
