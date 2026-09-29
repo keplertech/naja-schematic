@@ -158,6 +158,26 @@ TEST_F(SchematicClicks, DoubleClickOnPartialBoxRequestsItsFullInterface) {
   EXPECT_EQ(reqs[0]["instance_path"].get<InstancePath>(), InstancePath{"u2"});
 }
 
+TEST_F(SchematicClicks, PartialGateSymbolLoadsItsFullInterfaceUnasked) {
+  // u2 is an AND reached through one input: with no dashed border or pin
+  // names on a gate, it would look like a complete one-input AND.
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u1", 1, "Q", 10, Direction::Output, 1));
+  e.occurrences.push_back(occ("u2", 2, "A", 20, Direction::Input, 3));
+  e.occurrences.back().primitiveType = PrimitiveType::And;
+  add(e);
+  frame(3);
+
+  auto reqs = sent("expand_instance_terms");
+  ASSERT_EQ(reqs.size(), 1u);  // once, not every frame
+  EXPECT_EQ(reqs[0]["instance_path"].get<InstancePath>(), InstancePath{"u2"});
+
+  expandU2();
+  EXPECT_FALSE(shape({"u2"})->partialInterface);
+  EXPECT_NE(pin({"u2"}, "B"), nullptr);
+  EXPECT_EQ(sent("expand_instance_terms").size(), 1u);
+}
+
 TEST_F(SchematicClicks, DoubleClickOnAPinIsNotABoxDoubleClick) {
   showFirstNet();
   moveTo(pinScreen({"u2"}, "A"));

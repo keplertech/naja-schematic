@@ -367,6 +367,19 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
 }
 
 
+// Sends expand_instance_terms for an instance, unless one is in flight.
+static void requestExpansion(const InstancePath& path, const DesignRef& designRef) {
+    if (!g_provider || g_pendingExpansions.count(path)) return;
+    g_pendingExpansions.insert(path);
+    json req;
+    req["request"]                  = "expand_instance_terms";
+    req["instance_path"]            = path;
+    req["design_ref"]["db_id"]      = designRef.db_id;
+    req["design_ref"]["library_id"] = designRef.library_id;
+    req["design_ref"]["design_id"]  = designRef.design_id;
+    g_provider->send(req.dump());
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -667,16 +680,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
             if (target && target->partialInterface) {
                 auto it = g_occInfoByShapeId.find(target->id);
-                if (it != g_occInfoByShapeId.end() && !g_pendingExpansions.count(it->second.path)) {
-                    g_pendingExpansions.insert(it->second.path);
-                    json req;
-                    req["request"]                  = "expand_instance_terms";
-                    req["instance_path"]            = it->second.path;
-                    req["design_ref"]["db_id"]      = it->second.designRef.db_id;
-                    req["design_ref"]["library_id"] = it->second.designRef.library_id;
-                    req["design_ref"]["design_id"]  = it->second.designRef.design_id;
-                    g_provider->send(req.dump());
-                }
+                if (it != g_occInfoByShapeId.end())
+                    requestExpansion(it->second.path, it->second.designRef);
             }
         }
     }
@@ -933,6 +938,14 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             // count (older server) keeps the conservative "partial" look.
             inst.partialInterface = !mi.bitTermCount.has_value()
                                  || mi.ports.size() < *mi.bitTermCount;
+            // A gate symbol has no dashed border and no pin names, so one
+            // missing pins (e.g. an AND reached through its output only)
+            // looks complete but wrong. Load its whole interface straight
+            // away instead of waiting for a double-click.
+            // Only once: an empty reply leaves it partial (isExp is false).
+            if (inst.partialInterface && isGateSymbol(mi.primitiveType) &&
+                !g_expandedInstances.count(key))
+                requestExpansion(key, mi.designRef);
 
             // Group the per-bit PortSlots accumulated in pass 1 by (direction,
             // bus base name) so a bus with >=2 loaded bits collapses to one
