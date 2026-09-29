@@ -38,6 +38,7 @@ path = [
   "python/tests/test_transports.py",
   "python/tests/test_widget.py",
   "scripts/fakeram45_64x32.lib",
+  "scripts/gate_shapes_example.v",
   "scripts/najaeda_server.py",
   "scripts/test_server.py",
   "scripts/tinyrocket.v",
