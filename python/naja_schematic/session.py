@@ -16,6 +16,10 @@ Universe access is split by who starts it:
   design operations are allowed. They never go through `run`, so a host
   holding its lock -- or on the very thread `run` hops to -- can call them
   without deadlocking.
+
+A host that replaces the design calls design_changed(): the session moves to
+the next design generation, and requests the viewer made for an older one
+are dropped (see ViewerSession).
 """
 import json
 import logging
@@ -137,19 +141,45 @@ class ViewerSession:
     `push(message)` sends a JSON string to the viewer(s) unasked; it may be
     None until a transport is attached. `run(fn)` returns fn(), called with
     exclusive access to the universe (default: fn() under a private RLock).
+    `dispatch(fn)` calls fn() -- a selection notification -- eventually, in
+    the order given (default: right away, on the calling thread).
     `diagnosis` pre-loads diagnosis items, sent after the first root load.
+
+    Design generations: the session numbers the designs it has shown,
+    starting at 0; design_changed() moves to the next one. Every message to
+    the viewer carries the "generation" it was produced for, and the viewer
+    stamps its requests with the generation it is showing. A request stamped
+    with any other generation was made for a design that is gone: it is
+    dropped unanswered and without effect -- in particular a selection never
+    reaches the host -- even if the ids it names exist (reused) in the new
+    design. The check runs inside `run`, so it is atomic with a design swap
+    the host makes under the same lock, followed by design_changed(), before
+    releasing it. Unstamped requests (a viewer's first load_root, or a viewer
+    predating generations) are answered for the current design.
     """
 
-    def __init__(self, push=None, run=None, diagnosis=None):
+    def __init__(self, push=None, run=None, diagnosis=None, dispatch=None):
         self._push = push
         self._run = run or lock_runner(threading.RLock())
-        self._state_lock = threading.Lock()  # pushes and selection, not the universe
-        self._diagnosis_push = (json.dumps(protocol.diagnosis_response(diagnosis))
+        self._dispatch = dispatch or (lambda fn: fn())
+        self._state_lock = threading.Lock()  # generation, pushes, selection; not the universe
+        self._generation = 0
+        self._diagnosis_push = (protocol.diagnosis_response(diagnosis)
                                 if diagnosis is not None else None)
         self._focus_push = None
         self._select_callbacks = []
         self.selected_id_path = None
         self.selected_path = None
+
+    @property
+    def generation(self):
+        """The current design generation (0 until design_changed())."""
+        with self._state_lock:
+            return self._generation
+
+    @staticmethod
+    def _stamp(message, generation):
+        return json.dumps({**message, "generation": generation})
 
     # -- viewer -> host ----------------------------------------------------
 
@@ -164,27 +194,63 @@ class ViewerSession:
         if not isinstance(request, dict):
             log.error("Ignoring viewer message that is not an object: %r", message)
             return []
-        if request.get("request") == "instance_selected":
-            self._on_viewer_selection(request)
+        stamp = request.get("generation")
+        if stamp is not None and not is_id(stamp):
+            log.error("Ignoring viewer request with a bad generation: %r", message)
+            return []
+        kind = request.get("request")
+
+        def handle():
+            # Under `run`: a host that swaps the design and calls
+            # design_changed() under the same lock can't slip in between the
+            # check and the answer.
+            with self._state_lock:
+                generation = self._generation
+                pushes = [p for p in (self._diagnosis_push, self._focus_push) if p]
+            if stamp is not None and stamp != generation:
+                return generation, None, pushes
+            if kind == "instance_selected":
+                return generation, self._resolve_selection(request), pushes
+            return generation, protocol.handle_request(request), pushes
+
+        generation, result, pushes = self._run(handle)
+        if result is None:
+            log.info("Dropping %s made for design generation %s (now %s)", kind, stamp, generation)
+            return []
+        if kind == "instance_selected":
+            self._commit_selection(generation, *result)
             return []  # a notification: no reply
         replies = []
-        for reply in self._run(lambda: protocol.handle_request(request)):
-            replies.append(json.dumps(reply))
+        for reply in result:
+            replies.append(self._stamp(reply, generation))
             # The viewer clears its diagnoses and selection on every
             # root_response, so re-apply them after the root is (re)loaded.
             if reply.get("response") == "root_response":
-                with self._state_lock:
-                    replies.extend(p for p in (self._diagnosis_push, self._focus_push) if p)
+                replies.extend(self._stamp(p, generation) for p in pushes)
         return replies
 
-    def _on_viewer_selection(self, request):
+    @staticmethod
+    def _resolve_selection(request):
         path, ids = request.get("path"), request.get("id_path")
         if not (isinstance(ids, list) and all(is_id(i) for i in ids)):
             # A viewer that only sends names: find the ids by them.
-            ids = self._run(lambda: names_to_ids(path)) if isinstance(path, list) else None
-        path = list(path) if isinstance(path, list) else None
+            ids = names_to_ids(path) if isinstance(path, list) else None
+        return ids, (list(path) if isinstance(path, list) else None)
+
+    def _commit_selection(self, generation, ids, path):
         with self._state_lock:
+            if generation != self._generation:
+                # design_changed() came between the answer and here.
+                return
             self.selected_path, self.selected_id_path = path, ids
+        self._dispatch(lambda: self._notify(generation, ids, path))
+
+    def _notify(self, generation, ids, path):
+        # Checked again at delivery: a notification queued before a
+        # design_changed() must not reach the host after it.
+        with self._state_lock:
+            if generation != self._generation:
+                return
             callbacks = list(self._select_callbacks)
         # Outside every lock: a callback may take the host's lock itself.
         for callback in callbacks:
@@ -195,9 +261,9 @@ class ViewerSession:
 
     def on_select(self, callback):
         """Call `callback(id_path, path)` on each selection the viewer
-        reports, from the thread that answers the viewer, and with
-        (None, None) when design_changed() clears it. Returns `callback`,
-        for remove_select_callback()."""
+        reports for the current design, and with (None, None) when
+        design_changed() clears it; through `dispatch`, in order. Returns
+        `callback`, for remove_select_callback()."""
         with self._state_lock:
             self._select_callbacks.append(callback)
         return callback
@@ -216,44 +282,50 @@ class ViewerSession:
         """Overlay diagnosis items on the view, now and after every reload
         (see protocol.diagnosis_response() for the item shape). Pass [] to
         clear."""
-        message = json.dumps(protocol.diagnosis_response(items))
+        message = protocol.diagnosis_response(items)
         with self._state_lock:
             self._diagnosis_push = message
-        self._send(message)
+            generation = self._generation
+        self._send(self._stamp(message, generation))
 
     def show_instance(self, target):
         """Reveal, select and draw one instance, now and after every
         reload (see instance_paths() for what `target` can be)."""
         names, ids = instance_paths(target)
-        message = json.dumps(protocol.focus_instance(names, ids))
+        message = protocol.focus_instance(names, ids)
         with self._state_lock:
             self._focus_push = message
-        self._send(message)
+            generation = self._generation
+        self._send(self._stamp(message, generation))
 
     def design_changed(self, diagnosis=None, instance=None):
-        """Tell the viewer(s) that the design was replaced or edited: they
-        reload it from the root. The diagnoses and focused instance kept so
-        far name the old design, so they are replaced by `diagnosis` and
-        `instance` (resolved against the new design; None: none), sent
-        after the new root loads. The selection is cleared: selection
-        callbacks get (None, None)."""
-        diagnosis_push = (json.dumps(protocol.diagnosis_response(diagnosis))
+        """Start the next design generation: the viewer(s) reload the design
+        from the root, and whatever they asked about or selected in the
+        previous one is dropped (see the class docstring). Call it right
+        after replacing or editing the design, before releasing the lock (or
+        leaving the `run` thread) the swap was made under.
+
+        The diagnoses and focused instance kept so far name the old design,
+        so they are replaced by `diagnosis` and `instance` (resolved against
+        the new design; None: none), sent after the new root loads. The
+        selection is cleared: selection callbacks get (None, None).
+        Returns the new generation."""
+        diagnosis_push = (protocol.diagnosis_response(diagnosis)
                           if diagnosis is not None else None)
         focus_push = None
         if instance is not None:
             names, ids = instance_paths(instance)
-            focus_push = json.dumps(protocol.focus_instance(names, ids))
+            focus_push = protocol.focus_instance(names, ids)
         with self._state_lock:
+            self._generation += 1
+            generation = self._generation
             self._diagnosis_push, self._focus_push = diagnosis_push, focus_push
             had_selection = self.selected_id_path is not None or self.selected_path is not None
             self.selected_path = self.selected_id_path = None
-            callbacks = list(self._select_callbacks) if had_selection else []
-        self._send(json.dumps(protocol.design_changed()))
-        for callback in callbacks:
-            try:
-                callback(None, None)
-            except Exception:
-                log.exception("Error in a selection callback")
+        self._send(self._stamp(protocol.design_changed(), generation))
+        if had_selection:
+            self._dispatch(lambda: self._notify(generation, None, None))
+        return generation
 
     @property
     def selected(self):

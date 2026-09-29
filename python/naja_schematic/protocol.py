@@ -888,6 +888,8 @@ def focus_instance(path=None, id_path=None):
 def design_changed():
     """Build a design_changed push message: the design behind the viewer was
     replaced or edited, so the viewer drops its tree, schematic, diagnoses
-    and selection and loads the root again. Replies still on their way for
-    requests it sent before are ignored until the new root_response."""
+    and selection and loads the root again. The sender stamps it with the
+    new design generation (see session.ViewerSession): the viewer then
+    ignores messages for any other generation, and stamps its own requests
+    with it."""
     return {"response": "design_changed"}

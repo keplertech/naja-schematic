@@ -114,6 +114,7 @@ if(EMSCRIPTEN_BUILD)
     src/WebSocketClient.cpp
     src/WebSocketProvider.cpp
     src/JsBridgeProvider.cpp
+    src/GenerationProvider.cpp
     src/main_wasm.cpp
   )
 
@@ -255,6 +256,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/SourceStore.cpp
       src/PropertiesStore.cpp
       src/SelectionStore.cpp
+      src/GenerationProvider.cpp
       src/SchematicLayout.cpp
       src/SchematicInteraction.cpp
       src/EquipotentialView.cpp

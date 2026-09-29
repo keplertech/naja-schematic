@@ -91,9 +91,10 @@ def test_pushes_reach_every_viewer_and_follow_each_root(server):
         server.annotate(items)
         server.show_instance(["u_sub", "u_and"])
         for ws in (a, b):
-            assert recv(ws) == {"response": "diagnosis_response", "items": items}
+            assert recv(ws) == {"response": "diagnosis_response", "items": items,
+                                "generation": 0}
             assert recv(ws) == {"response": "focus_instance", "path": ["u_sub", "u_and"],
-                                "id_path": [0, 0]}
+                                "id_path": [0, 0], "generation": 0}
         a.send(LOAD_ROOT)
         assert [recv(a)["response"] for _ in range(3)] == [
             "root_response", "diagnosis_response", "focus_instance"]
@@ -208,9 +209,28 @@ def test_session_ignores_malformed_messages(top):
     assert session.answer(json.dumps({"request": "bogus"})) == []
 
 
+class Selections:
+    """Records selection callbacks, which ViewerServer delivers on a thread
+    of its own; wait_for(n) blocks until n have arrived."""
+
+    def __init__(self):
+        self.calls = []
+        self._cond = threading.Condition()
+
+    def __call__(self, ids, path):
+        with self._cond:
+            self.calls.append((ids, path))
+            self._cond.notify_all()
+
+    def wait_for(self, n, timeout=5):
+        with self._cond:
+            assert self._cond.wait_for(lambda: len(self.calls) >= n, timeout), self.calls
+        return self.calls
+
+
 def test_design_changed_reaches_every_viewer(server):
-    cleared = []
-    server.on_select(lambda ids, path: cleared.append((ids, path)))
+    cleared = Selections()
+    server.on_select(cleared)
     server.annotate([{"kind": "instance", "path": ["u_sub"], "severity": "error", "message": "old"}])
     with connect(ws_url(server)) as a, connect(ws_url(server)) as b:
         for ws in (a, b):
@@ -222,9 +242,9 @@ def test_design_changed_reaches_every_viewer(server):
         assert recv(a)["response"] == "root_response" and recv(a)
         server.design_changed(instance=["u_sub"])
         for ws in (a, b):
-            assert recv(ws) == {"response": "design_changed"}
+            assert recv(ws) == {"response": "design_changed", "generation": 1}
         # The old diagnoses are gone; the new focus follows the root.
         b.send(LOAD_ROOT)
         assert [recv(b)["response"] for _ in range(2)] == ["root_response", "focus_instance"]
     assert server.selected_id_path is None
-    assert cleared == [([0], ["u_sub"]), (None, None)]
+    assert cleared.wait_for(2) == [([0], ["u_sub"]), (None, None)]

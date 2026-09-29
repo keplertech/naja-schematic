@@ -88,15 +88,17 @@ server.open_browser()             # or hand server.url to the user
 server.annotate(items)            # diagnosis overlay, kept across reloads
 server.show_instance([3, 7])      # instance ids, names, or a najaeda Instance
 server.on_select(lambda id_path, path: print("selected", path))
-...                               # load or edit the design (holding design_lock)
-server.design_changed()           # every open viewer reloads it
+with server.replacing_design():   # holds design_lock, then viewers reload
+    netlist.load_verilog("other.v")
 server.stop()
 ```
 
 Viewer requests are answered on a background thread while `lock` is held
 (or pass `run=` to answer them on a thread of your choosing). The page's
 URL carries a random access token, and other web pages can't connect to
-the WebSocket.
+the WebSocket. Once the design is replaced, anything a viewer asked about
+or selected in the old one is ignored, even if it arrives late or names
+instance ids the new design reuses.
 
 ## Development
 
