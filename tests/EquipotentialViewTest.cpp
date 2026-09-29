@@ -245,7 +245,7 @@ TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
   // whole drawing) drives u2.B.
   Equipotential e{true, {}, {}};
   InstTermOccurrence drv;
-  drv.path = {"core", "u9"}; drv.pathIds = {5, 9}; drv.pathModels = {"Core", ""};
+  drv.path = {{5, "core"}, {9, "u9"}}; drv.pathIds = {5, 9}; drv.pathModels = {"Core", ""};
   drv.term = BitTerm{"Z", 90, Direction::Output, std::nullopt};
   drv.bit_term_count = 1;
   e.occurrences.push_back(drv);
@@ -253,7 +253,7 @@ TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
   add(e);
   frame(2);
 
-  ASSERT_NE(shape({"core", "u9"}), nullptr);
+  ASSERT_NE(shape({{5, "core"}, {9, "u9"}}), nullptr);
   EXPECT_FALSE(pin({{2, "u2"}}, "B")->open);
   EXPECT_FALSE(pin({{2, "u2"}}, "B")->pending);
   const ImVec2 after = boxCenterScreen({{2, "u2"}});
