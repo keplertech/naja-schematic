@@ -21,9 +21,9 @@ class DiagnosisStore {
     static void clear();
     static const std::vector<DiagnosisItem>& all();
 
-    // path: instance names, top excluded ({} == top level), as in
-    // DiagnosisItem::path, NetlistTree::getInstancePath() and
-    // InstanceShape::path.
+    // path: the instance, top excluded ({} == top level), as in
+    // NetlistTree::getInstancePath() and InstanceShape::path. Matches the
+    // items giving its id_path, and those giving only its name path.
     static std::vector<const DiagnosisItem*> instanceDiagnostics(const InstancePath& path);
 
     // terminal: pin/port base name, no bus-bit suffix (e.g. "Q", not "Q[3]").
@@ -35,4 +35,11 @@ class DiagnosisStore {
     static ImU32 netColor(const InstancePath& path, const std::string& terminal);
 
     static ImU32 colorForSeverity(DiagnosisSeverity sev);
+
+    // The lookups behind instanceDiagnostics()/netDiagnostics(), which
+    // return nothing while the diagnosis UI is hidden (kDiagnosisUIHidden);
+    // these don't.
+    static std::vector<const DiagnosisItem*> findInstanceItems(const InstancePath& path);
+    static std::vector<const DiagnosisItem*> findNetItems(const InstancePath& path,
+                                                          const std::string& terminal);
 };

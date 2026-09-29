@@ -161,19 +161,46 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
 - `protocol.py` — the Python protocol implementation: `handle_request(dict)
   -> [dict]`, transport-agnostic, answering from the live `NLUniverse`. This
   is the file to keep in step with `LocalSNLProvider.cpp`.
+- `session.py` — `ViewerSession`, one viewer's state above the protocol,
+  shared by every transport below: it answers a message
+  (`answer(json) -> [json]`), keeps the host's pushes (`annotate()`,
+  `show_instance()`) and re-sends them after every `root_response` (the
+  viewer clears diagnoses and selection on each root load), and records
+  `instance_selected` notifications (`on_select(cb(id_path, path))`). Add
+  host-facing behavior here, not in one transport. Universe access is split
+  by who starts it: the viewer's requests go through the session's
+  `run(fn)` hook (default: a private `RLock`), the host's own calls touch
+  the universe directly on the host's thread -- so a host holding its lock,
+  or running on the thread `run` hops to, never deadlocks on itself.
 - `server.py` — the `naja-schematic` CLI (same flags as above, plus `--host`,
   `--open`, `--diagnosis <json>`, `--stdio`) and its two transports: a
   WebSocket server that also serves the viewer page on the same port
-  (`static/index.html` sets `Module.najaWsUrl` from `location`), and JSON
+  (`static/index.html` sets `Module.najaWsUrl` from `location`, query
+  string included), and JSON
   lines on stdin/stdout for a host that relays messages itself. In `--stdio`
   mode fd 1 is pointed at stderr (naja's C++ logger writes to stdout) and
   protocol output goes to a private dup of the original stdout. With
   `--diagnosis`, a `diagnosis_response` is pushed after every
-  `root_response` (the viewer clears diagnoses on each root load).
+  `root_response`.
+  Also `ViewerServer`, the same page + WebSocket as an object for a host
+  application that already holds the design (nothing is loaded):
+  `start()`/`stop()`/context manager, on a background thread with its own
+  event loop; `port=0` (the default) binds a free port, final once
+  `start()` returns (`.port`, `.url`). Viewer requests are answered one at
+  a time on a single worker thread, through `lock=` (held around each,
+  exposed as `.lock`; a private `RLock` by default) or `run=` (e.g. hop to
+  the host's thread). `stop()` abandons a request stuck in the host rather
+  than waiting for it. The WebSocket requires a random `token` (in `.url`'s
+  query, forwarded by `index.html`) and rejects browser `Origin`s other
+  than its own page and `allowed_origins`, so other web pages can't read
+  the design; `token=None` turns the token off. Pushes go to every
+  connected viewer (`websockets` `broadcast`); selection callbacks get
+  `(id_path, path)` on the worker thread with no lock held.
 - `widget.py` — `naja_schematic.show()`: an anywidget for Jupyter/Colab/
   VSCode notebooks. Its ES module is the bundle + `static/widget.js`; the
   viewer's requests come back over the widget comm channel as
-  `{"json": "<message>"}` and are answered in the kernel, so the view shows
+  `{"json": "<message>"}` and are answered in the kernel (through a
+  `ViewerSession`), so the view shows
   the netlist as edited by earlier cells. `Schematic.annotate(items)`
   pushes diagnoses; `show_instance()`/`selected`/`on_select()` exchange
   instances with najaeda (see "Getting to one hierarchical instance"
@@ -241,20 +268,45 @@ wrapper since the underlying socket connects in its constructor.
 
 ### Wire protocol
 
-**Instance paths are lists of names.** Everywhere a hierarchical instance
-is named — wire-protocol `path` fields, `DiagnosisItem`s, the Python API
-(`show()`, `Schematic.show_instance()`, `selected_path`) and the docs'
-examples — it's a list of instance names, root excluded (`["u1", "u2"]`,
-`[]` = top), never a `"u1/u2"` string: escaped Verilog names
-(`\a/b `) can contain `/`, so splitting on it corrupts the path. A bare
-string passed to the Python API is one name, never split. Don't add
-`/`-parsing conveniences. The C++ viewer follows the same rule
-internally: an instance's identity is an `InstancePath`
-(`std::vector<std::string>`, `Types.h`) used directly as map/set key,
-and composite keys are `std::tuple`s, never strings joined with `/`, `|`
-or any other separator. Joined strings exist only for display
-(`displayPath()`, `properties_response`'s `subject`) and are never
-parsed back.
+**Instance paths are lists: of ids, and of names.** Everywhere a
+hierarchical instance is named, it's a list, root excluded (`[]` = top),
+never a `"u1/u2"` string: escaped Verilog names (`\a/b `) can contain
+`/`, so splitting on it corrupts the path. A bare string passed to the
+Python API is one name, never split. Don't add `/`-parsing conveniences.
+
+A path comes in two parallel forms:
+- **`id_path`** — naja instance ids (`SNLInstance::getID()`, unique among
+  the instances of the parent design; najaeda's `Instance.pathIDs`), e.g.
+  `[3, 7]`. This is the identity, and the preferred form: it's the only
+  one that reaches **anonymous instances**, which all have the name `""`
+  (so two anonymous siblings are indistinguishable by name). Netlist
+  instances are never renamed to make names unique.
+- **`path`** — instance names, e.g. `["u1", "u2"]` (`""` for an anonymous
+  level). Kept for display and for backward compatibility: every message
+  that accepted a name path still does.
+
+Requests that name an instance (`resolve_instance`, `get_properties`,
+`instance_selected`), the `focus_instance` push and diagnosis items
+carry `id_path` and/or `path`; when `id_path` is present it wins. A name
+path never resolves through `""` (anonymous instances need `id_path`).
+Both backends resolve with the same rule (`resolveRequestPath()` in
+`LocalSNLProvider.cpp`, `resolve_request_path()` in `protocol.py`), and
+both send an anonymous instance's name as `""` (not naja's `getString()`
+placeholder). The shared cases in `tests/data/anonymous_protocol_cases.json`
+are run against both (`python/tests/test_anonymous_instances.py`,
+`tests/provider/LocalSNLProviderProtocolTest.cpp`) -- add a case there
+when changing how either resolves or answers.
+
+The C++ viewer follows the same rule internally: an instance's identity is
+an `InstancePath` (`std::vector<InstanceRef>`, `Types.h`), each segment an
+`{id, name}` pair that compares **by id only**, used directly as map/set
+key; composite keys are `std::tuple`s, never strings joined with `/`, `|`
+or any other separator. `writePath()`/`readPath()` put it on the wire as
+the `path` + `id_path` pair (`instance_path` + `instance_id_path` for the
+echoed tags). Joined strings exist only for display (`displayPath()`,
+`properties_response`'s `subject`), where an anonymous level shows as
+`<#id>` (`displayName()`, `display_name()` in `protocol.py`), and are
+never parsed back.
 
 Requests/responses are JSON with a `"request"`/`"response"` type field (e.g.
 `load_root`, `load_instance`, `load_primitives`, `load_terms`, `load_nets`,
@@ -366,7 +418,8 @@ the already-loaded netlist rather than loading anything:
   "items": [
     {
       "kind": "instance",          // "instance" | "net"
-      "path": ["u1", "u2"],        // instance-name path, root excluded; [] = top level
+      "id_path": [3, 7],           // instance ids, root excluded; [] = top level (preferred)
+      "path": ["u1", "u2"],        // instance names; used when id_path is absent
       "terminal": "Q",             // pin/port base name, no bus-bit suffix; "net" only
       "severity": "error",         // "info" | "warning" | "error"
       "message": "...",
@@ -382,21 +435,26 @@ push it after each `root_response`; `scripts/test_server.py` sends a canned
 example after `load_root` as a demo/test fixture. Native/standalone mode has no server at
 all, so it gets diagnosis data via **File > Load Diagnosis JSON...**
 (reads a `{"items": [...]}` file or a bare array through the same
-`DiagnosisItem` parser) instead.
+`DiagnosisItem` parser) instead. An item with `id_path` matches that
+instance only; one with only `path` matches by names, and never through
+an anonymous (`""`) level. In Python, an item's `path` may also be a
+najaeda `netlist.Instance`, turned into both by `diagnosis_response()`.
 
 Getting to one hierarchical instance works in both directions, keyed by
-the same instance-name path as diagnosis items:
+the same `id_path`/`path` pair as diagnosis items:
 
 - **Host → viewer.** `focus_instance` is a server push,
-  `{"response":"focus_instance","path":["u1","u2"]}`, from
-  `Schematic.show_instance()` / `show(instance=...)`, re-pushed after each
+  `{"response":"focus_instance","path":["u1","u2"],"id_path":[3,7]}`, from
+  `Schematic.show_instance()` / `show(instance=...)` (which take a najaeda
+  `Instance`, a list of ids, or a list of names), re-pushed after each
   `root_response` like diagnoses. The viewer answers it with a
-  `resolve_instance` request (`{"request":"resolve_instance","path":[...]}`),
+  `resolve_instance` request carrying the same `path`/`id_path`,
   which both providers implement (`protocol.py`
   `_handle_resolve_instance`, `LocalSNLProvider::buildResolveInstanceResponse`).
   The reply looks like this:
   ```json
-  { "response": "instance_resolved", "path": ["u1","u2"], "found": true,
+  { "response": "instance_resolved", "path": ["u1","u2"], "id_path": [3,7], "found": true,
+    // path/id_path: the resolved instance's names and ids (the request's, as given, if not found)
     "instance": {                        // absent for the top design ([])
       "path": [["u1", 3, "Mod"], ["u2", 7, "AND2"]],   // [name, child_id, model] per level
       "design_ref": {...}, "primitive_type": "and", "has_instances": false, "source_loc": null,
@@ -412,11 +470,13 @@ the same instance-name path as diagnosis items:
     asynchronous and `advanceReveal()` runs each frame.
 - **Viewer → host.** There is one selected instance: click an instance row
   in the tree or a box/frame body in the schematic. Each change sends a
-  notification with no reply, `{"request":"instance_selected","path":[...]}`,
-  plus a `get_properties` for it. The notebook widget intercepts
-  `instance_selected` into `Schematic.selected_path`; `Schematic.selected`
-  returns it as a najaeda `netlist.Instance`, and `on_select()` gives a
-  callback. The other hosts only log it (`protocol.py`) or ignore it
+  notification with no reply,
+  `{"request":"instance_selected","path":[...],"id_path":[...]}`, plus a
+  `get_properties` for it. The notebook widget intercepts
+  `instance_selected` into `Schematic.selected_id_path` (and
+  `selected_path`, the names); `Schematic.selected` returns it as a
+  najaeda `netlist.Instance`, and `on_select()` gives a callback (it
+  observes the ids, so moving between anonymous siblings fires it). The other hosts only log it (`protocol.py`) or ignore it
   (`LocalSNLProvider`).
 
 `get_properties`/`properties_response` is a general name/value inspector for
@@ -425,17 +485,17 @@ itself), a term/pin, or a net — answered by both `LocalSNLProvider`
 (`buildPropertiesResponse()`) and `protocol.py` the same request/
 response way as `load_terms` etc. (unlike `diagnosis_response`, it's not a
 push). The object is identified the same way `DiagnosisItem` identifies
-things — a list of instance names, root excluded — rather than
-provider-specific numeric `child_id`s, so both backends resolve it by
-walking instance names down from the top design:
+things — an `id_path` and/or a name `path`, root excluded — and both
+backends resolve it by walking down from the top design:
 
 ```json
 // request
 {
   "request": "get_properties",
   "kind": "instance",        // "instance" | "term" | "net"
-  "path": ["u1", "u2"],      // instance-name path; "instance": path to the object itself ([] = top design);
+  "id_path": [3, 7],         // instance ids (preferred); "instance": path to the object itself ([] = top design);
                               // "term"/"net": path to the *containing* instance ([] = a top-level port/design net)
+  "path": ["u1", "u2"],      // instance names, used when id_path is absent
   "terminal": "Q",           // "term" only: pin/port base name, no bus-bit suffix
   "net": "internal_bus",     // "net" only: net base name, no "[bit]" suffix
   "bit": 3                   // "term"/"net" only, optional: a specific bus bit
@@ -444,7 +504,8 @@ walking instance names down from the top design:
 {
   "response": "properties_response",
   "subject": "u1/u2",        // human-readable label for the object, shown as a heading
-  "properties": [ {"name": "Name", "value": "u2"}, {"name": "Model", "value": "AND2"}, ... ]
+  "properties": [ {"name": "Name", "value": "u2"}, {"name": "ID", "value": "7"},
+                  {"name": "Model", "value": "AND2"}, ... ]   // Name is "" for an anonymous instance
 }
 ```
 An unresolvable path or unknown terminal/net yields an empty `properties`
@@ -540,18 +601,15 @@ just query the store each frame:
 - `DiagnosisView` — the flat list, independent of what's currently expanded/
   loaded in the tree or schematic.
 
-Path matching convention: `DiagnosisItem::path` must match
-`NetlistTreeInstanceNode::getInstancePath()` and `InstanceShape::path` --
-all three are the same `InstancePath`, built from instance *names*, not
-the provider's numeric `child_id`s (those aren't stable inputs for an
-external tool like kepler-formal to reference). `get_properties`,
-`instance_selected` and `resolve_instance` send that same list as their
-`path`, and `expand_instance_terms`/`load_instance_internals` tag their
-request with it as `instance_path` (echoed back in the reply, so the view
-knows which box it's for), so the request-building code in
-`NetlistTree.cpp`/`EquipotentialView.cpp` and the resolution code in
-`LocalSNLProvider.cpp`/`protocol.py` need no id/name translation layer
-of their own.
+Path matching convention: `NetlistTreeInstanceNode::getInstancePath()`
+and `InstanceShape::path` are the same `InstancePath` (ids + names,
+compared by id). A `DiagnosisItem` matches it by `idPath` when it has one,
+else by its name `path` (see `DiagnosisStore::findInstanceItems()`).
+`get_properties`, `instance_selected` and `resolve_instance` send the path
+as `path` + `id_path`, and `expand_instance_terms`/`load_instance_internals`
+tag their request with it as `instance_path` + `instance_id_path` (echoed
+back in the reply, so the view knows which box it's for -- two anonymous
+sibling boxes differ only by id).
 
 ### VSCode integration
 

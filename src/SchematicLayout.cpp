@@ -610,7 +610,7 @@ struct GroupNode {
     std::string label;
     int         depth = 0;
     std::vector<std::unique_ptr<GroupNode>> groups;
-    std::map<std::string, GroupNode*>       groupByName;
+    std::map<InstanceRef, GroupNode*>       groupByRef;   // by instance id
     std::vector<std::pair<InstanceShape*, int>> leaves;   // leaf, logic level
     // Filled by measureGroup().
     float  levelMin = 0.f, levelMax = 0.f, sortY = 0.f;
@@ -693,7 +693,7 @@ void placeGroup(const GroupNode& node, ImVec2 origin, bool isRoot,
     for (const auto& [leaf, rel] : node.leafRel) {
         leaf->x = origin.x + rel.x;
         leaf->y = origin.y + rel.y;
-        if (!isRoot && !leaf->path.empty()) leaf->label = leaf->path.back();
+        if (!isRoot && !leaf->path.empty()) leaf->label = displayName(leaf->path.back());
     }
     for (const auto& g : node.groups)
         placeGroup(*g, ImVec2(origin.x + g->rel.x, origin.y + g->rel.y), false, nextInstId, frames);
@@ -723,16 +723,17 @@ std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHi
         if (!leaf) continue;
         GroupNode* node = &root;
         for (size_t i = 0; i + 1 < lh.path.size(); ++i) {
-            const std::string& seg = lh.path[i];
-            auto git = node->groupByName.find(seg);
-            if (git == node->groupByName.end()) {
+            const InstanceRef& seg = lh.path[i];
+            auto git = node->groupByRef.find(seg);
+            if (git == node->groupByRef.end()) {
                 auto child = std::make_unique<GroupNode>();
                 child->path    = node->path;
                 child->path.push_back(seg);
                 child->depth   = node->depth + 1;
                 const std::string model = i < lh.pathModels.size() ? lh.pathModels[i] : "";
-                child->label   = model.empty() ? seg : seg + " (" + model + ")";
-                git = node->groupByName.emplace(seg, child.get()).first;
+                const std::string name = displayName(seg);
+                child->label   = model.empty() ? name : name + " (" + model + ")";
+                git = node->groupByRef.emplace(seg, child.get()).first;
                 node->groups.push_back(std::move(child));
             }
             node = git->second;

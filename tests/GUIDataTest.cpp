@@ -5,7 +5,7 @@
 
 namespace {
 
-InstTermOccurrence occ(std::vector<std::string> path, const std::string& term, Direction dir,
+InstTermOccurrence occ(InstancePath path, const std::string& term, Direction dir,
                        std::optional<int> bit = std::nullopt) {
   InstTermOccurrence o;
   o.path = std::move(path);
@@ -16,8 +16,8 @@ InstTermOccurrence occ(std::vector<std::string> path, const std::string& term, D
 // top input `in` -> u1.A, u2.A
 Equipotential fullNet() {
   Equipotential e{true, {BitTerm{"in", 0, Direction::Input, std::nullopt}}, {}};
-  e.occurrences.push_back(occ({"u1"}, "A", Direction::Input));
-  e.occurrences.push_back(occ({"sub", "u2"}, "A", Direction::Input));
+  e.occurrences.push_back(occ({{1, "u1"}}, "A", Direction::Input));
+  e.occurrences.push_back(occ({{3, "sub"}, {2, "u2"}}, "A", Direction::Input));
   return e;
 }
 
@@ -34,7 +34,7 @@ TEST(EquipotentialCovers, SameNetIsCovered) {
 // A driver trace lists only the receiver it entered each net through.
 TEST(EquipotentialCovers, TracePartialNetIsCoveredByTheFullNet) {
   Equipotential partial{true, {BitTerm{"in", 0, Direction::Input, std::nullopt}}, {}};
-  partial.occurrences.push_back(occ({"u1"}, "A", Direction::Input));
+  partial.occurrences.push_back(occ({{1, "u1"}}, "A", Direction::Input));
   EXPECT_TRUE(equipotentialCovers(fullNet(), partial));
   EXPECT_FALSE(equipotentialCovers(partial, fullNet()));  // but not the other way round
 }
@@ -50,8 +50,14 @@ TEST(EquipotentialCovers, DifferentPinBitOrPathIsNotCovered) {
 
   // Same leaf name, different hierarchy.
   auto otherPath = fullNet();
-  otherPath.occurrences[1].path = {"u2"};
+  otherPath.occurrences[1].path = {{2, "u2"}};
   EXPECT_FALSE(equipotentialCovers(fullNet(), otherPath));
+
+  // Same (empty) name, different anonymous instance.
+  Equipotential anon0{true, {}, {occ({{5, ""}}, "A", Direction::Input)}};
+  Equipotential anon1{true, {}, {occ({{6, ""}}, "A", Direction::Input)}};
+  EXPECT_FALSE(equipotentialCovers(anon0, anon1));
+  EXPECT_TRUE(equipotentialCovers(anon0, anon0));
 
   auto otherTerm = fullNet();
   otherTerm.terms[0].name = "in2";
@@ -59,8 +65,8 @@ TEST(EquipotentialCovers, DifferentPinBitOrPathIsNotCovered) {
 }
 
 TEST(EquipotentialCovers, PathSegmentsAreNotConfusedWithSlashes) {
-  Equipotential a{true, {}, {occ({"a", "b"}, "A", Direction::Input)}};
-  Equipotential b{true, {}, {occ({"a/b"}, "A", Direction::Input)}};
+  Equipotential a{true, {}, {occ({{1, "a"}, {2, "b"}}, "A", Direction::Input)}};
+  Equipotential b{true, {}, {occ({{3, "a/b"}}, "A", Direction::Input)}};
   // An escaped name can contain '/': instance b inside a is not the
   // top-level instance named "a/b", so a doesn't cover b.
   EXPECT_FALSE(equipotentialCovers(a, b));
@@ -84,7 +90,7 @@ TEST(GUIData, RejectsANetAlreadyShown) {
   GUIData data;
   data.addEquipotential(new Equipotential(fullNet()));
 
-  Equipotential partial{true, {}, {occ({"u1"}, "A", Direction::Input)}};
+  Equipotential partial{true, {}, {occ({{1, "u1"}}, "A", Direction::Input)}};
   EXPECT_FALSE(data.addEquipotential(new Equipotential(fullNet())));
   EXPECT_FALSE(data.addEquipotential(new Equipotential(partial)));
   EXPECT_EQ(data.equipotentials_.size(), 1u);
@@ -93,7 +99,7 @@ TEST(GUIData, RejectsANetAlreadyShown) {
 
 TEST(GUIData, AcceptsANetThatAddsEndpoints) {
   GUIData data;
-  Equipotential partial{true, {}, {occ({"u1"}, "A", Direction::Input)}};
+  Equipotential partial{true, {}, {occ({{1, "u1"}}, "A", Direction::Input)}};
   data.addEquipotential(new Equipotential(partial));
   // The full net has endpoints the partial one lacks: it's new information.
   EXPECT_TRUE(data.addEquipotential(new Equipotential(fullNet())));

@@ -1,6 +1,7 @@
 #include "DiagnosisStore.h"
 
 #include <map>
+#include <tuple>
 #include <utility>
 
 namespace {
@@ -9,21 +10,49 @@ namespace {
 // underlying data/plumbing. Flip to false to re-enable.
 constexpr bool kDiagnosisUIHidden = true;
 
+using Items = std::vector<const DiagnosisItem*>;
+using IdPath = std::vector<unsigned>;
+using NamePath = std::vector<std::string>;
+
 std::vector<DiagnosisItem> g_items;
-std::map<InstancePath, std::vector<const DiagnosisItem*>> g_instanceIndex;
+// Items that give an id_path are indexed by it; the others by their name
+// path. A query (an InstancePath, which has both) checks the two.
+std::map<IdPath, Items>   g_instanceById;
+std::map<NamePath, Items> g_instanceByName;
 // (containing instance, terminal) -> items.
-std::map<std::pair<InstancePath, std::string>, std::vector<const DiagnosisItem*>> g_netIndex;
+std::map<std::tuple<IdPath, std::string>, Items>   g_netById;
+std::map<std::tuple<NamePath, std::string>, Items> g_netByName;
+
+// A name path with an anonymous (empty) segment matches every anonymous
+// sibling there, so it can't identify anything: such an item needs an
+// id_path to be shown on an instance.
+bool isAmbiguous(const NamePath& path) {
+  for (const auto& name : path)
+    if (name.empty()) return true;
+  return false;
+}
 
 void rebuildIndex() {
-  g_instanceIndex.clear();
-  g_netIndex.clear();
+  g_instanceById.clear();
+  g_instanceByName.clear();
+  g_netById.clear();
+  g_netByName.clear();
   for (const auto& item : g_items) {
-    if (item.kind == DiagnosisKind::Instance) {
-      g_instanceIndex[item.path].push_back(&item);
-    } else {
-      g_netIndex[{item.path, item.terminal}].push_back(&item);
+    const bool isInstance = item.kind == DiagnosisKind::Instance;
+    if (item.idPath) {
+      if (isInstance) g_instanceById[*item.idPath].push_back(&item);
+      else            g_netById[{*item.idPath, item.terminal}].push_back(&item);
+    } else if (!isAmbiguous(item.path)) {
+      if (isInstance) g_instanceByName[item.path].push_back(&item);
+      else            g_netByName[{item.path, item.terminal}].push_back(&item);
     }
   }
+}
+
+template <typename Map, typename Key>
+void appendFound(Items& out, const Map& index, const Key& key) {
+  auto it = index.find(key);
+  if (it != index.end()) out.insert(out.end(), it->second.begin(), it->second.end());
 }
 
 DiagnosisSeverity worstOf(const std::vector<const DiagnosisItem*>& items) {
@@ -42,23 +71,35 @@ void DiagnosisStore::setDiagnostics(std::vector<DiagnosisItem> items) {
 
 void DiagnosisStore::clear() {
   g_items.clear();
-  g_instanceIndex.clear();
-  g_netIndex.clear();
+  rebuildIndex();
 }
 
 const std::vector<DiagnosisItem>& DiagnosisStore::all() { return g_items; }
 
 std::vector<const DiagnosisItem*> DiagnosisStore::instanceDiagnostics(const InstancePath& path) {
   if (kDiagnosisUIHidden) return {};
-  auto it = g_instanceIndex.find(path);
-  return it != g_instanceIndex.end() ? it->second : std::vector<const DiagnosisItem*>{};
+  return findInstanceItems(path);
 }
 
 std::vector<const DiagnosisItem*> DiagnosisStore::netDiagnostics(const InstancePath& path,
                                                                   const std::string& terminal) {
   if (kDiagnosisUIHidden) return {};
-  auto it = g_netIndex.find({path, terminal});
-  return it != g_netIndex.end() ? it->second : std::vector<const DiagnosisItem*>{};
+  return findNetItems(path, terminal);
+}
+
+std::vector<const DiagnosisItem*> DiagnosisStore::findInstanceItems(const InstancePath& path) {
+  Items found;
+  appendFound(found, g_instanceById, pathIds(path));
+  appendFound(found, g_instanceByName, pathNames(path));
+  return found;
+}
+
+std::vector<const DiagnosisItem*> DiagnosisStore::findNetItems(const InstancePath& path,
+                                                               const std::string& terminal) {
+  Items found;
+  appendFound(found, g_netById, std::tuple{pathIds(path), terminal});
+  appendFound(found, g_netByName, std::tuple{pathNames(path), terminal});
+  return found;
 }
 
 ImU32 DiagnosisStore::colorForSeverity(DiagnosisSeverity sev) {

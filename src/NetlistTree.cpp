@@ -43,7 +43,7 @@ void NetlistTree::advanceReveal() {
   if (!revealPath_ || !root_) return;
   NetlistTreeNode* node = root_;
   std::vector<NetlistTreeNode*> toOpen;
-  for (const auto& name : *revealPath_) {
+  for (const auto& ref : *revealPath_) {
     node->expand();  // an instance node's groups are created locally
     std::vector<NetlistTreeGroupNode*> groups;
     for (auto* child : *node->children_) {
@@ -58,7 +58,7 @@ void NetlistTree::advanceReveal() {
       if (!g->children_) continue;
       for (auto* c : *g->children_) {
         auto* inst = dynamic_cast<NetlistTreeInstanceNode*>(c);
-        if (inst && inst->getName() == name) { next = inst; via = g; break; }
+        if (inst && inst->getChildID() == ref.id) { next = inst; via = g; break; }
       }
       if (next) break;
     }
@@ -74,7 +74,7 @@ void NetlistTree::advanceReveal() {
         waiting = true;
       }
       if (!waiting) {
-        Console::Error("Cannot reveal instance: no '" + name + "' under " +
+        Console::Error("Cannot reveal instance: no '" + displayName(ref) + "' under " +
                        (node->getInstancePath().empty() ? node->getLabel()
                                                         : displayPath(node->getInstancePath())));
         revealPath_.reset();
@@ -92,14 +92,14 @@ void NetlistTree::advanceReveal() {
 
 NetlistTreeNode* NetlistTree::findInstance(const InstancePath& path) const {
   NetlistTreeNode* node = root_;
-  for (const auto& name : path) {
+  for (const auto& ref : path) {
     if (!node || !node->children_) return nullptr;
     NetlistTreeNode* next = nullptr;
     for (auto* group : *node->children_) {
       if (!group->children_) continue;
       for (auto* c : *group->children_) {
         auto* inst = dynamic_cast<NetlistTreeInstanceNode*>(c);
-        if (inst && inst->getName() == name) { next = inst; break; }
+        if (inst && inst->getChildID() == ref.id) { next = inst; break; }
       }
       if (next) break;
     }
@@ -120,7 +120,7 @@ NetlistTreeNode* NetlistTree::getNode(unsigned guiID) const {
 
 std::string NetlistTreeInstanceNode::getLabel() const {
   if (isRoot()) return name_.empty() ? "<unnamed root>" : name_;
-  std::string label = name_.empty() ? "<unnamed>" : name_;
+  std::string label = displayName({childID_, name_});
   if (!modelName_.empty()) label += " (" + modelName_ + ")";
   return label;
 }
@@ -194,7 +194,7 @@ void NetlistTreeNode::render() {
         json req;
         req["request"]  = "get_properties";
         req["kind"]     = "term";
-        req["path"]     = getInstancePath();
+        writePath(req, getInstancePath());
         req["terminal"] = getTermBaseName();
         if (isBusBit()) req["bit"] = getBusBit();
         getTree()->getProvider()->send(req.dump());
@@ -221,7 +221,7 @@ void NetlistTreeNode::render() {
         json req;
         req["request"]  = "get_properties";
         req["kind"]     = "term";
-        req["path"]     = getInstancePath();
+        writePath(req, getInstancePath());
         req["terminal"] = getTermBaseName();
         getTree()->getProvider()->send(req.dump());
       }
@@ -233,7 +233,7 @@ void NetlistTreeNode::render() {
         json req;
         req["request"] = "get_properties";
         req["kind"]    = "net";
-        req["path"]    = getInstancePath();
+        writePath(req, getInstancePath());
         req["net"]     = getNetBaseName();
         if (isBusBit()) req["bit"] = getBusBit();
         getTree()->getProvider()->send(req.dump());
@@ -255,7 +255,7 @@ void NetlistTreeNode::render() {
         json req;
         req["request"] = "get_properties";
         req["kind"]    = "instance";
-        req["path"]    = getInstancePath();
+        writePath(req, getInstancePath());
         getTree()->getProvider()->send(req.dump());
       }
       ImGui::EndPopup();
@@ -330,7 +330,7 @@ void NetlistTreeInstanceNode::getPath(NetlistTree::Path& path) const {
 InstancePath NetlistTreeInstanceNode::getInstancePath() const {
   if (isRoot()) return {};
   InstancePath path = getParent() ? getParent()->getInstancePath() : InstancePath();
-  path.push_back(name_);
+  path.push_back({childID_, name_});
   return path;
 }
 

@@ -40,6 +40,10 @@ class LocalSNLProvider : public INetlistProvider {
     void loadSystemVerilog(const std::vector<std::string>& sources,
                            const std::string& topModule = "");
 
+    // Serve an already-built DB (e.g. one a test builds with the naja API);
+    // its top design is the design shown.
+    void setDB(naja::NL::NLDB* db) { db_ = db; }
+
   private:
     std::function<void()>                   openCb_;
     std::function<void(const std::string&)> msgCb_;

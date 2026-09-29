@@ -169,7 +169,8 @@ TEST(EquipotentialJson, ParsesTermsAndOccurrences) {
 
   ASSERT_EQ(e.occurrences.size(), 1u);
   const auto& occ = e.occurrences[0];
-  EXPECT_EQ(occ.path, (std::vector<std::string>{"u1", "u2"}));
+  EXPECT_EQ(occ.path, (InstancePath{{4, "u1"}, {9, "u2"}}));
+  EXPECT_EQ(pathNames(occ.path), (std::vector<std::string>{"u1", "u2"}));
   EXPECT_EQ(occ.pathIds, (std::vector<unsigned>{4u, 9u}));
   EXPECT_EQ(occ.term.name, "d");
   EXPECT_TRUE(occ.has_instances);
@@ -192,7 +193,7 @@ TEST(EquipotentialJson, ParsesPathModelNames) {
   };
   Equipotential e = j.get<Equipotential>();
   ASSERT_EQ(e.occurrences.size(), 1u);
-  EXPECT_EQ(e.occurrences[0].path, (std::vector<std::string>{"core", "u2"}));
+  EXPECT_EQ(pathNames(e.occurrences[0].path), (std::vector<std::string>{"core", "u2"}));
   EXPECT_EQ(e.occurrences[0].pathModels, (std::vector<std::string>{"m_jtag_tap", "AND2"}));
 }
 
@@ -221,6 +222,7 @@ TEST(DiagnosisItemJson, ParsesInstanceKindWithDefaults) {
   DiagnosisItem d = j.get<DiagnosisItem>();
   EXPECT_EQ(d.kind, DiagnosisKind::Instance);
   EXPECT_EQ(d.path, (std::vector<std::string>{"u1", "u2"}));
+  EXPECT_FALSE(d.idPath.has_value());  // a name-only item, as before id_path
   EXPECT_EQ(d.terminal, "");
   EXPECT_EQ(d.severity, DiagnosisSeverity::Error);
   EXPECT_EQ(d.message, "stuck-at-0");
@@ -238,6 +240,88 @@ TEST(DiagnosisItemJson, ParsesNetKindAndUnknownSeverityDefaultsInfo) {
   EXPECT_EQ(d.terminal, "Q");
   EXPECT_EQ(d.severity, DiagnosisSeverity::Info);
   EXPECT_TRUE(d.path.empty());
+}
+
+TEST(DiagnosisItemJson, ParsesIdPath) {
+  DiagnosisItem d = json::parse(R"({"path": ["", ""], "id_path": [1, 0]})").get<DiagnosisItem>();
+  ASSERT_TRUE(d.idPath.has_value());
+  EXPECT_EQ(*d.idPath, (std::vector<unsigned>{1, 0}));
+  EXPECT_EQ(d.path, (std::vector<std::string>{"", ""}));
+
+  // id_path alone is enough.
+  d = json::parse(R"({"id_path": [3]})").get<DiagnosisItem>();
+  EXPECT_EQ(*d.idPath, (std::vector<unsigned>{3}));
+  EXPECT_TRUE(d.path.empty());
+
+  // [] is the top design, not "no id_path".
+  d = json::parse(R"({"id_path": []})").get<DiagnosisItem>();
+  ASSERT_TRUE(d.idPath.has_value());
+  EXPECT_TRUE(d.idPath->empty());
+}
+
+TEST(DiagnosisItemJson, MalformedIdPathIsIgnored) {
+  for (const char* bad : {R"({"path": ["u1"], "id_path": [-1]})",
+                          R"({"path": ["u1"], "id_path": ["1"]})",
+                          R"({"path": ["u1"], "id_path": [true]})",
+                          R"({"path": ["u1"], "id_path": [1.5]})",
+                          R"({"path": ["u1"], "id_path": 1})"}) {
+    DiagnosisItem d = json::parse(bad).get<DiagnosisItem>();
+    EXPECT_FALSE(d.idPath.has_value()) << bad;
+    EXPECT_EQ(d.path, (std::vector<std::string>{"u1"})) << bad;
+  }
+}
+
+TEST(EquipotentialJson, AnonymousInstancesKeepTheirIds) {
+  json j = json::parse(R"({"terms": [], "occurrences": [
+      {"path": [["", 0, "mid"], ["", 1, "LEAF"]], "name": "A", "child_id": 0, "direction": 0},
+      {"path": [["", 1, "mid"], ["", 1, "LEAF"]], "name": "A", "child_id": 0, "direction": 0}]})");
+  Equipotential e = j.get<Equipotential>();
+  ASSERT_EQ(e.occurrences.size(), 2u);
+  EXPECT_EQ(e.occurrences[0].path, (InstancePath{{0, ""}, {1, ""}}));
+  EXPECT_EQ(e.occurrences[1].path, (InstancePath{{1, ""}, {1, ""}}));
+  EXPECT_NE(e.occurrences[0].path, e.occurrences[1].path);
+}
+
+// ---------------------------------------------------------------------------
+// Instance paths
+// ---------------------------------------------------------------------------
+
+TEST(InstancePathJson, WritesNamesAndIdsAsParallelLists) {
+  const InstancePath path{{2, "a/b"}, {0, ""}, {5, "u1"}};
+  json j;
+  writePath(j, path);
+  EXPECT_EQ(j["path"], json::array({"a/b", "", "u1"}));
+  EXPECT_EQ(j["id_path"], json::array({2, 0, 5}));
+  EXPECT_EQ(readPath(j), path);
+
+  json tagged;
+  writePath(tagged, path, "instance_path", "instance_id_path");
+  EXPECT_EQ(tagged["instance_id_path"], json::array({2, 0, 5}));
+  auto back = readPath(tagged, "instance_path", "instance_id_path");
+  ASSERT_TRUE(back.has_value());
+  EXPECT_EQ(pathNames(*back), (std::vector<std::string>{"a/b", "", "u1"}));
+}
+
+TEST(InstancePathJson, ReadingNeedsWellFormedIds) {
+  EXPECT_FALSE(readPath(json::parse(R"({"path": ["u1"]})")).has_value());
+  EXPECT_FALSE(readPath(json::parse(R"({"path": ["u1"], "id_path": [1, 2]})")).has_value());
+  EXPECT_FALSE(readPath(json::parse(R"({"id_path": [-1]})")).has_value());
+  EXPECT_FALSE(readPath(json::parse(R"({"id_path": ["1"]})")).has_value());
+  // Names are optional: only for display.
+  auto idsOnly = readPath(json::parse(R"({"id_path": [7]})"));
+  ASSERT_TRUE(idsOnly.has_value());
+  EXPECT_EQ(pathIds(*idsOnly), (std::vector<unsigned>{7}));
+  auto top = readPath(json::parse(R"({"path": [], "id_path": []})"));
+  ASSERT_TRUE(top.has_value());
+  EXPECT_TRUE(top->empty());
+}
+
+TEST(InstancePath, IdIsTheIdentityAndNameTheLabel) {
+  EXPECT_EQ((InstanceRef{3, "u1"}), (InstanceRef{3, "renamed"}));
+  EXPECT_NE((InstanceRef{3, ""}), (InstanceRef{4, ""}));
+  EXPECT_LT((InstanceRef{3, "z"}), (InstanceRef{4, "a"}));
+  EXPECT_EQ(displayPath(InstancePath{{2, "a/b"}, {0, ""}}), "a/b/<#0>");
+  EXPECT_EQ(displayName(InstanceRef{9, ""}), "<#9>");
 }
 
 TEST(GeometryHelpers, HierToggleGlyphRectStraddlesTheTopRightCorner) {

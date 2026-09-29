@@ -26,16 +26,19 @@ path = [
   "python/naja_schematic/_bundle.py",
   "python/naja_schematic/protocol.py",
   "python/naja_schematic/server.py",
+  "python/naja_schematic/session.py",
   "python/naja_schematic/static/index.html",
   "python/naja_schematic/static/widget.js",
   "python/naja_schematic/widget.py",
   "python/notebooks/colab_test.ipynb",
   "python/pyproject.toml",
   "python/tests/conftest.py",
+  "python/tests/test_anonymous_instances.py",
   "python/tests/data/design.v",
   "python/tests/test_notebook.py",
   "python/tests/test_protocol.py",
   "python/tests/test_transports.py",
+  "python/tests/test_viewer_server.py",
   "python/tests/test_widget.py",
   "scripts/fakeram45_64x32.lib",
   "scripts/gate_shapes_example.v",
@@ -101,6 +104,8 @@ path = [
   "tests/SchematicLayoutTest.cpp",
   "tests/SourceStoreTest.cpp",
   "tests/TypesJsonTest.cpp",
+  "tests/data/anonymous_protocol_cases.json",
+  "tests/provider/LocalSNLProviderProtocolTest.cpp",
 ]
 SPDX-FileCopyrightText = "2026 najaeda contributors"
 SPDX-License-Identifier = "Apache-2.0"

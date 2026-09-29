@@ -6,22 +6,32 @@
 - stdio (`serve_stdio()`): one JSON message per line on stdin/stdout, for a
   host that spawns the server as a child process (e.g. an editor extension)
   and relays messages itself.
+- `ViewerServer`: the WebSocket server as an object a host application
+  embeds -- started and stopped on demand, on a background thread, with
+  the host's lock around the design, pushes and selection callbacks.
 
-Both answer requests through protocol.handle_request(), against whatever
+All answer requests through a session.ViewerSession, against whatever
 design is loaded in this process's NLUniverse.
 """
 import argparse
 import asyncio
+import hmac
 import http
 import json
 import logging
 import os
+import secrets
+import socket
 import sys
+import threading
+import urllib.parse
 import webbrowser
+from concurrent.futures import ThreadPoolExecutor
 from glob import glob
 
 from . import protocol
 from ._bundle import static_file
+from .session import ViewerSession, lock_runner
 
 log = logging.getLogger("naja_schematic")
 
@@ -31,20 +41,6 @@ _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
 }
-
-
-def _diagnosis_push(diagnosis):
-    return json.dumps(protocol.diagnosis_response(diagnosis)) if diagnosis else None
-
-
-def _answer(message, diagnosis_push):
-    # Responses to one request, plus the diagnosis push right after the root
-    # is (re)loaded: the viewer clears its DiagnosisStore on every
-    # root_response, so the annotations have to follow it.
-    replies = protocol.handle_message(message)
-    if diagnosis_push and any('"root_response"' in r for r in replies):
-        replies.append(diagnosis_push)
-    return replies
 
 
 # ---------------------------------------------------------------------------
@@ -82,14 +78,14 @@ async def serve(host="localhost", port=DEFAULT_PORT, diagnosis=None, open_browse
     from websockets.asyncio.server import serve as ws_serve
     from websockets.exceptions import ConnectionClosed
 
-    diagnosis_push = _diagnosis_push(diagnosis)
+    session = ViewerSession(diagnosis=diagnosis)
 
     async def handle_connection(websocket):
         log.info("Client connected")
         try:
             async for message in websocket:
                 log.debug("Received: %s", message)
-                for reply in _answer(message, diagnosis_push):
+                for reply in session.answer(message):
                     await websocket.send(reply)
         except ConnectionClosed as e:
             log.info("Client disconnected: %s", e)
@@ -104,6 +100,291 @@ async def serve(host="localhost", port=DEFAULT_PORT, diagnosis=None, open_browse
 
 
 # ---------------------------------------------------------------------------
+# Embeddable server, for a host that already owns the design
+# ---------------------------------------------------------------------------
+
+_WILDCARD_HOSTS = {"", "0.0.0.0", "::"}
+
+
+def _url_host(host):
+    if host in _WILDCARD_HOSTS:
+        return "127.0.0.1"
+    return f"[{host}]" if ":" in host else host
+
+
+class ViewerServer:
+    """The viewer page and its WebSocket, served from a background thread
+    for a host application that already holds the design in NLUniverse.
+
+    Nothing is loaded: requests are answered from whatever design the
+    universe holds when they arrive. Typical use::
+
+        server = ViewerServer(lock=design_lock)   # port 0: any free port
+        server.start()
+        webbrowser.open(server.url)               # or server.open_browser()
+        server.annotate(items); server.show_instance(instance)
+        server.on_select(lambda id_path, path: ...)
+        ...
+        server.stop()
+
+    It is also a context manager (start on enter, stop on exit).
+
+    Serializing with the host's design operations -- give at most one of:
+    - `lock`: a lock (any context manager) held around every universe
+      access the viewer starts; the host holds the same lock while it
+      edits the design. Must be reentrant (e.g. threading.RLock) if the
+      host calls this server's methods while holding it. Without `lock` or
+      `run`, the server makes its own RLock, available as `server.lock`.
+    - `run`: `run(fn) -> fn()`, called for every universe access the viewer
+      starts, e.g. to hand `fn` to the host's own thread and wait for it.
+    Viewer requests are answered one at a time, on a worker thread, and
+    `run`/`lock` see only those. The host's own calls (annotate(),
+    show_instance(), selected) touch the universe directly on the calling
+    thread: make them where the host's design operations are allowed.
+
+    Security: the WebSocket only accepts connections that present
+    `token` (a random one by default, part of `url`) and, for browser
+    connections, come from this server's own page or one of
+    `allowed_origins` -- so another web page open in the same browser
+    can't read the design. Pass token=None to turn the token off.
+    """
+
+    def __init__(self, host="127.0.0.1", port=0, *, lock=None, run=None,
+                 token=True, allowed_origins=(), diagnosis=None):
+        if lock is not None and run is not None:
+            raise ValueError("pass lock or run, not both")
+        if run is None:
+            lock = lock if lock is not None else threading.RLock()
+            run = lock_runner(lock)
+        self.lock = lock
+        self._host = host
+        self._port = port
+        self._token = secrets.token_urlsafe(16) if token is True else (token or None)
+        self._allowed_origins = list(allowed_origins)
+        self._session = ViewerSession(push=self._broadcast, run=run, diagnosis=diagnosis)
+        self._thread = None
+        self._loop = None
+        self._stopping = None
+        self._executor = None
+        self._start_error = None
+        self._clients = set()
+        self._pending = set()  # requests handed to the executor
+
+    # -- lifecycle -----------------------------------------------------------
+
+    def start(self):
+        """Start serving; returns once the port is bound (so `url` and
+        `port` are final). Returns self."""
+        if self._thread is not None:
+            raise RuntimeError("ViewerServer already started")
+        ready = threading.Event()
+        self._thread = threading.Thread(target=self._thread_main, args=(ready,),
+                                        name="naja-schematic-server", daemon=True)
+        self._thread.start()
+        ready.wait()
+        if self._start_error is not None:
+            self._thread.join()
+            self._thread = None
+            raise self._start_error
+        log.info("Serving naja-schematic on %s", self.url)
+        return self
+
+    def stop(self, timeout=5.0):
+        """Close every viewer connection and the listening socket. Doesn't
+        wait for a request stuck in `run` (it is abandoned). Safe to call
+        more than once."""
+        thread, loop = self._thread, self._loop
+        if thread is None:
+            return
+        if loop is not None:
+            try:
+                loop.call_soon_threadsafe(self._stopping.set)
+            except RuntimeError:  # loop already closed
+                pass
+        thread.join(timeout)
+        self._thread = None
+
+    def __enter__(self):
+        return self.start()
+
+    def __exit__(self, *exc):
+        self.stop()
+
+    @property
+    def running(self):
+        return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def host(self):
+        return self._host
+
+    @property
+    def port(self):
+        """The bound port (the one picked by the OS for port 0, once
+        started)."""
+        return self._port
+
+    @property
+    def token(self):
+        return self._token
+
+    @property
+    def url(self):
+        """The viewer page's URL, token included."""
+        query = f"?token={self._token}" if self._token else ""
+        return f"http://{_url_host(self._host)}:{self._port}/{query}"
+
+    def open_browser(self):
+        webbrowser.open(self.url)
+
+    # -- host API ------------------------------------------------------------
+
+    def annotate(self, items):
+        """Overlay diagnosis items on every connected viewer, and on any
+        that (re)loads later (see naja_schematic.diagnosis_response() for
+        the item shape; an item's path may be a najaeda Instance). Pass []
+        to clear."""
+        self._session.annotate(items)
+
+    def show_instance(self, target):
+        """Reveal, select and draw one instance in every viewer, and in any
+        that (re)loads later. `target`: a najaeda netlist.Instance, a list
+        of instance ids or of instance names (top excluded; [] = top), or
+        one name for a child of the top."""
+        self._session.show_instance(target)
+
+    def on_select(self, callback):
+        """Call `callback(id_path, path)` each time a viewer selects an
+        instance: its instance ids and names, top excluded ([] = the top
+        design; a name is "" for an anonymous instance). Called on the
+        server's worker thread, with no lock held. Returns `callback`, for
+        remove_select_callback()."""
+        return self._session.on_select(callback)
+
+    def remove_select_callback(self, callback):
+        self._session.remove_select_callback(callback)
+
+    @property
+    def selected_id_path(self):
+        return self._session.selected_id_path
+
+    @property
+    def selected_path(self):
+        return self._session.selected_path
+
+    @property
+    def selected(self):
+        """The last selected instance as a najaeda netlist.Instance, or
+        None if nothing is selected or it no longer exists."""
+        return self._session.selected
+
+    # -- server thread -------------------------------------------------------
+
+    def _thread_main(self, ready):
+        loop = asyncio.new_event_loop()
+        self._loop = loop
+        try:
+            loop.run_until_complete(self._serve(ready))
+        except BaseException as e:
+            if not ready.is_set():
+                self._start_error = e
+            else:
+                log.exception("naja-schematic server stopped on an error")
+        finally:
+            ready.set()
+            self._loop = None
+            loop.close()
+
+    async def _serve(self, ready):
+        from websockets.asyncio.server import serve as ws_serve
+
+        # Bound here, not by websockets: with port 0 and a name like
+        # "localhost", each address family would get a different port.
+        sock = socket.create_server(
+            (self._host, self._port),
+            family=socket.AF_INET6 if ":" in self._host else socket.AF_INET)
+        self._port = sock.getsockname()[1]
+        self._stopping = asyncio.Event()
+        # One worker: viewer requests are answered one at a time. Not the
+        # loop's default executor, whose shutdown would wait for a request
+        # stuck in the host's `run`.
+        self._executor = ThreadPoolExecutor(max_workers=1,
+                                            thread_name_prefix="naja-schematic-request")
+        try:
+            async with ws_serve(self._handle, sock=sock, origins=self._origins(),
+                                process_request=self._process_request, max_size=None):
+                ready.set()
+                await self._stopping.wait()
+                # Abandon requests still waiting for the host; their
+                # handlers return, and closing the server closes the rest.
+                for pending in list(self._pending):
+                    pending.cancel()
+        finally:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+
+    def _origins(self):
+        if self._host in _WILDCARD_HOSTS:
+            # Reachable under names we can't know: rely on the token.
+            return None
+        hosts = {_url_host(self._host)}
+        if self._host in ("127.0.0.1", "localhost"):
+            hosts |= {"127.0.0.1", "localhost"}
+        # None: a non-browser client, which sends no Origin.
+        return ([f"http://{h}:{self._port}" for h in sorted(hosts)]
+                + self._allowed_origins + [None])
+
+    def _process_request(self, connection, request):
+        if request.headers.get("Upgrade", "").lower() != "websocket":
+            return _static_response(connection, request)
+        if self._token:
+            query = urllib.parse.urlsplit(request.path).query
+            given = urllib.parse.parse_qs(query).get("token", [""])[0]
+            if not hmac.compare_digest(given, self._token):
+                return connection.respond(http.HTTPStatus.FORBIDDEN, "Bad or missing token\n")
+        return None
+
+    async def _handle(self, websocket):
+        from websockets.exceptions import ConnectionClosed
+
+        loop = asyncio.get_running_loop()
+        self._clients.add(websocket)
+        log.info("Viewer connected")
+        try:
+            async for message in websocket:
+                log.debug("Received: %s", message)
+                pending = loop.run_in_executor(self._executor, self._session.answer, message)
+                self._pending.add(pending)
+                try:
+                    replies = await pending
+                except asyncio.CancelledError:
+                    if not pending.cancelled():
+                        raise  # this task itself is being cancelled
+                    return  # stop() abandoned the request
+                finally:
+                    self._pending.discard(pending)
+                for reply in replies:
+                    await websocket.send(reply)
+        except ConnectionClosed as e:
+            log.info("Viewer disconnected: %s", e)
+        finally:
+            self._clients.discard(websocket)
+
+    def _broadcast(self, message):
+        # Called on the host's thread: hand the message to the server loop.
+        loop = self._loop
+        if loop is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._send_all, message)
+        except RuntimeError:  # loop closed under us: nobody to send to
+            pass
+
+    def _send_all(self, message):
+        from websockets.asyncio.server import broadcast
+        broadcast(self._clients, message)
+
+
+# ---------------------------------------------------------------------------
 # stdio server
 # ---------------------------------------------------------------------------
 
@@ -112,17 +393,12 @@ def serve_stdio(diagnosis=None, stdin=None, stdout=None):
     until stdin closes. Logging must not go to stdout in this mode."""
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
-    diagnosis_push = _diagnosis_push(diagnosis)
+    session = ViewerSession(diagnosis=diagnosis)
     for line in stdin:
         line = line.strip()
         if not line:
             continue
-        try:
-            replies = _answer(line, diagnosis_push)
-        except json.JSONDecodeError as e:
-            log.error("Ignoring malformed request %r: %s", line, e)
-            continue
-        for reply in replies:
+        for reply in session.answer(line):
             stdout.write(reply + "\n")
         stdout.flush()
 

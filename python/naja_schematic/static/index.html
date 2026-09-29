@@ -26,7 +26,8 @@
       const wsScheme = location.protocol === "https:" ? "wss:" : "ws:";
       createNajaSchematic({
         canvas: document.getElementById("canvas"),
-        najaWsUrl: `${wsScheme}//${location.host}/ws`,
+        // The query carries ViewerServer's access token, if any.
+        najaWsUrl: `${wsScheme}//${location.host}/ws${location.search}`,
       }).then(() => { status.hidden = true; })
         .catch((e) => { status.textContent = `Failed to start the viewer: ${e}`; });
     </script>
