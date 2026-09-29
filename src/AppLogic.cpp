@@ -1,5 +1,6 @@
 #include "AppLogic.h"
 
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 
@@ -22,9 +23,9 @@ using json = nlohmann::json;
 #include "SourceStore.h"
 #include "SourceView.h"
 #include "PropertiesStore.h"
+#include "SelectionStore.h"
 #include "PropertiesView.h"
 #include "DroidSansFont.h"
-#include "Version.h"
 
 #ifndef __EMSCRIPTEN__
 #include <fstream>
@@ -62,6 +63,21 @@ void setupProvider(AppState& state) {
   EquipotentialView::setProvider(state.provider);
   attachTreeCallbacks(state);
 
+  // Every selection change (tree click, schematic click, host focus) shows
+  // the instance's properties and is reported to the host, which scripts
+  // on it (the notebook widget's Schematic.selected).
+  SelectionStore::setListener([&state](const InstancePath& path) {
+    json note;
+    note["request"] = "instance_selected";
+    note["path"]    = path;
+    state.provider->send(note.dump());
+    json props;
+    props["request"] = "get_properties";
+    props["kind"]    = "instance";
+    props["path"]    = path;
+    state.provider->send(props.dump());
+  });
+
   state.provider->on_open([&state]() {
     state.connected = true;
     Console::Log("Connected to netlist provider");
@@ -97,6 +113,7 @@ void setupProvider(AppState& state) {
       Console::Log("Root node data received");
       DiagnosisStore::clear();  // stale diagnoses reference the old design
       PropertiesStore::clear(); // stale properties reference the old design
+      SelectionStore::clear();  // so does a stale selection
       const auto& root = j["root"];
       if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
         InstanceResponseJson data = root.get<InstanceResponseJson>();
@@ -188,10 +205,31 @@ void setupProvider(AppState& state) {
         parent->createNetNode(net.name, net.msb, net.lsb);
       }
     } else if (resp == "equipotential_response") {
-      Console::Log("Equipotential data received");
-      state.guiData->addEquipotential(new Equipotential(j.get<Equipotential>()));
+      if (state.guiData->addEquipotential(new Equipotential(j.get<Equipotential>()))) {
+        Console::Log("Equipotential data received");
+        state.tableEquipotentialCount = 1;
+      } else {
+        Console::Log("Equipotential already shown");
+      }
+    } else if (resp == "trace_driver_response") {
+      // Nets arrive breadth-first from the traced net toward the drivers, so
+      // adding them in order lets the layout chain each one off an instance
+      // that's already placed.
+      // Nets already on screen (e.g. the one the trace started from, when
+      // it's launched from a schematic pin) are skipped rather than drawn twice.
+      size_t n = 0, added = 0;
+      if (j.contains("equipotentials") && j["equipotentials"].is_array()) {
+        for (const auto& e : j["equipotentials"]) {
+          ++n;
+          if (state.guiData->addEquipotential(new Equipotential(e.get<Equipotential>()))) ++added;
+        }
+      }
+      state.tableEquipotentialCount = std::max<size_t>(added, 1);
+      Console::Log("Driver trace received: " + std::to_string(n) + " net(s), " +
+                   std::to_string(added) + " new" +
+                   (j.value("truncated", false) ? " (truncated)" : ""));
     } else if (resp == "expanded_instance_terms") {
-      std::string pathKey = j.value("path_key", std::string(""));
+      InstancePath path = j.value("instance_path", InstancePath());
       std::vector<EquipotentialView::ExpandedPort> ports;
       if (j.contains("terms") && j["terms"].is_array()) {
         for (const auto& t : j["terms"]) {
@@ -207,9 +245,9 @@ void setupProvider(AppState& state) {
           ports.push_back(std::move(ep));
         }
       }
-      EquipotentialView::applyInstanceExpansion(pathKey, ports);
+      EquipotentialView::applyInstanceExpansion(path, ports);
     } else if (resp == "instance_internals_response") {
-      std::string pathKey = j.value("path_key", std::string(""));
+      InstancePath path = j.value("instance_path", InstancePath());
       EquipotentialView::InstanceInternals data;
       if (j.contains("children") && j["children"].is_array()) {
         for (const auto& c : j["children"]) {
@@ -245,7 +283,7 @@ void setupProvider(AppState& state) {
           data.nets.push_back(std::move(in));
         }
       }
-      EquipotentialView::applyInstanceInternals(pathKey, data);
+      EquipotentialView::applyInstanceInternals(path, data);
     } else if (resp == "source_response") {
       std::string file = j.value("file", std::string(""));
       bool found = j.value("found", false);
@@ -272,6 +310,28 @@ void setupProvider(AppState& state) {
       Console::Log("Diagnosis received: " + std::to_string(items.size()) + " item(s)");
       DiagnosisStore::setDiagnostics(std::move(items));
       state.focusDiagnosisTab = true;
+    } else if (resp == "focus_instance") {
+      // Host push (notebook show_instance()): resolve the path, then
+      // instance_resolved below reveals and draws it.
+      json req;
+      req["request"] = "resolve_instance";
+      req["path"]    = j.contains("path") && j["path"].is_array() ? j["path"] : json::array();
+      state.provider->send(req.dump());
+    } else if (resp == "instance_resolved") {
+      InstancePath path;
+      if (j.contains("path") && j["path"].is_array())
+        for (const auto& seg : j["path"]) path.push_back(seg.get<std::string>());
+      if (!j.value("found", false)) {
+        Console::Error("No instance '" + displayPath(path) + "' in the design");
+        return;
+      }
+      // Start a fresh schematic from the instance alone, all pins open.
+      if (auto start = EquipotentialView::startInstanceFromResolved(j)) {
+        state.guiData->clearEquipotentials();
+        EquipotentialView::resetLayout();
+        EquipotentialView::showInstance(*start);
+      }
+      SelectionStore::select(path, SelectionStore::Origin::Host);
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }
@@ -372,6 +432,8 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Zoom In",    "Ctrl++")) EquipotentialView::zoomIn();
       if (ImGui::MenuItem("Zoom Out",   "Ctrl+-")) EquipotentialView::zoomOut();
       if (ImGui::MenuItem("Fit",        "Ctrl+0")) EquipotentialView::fitView();
+      if (ImGui::MenuItem("Show Hierarchy", "", EquipotentialView::showHierarchy()))
+        EquipotentialView::setShowHierarchy(!EquipotentialView::showHierarchy());
       ImGui::Separator();
       if (ImGui::MenuItem("Clear nets", "Ctrl+K")) state.guiData->clearEquipotentials();
       // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
@@ -607,8 +669,8 @@ bool appFrame(AppState& state) {
         if (ImGui::BeginTabBar("##BottomTabs")) {
           if (ImGui::BeginTabItem("Equipotential")) {
             const auto& eqs = state.guiData->equipotentials_;
-            std::vector<Equipotential*> lastEquip;
-            if (!eqs.empty()) lastEquip.push_back(eqs.back());
+            size_t n = std::min(state.tableEquipotentialCount, eqs.size());
+            std::vector<Equipotential*> lastEquip(eqs.end() - n, eqs.end());
             EquipotentialView::renderTable(lastEquip);
             ImGui::EndTabItem();
           }
@@ -657,7 +719,7 @@ bool appFrame(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::Text("Version: %s", naja_schematic::VERSION.c_str());
+    ImGui::Text("Version: %s", NAJA_SCHEMATIC_VERSION_STRING);
     ImGui::Text("Commit:  %s", NAJA_SCHEMATIC_GIT_HASH);
     ImGui::Text("naja:    %s", NAJA_VERSION_STRING);
     ImGui::Text("Project: github.com/najaeda/naja-schematic");

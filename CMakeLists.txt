@@ -22,6 +22,21 @@ endif()
 message(STATUS "naja-schematic commit: ${NAJA_SCHEMATIC_GIT_HASH}")
 
 # ------------------------------------------------------------
+# naja-schematic version: single source of truth is the Python package's
+# __version__ (what hatch builds the wheel from and CI checks the release
+# tag against), so the app's About dialog can't drift from the release
+# ------------------------------------------------------------
+file(STRINGS ${CMAKE_SOURCE_DIR}/python/naja_schematic/__init__.py
+  NAJA_SCHEMATIC_VERSION_LINE REGEX "^__version__ = \"[^\"]*\"")
+string(REGEX REPLACE ".*\"([^\"]*)\".*" "\\1" NAJA_SCHEMATIC_VERSION
+  "${NAJA_SCHEMATIC_VERSION_LINE}")
+if(NOT NAJA_SCHEMATIC_VERSION)
+  message(FATAL_ERROR
+    "Could not read __version__ from python/naja_schematic/__init__.py")
+endif()
+message(STATUS "naja-schematic version: ${NAJA_SCHEMATIC_VERSION}")
+
+# ------------------------------------------------------------
 # naja version (read from the submodule's literal, not built — needed on
 # both targets since both interface with naja: native links it directly,
 # WASM talks to najaeda_server.py, which wraps the same naja/najaeda code)
@@ -74,6 +89,8 @@ set(CORE_SOURCES
   src/GUIData.cpp
   src/NetlistTree.cpp
   src/EquipotentialView.cpp
+  src/SchematicLayout.cpp
+  src/SchematicInteraction.cpp
   src/SchematicView.cpp
   src/DiagnosisStore.cpp
   src/DiagnosisView.cpp
@@ -81,6 +98,7 @@ set(CORE_SOURCES
   src/SourceView.cpp
   src/PropertiesStore.cpp
   src/PropertiesView.cpp
+  src/SelectionStore.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
 )
@@ -95,6 +113,7 @@ if(EMSCRIPTEN_BUILD)
     ${CORE_SOURCES}
     src/WebSocketClient.cpp
     src/WebSocketProvider.cpp
+    src/JsBridgeProvider.cpp
     src/main_wasm.cpp
   )
 
@@ -111,8 +130,8 @@ if(EMSCRIPTEN_BUILD)
     "-sFULL_ES3=1"
     "-sASSERTIONS=1"
     "-sEXIT_RUNTIME=0"
+    "-sEXPORTED_RUNTIME_METHODS=['requestFullscreen']"
     "-sWASM=1"
-    "--shell-file=${CMAKE_SOURCE_DIR}/src/shell_minimal.html"
     "-lwebsocket.js"
     "-lembind"
     "-fexceptions"
@@ -120,11 +139,32 @@ if(EMSCRIPTEN_BUILD)
     "-sEXCEPTION_CATCHING_ALLOWED=['main','naja-schematic']"
   )
 
+  # Default: a full page (naja-schematic.html + .js + .wasm) for emrun.
+  # NAJA_SCHEMATIC_WASM_MODULE: one self-contained naja-schematic.js (wasm
+  # inlined) defining a createNajaSchematic({canvas, ...}) factory, so a host
+  # page can embed one viewer per canvas -- what the naja_schematic Python
+  # package ships (its index.html and Jupyter widget both load it).
+  option(NAJA_SCHEMATIC_WASM_MODULE
+    "Build the WASM viewer as an embeddable single-file JS module" OFF)
+  if(NAJA_SCHEMATIC_WASM_MODULE)
+    list(APPEND EM_LINK_FLAGS
+      "-sMODULARIZE=1"
+      "-sEXPORT_NAME=createNajaSchematic"
+      "-sSINGLE_FILE=1"
+      "-sENVIRONMENT=web"
+    )
+    set(NAJA_SCHEMATIC_WASM_SUFFIX ".js")
+  else()
+    list(APPEND EM_LINK_FLAGS "--shell-file=${CMAKE_SOURCE_DIR}/src/shell_minimal.html")
+    set(NAJA_SCHEMATIC_WASM_SUFFIX ".html")
+  endif()
+
   target_compile_options(naja-schematic PRIVATE ${EM_COMPILE_FLAGS})
   target_link_options(naja-schematic    PRIVATE ${EM_LINK_FLAGS})
-  set_target_properties(naja-schematic  PROPERTIES SUFFIX ".html")
+  set_target_properties(naja-schematic  PROPERTIES SUFFIX ${NAJA_SCHEMATIC_WASM_SUFFIX})
   target_compile_definitions(naja-schematic PRIVATE
     NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
+    NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
     NAJA_VERSION_STRING="${NAJA_VERSION}"
   )
 
@@ -174,6 +214,7 @@ else()
 
   target_compile_definitions(naja-schematic-standalone PRIVATE
     NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
+    NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
     NAJA_VERSION_STRING="${NAJA_VERSION}"
   )
 
@@ -185,10 +226,11 @@ endif()
 # Target 3: naja-schematic-tests — GUI-independent unit tests
 # ============================================================
 # Native only: exercises the logic layer (JSON parsing, DiagnosisStore,
-# SourceStore, NetlistTree structure) without SDL/OpenGL/naja. Links only
+# SourceStore, NetlistTree structure, SchematicLayout geometry) without SDL/OpenGL/naja. Links only
 # ImGui's core (imgui.cpp/imgui_draw.cpp/imgui_tables.cpp/imgui_widgets.cpp),
-# not the SDL2/OpenGL3 backends, since none of the tested code needs a real
-# render backend -- render()/draw calls are never invoked from tests.
+# not the SDL2/OpenGL3 backends: tests that do run UI code (e.g.
+# EquipotentialViewTest) drive a headless ImGui context with simulated input
+# and never need anything actually drawn to a screen.
 if(NOT EMSCRIPTEN_BUILD)
   option(NAJA_SCHEMATIC_BUILD_TESTS "Build naja-schematic-tests" ON)
   if(NAJA_SCHEMATIC_BUILD_TESTS)
@@ -212,6 +254,11 @@ if(NOT EMSCRIPTEN_BUILD)
       src/DiagnosisStore.cpp
       src/SourceStore.cpp
       src/PropertiesStore.cpp
+      src/SelectionStore.cpp
+      src/SchematicLayout.cpp
+      src/SchematicInteraction.cpp
+      src/EquipotentialView.cpp
+      src/SchematicView.cpp
       ${IMGUI_DIR}/imgui.cpp
       ${IMGUI_DIR}/imgui_draw.cpp
       ${IMGUI_DIR}/imgui_tables.cpp

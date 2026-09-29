@@ -1,4 +1,5 @@
 #include "NetlistTree.h"
+#include <nlohmann/json.hpp>
 
 #include <gtest/gtest.h>
 
@@ -10,7 +11,7 @@ DesignRef someDesign() { return DesignRef{1, 1, 1}; }
 
 } // namespace
 
-TEST(NetlistTree, RootPathKeyIsEmpty) {
+TEST(NetlistTree, RootInstancePathIsEmpty) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
   tree.createRootNode("top", someDesign(), /*hasTerms=*/false,
@@ -18,7 +19,7 @@ TEST(NetlistTree, RootPathKeyIsEmpty) {
                        /*hasNets=*/false);
 
   EXPECT_TRUE(tree.getRoot()->isRoot());
-  EXPECT_EQ(tree.getRoot()->getPathKey(), "");
+  EXPECT_EQ(tree.getRoot()->getInstancePath(), (InstancePath{}));
 }
 
 // The tree only exposes children through render()/expand(), which draws via
@@ -26,7 +27,7 @@ TEST(NetlistTree, RootPathKeyIsEmpty) {
 // walks the same create*Node calls AppLogic's message handler uses, then
 // reaches the created node directly via NetlistTree::getNode(), which is
 // populated by every node's constructor regardless of expand()/render().
-TEST(NetlistTree, InstancePathKeyViaGetNode) {
+TEST(NetlistTree, InstancePathViaGetNode) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
   tree.createRootNode("top", someDesign(), false, false, true, false);
@@ -37,13 +38,29 @@ TEST(NetlistTree, InstancePathKeyViaGetNode) {
   // Root's guiID is 0 (first node inserted); u1 is inserted right after.
   auto* u1 = tree.getNode(1);
   ASSERT_NE(u1, nullptr);
-  EXPECT_EQ(u1->getPathKey(), "u1");
+  EXPECT_EQ(u1->getInstancePath(), (InstancePath{"u1"}));
 
   u1->createChildren();
   u1->createInstanceNode("u2", "MOD_B", 2, someDesign(), false, false, false, false);
   auto* u2 = tree.getNode(2);
   ASSERT_NE(u2, nullptr);
-  EXPECT_EQ(u2->getPathKey(), "u1/u2");
+  EXPECT_EQ(u2->getInstancePath(), (InstancePath{"u1", "u2"}));
+}
+
+TEST(NetlistTree, InstancePathKeepsSlashesInsideNames) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  tree.createRootNode("top", someDesign(), false, false, true, false);
+  auto* root = tree.getRoot();
+
+  root->createChildren();
+  root->createInstanceNode("a/b", "MOD_A", 1, someDesign(), false, false, true, false);
+  auto* ab = tree.getNode(1);
+  ab->createChildren();
+  ab->createInstanceNode("u2", "MOD_B", 2, someDesign(), false, false, false, false);
+  auto* u2 = tree.getNode(2);
+  ASSERT_NE(u2, nullptr);
+  EXPECT_EQ(u2->getInstancePath(), (InstancePath{"a/b", "u2"}));
 }
 
 TEST(NetlistTree, TermNodeBusBitsCountDownFromMsb) {
@@ -153,4 +170,46 @@ TEST(NetlistTree, SendLoadEquipotentialOmitsBitForNonBusBit) {
 
   ASSERT_EQ(provider.sent.size(), 1u);
   EXPECT_EQ(provider.sent[0], R"({"request":"load_equipotential","path":[],"term_id":4})");
+}
+
+TEST(NetlistTree, SendTraceDriverFormatsScalarRequestAndFiresCallback) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  bool callbackFired = false;
+  tree.setOnEquipotentialRequest([&] { callbackFired = true; });
+
+  tree.sendTraceDriver({1, 2}, 9);
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["request"], "trace_driver");
+  EXPECT_EQ(req["path"], (std::vector<unsigned>{1, 2}));
+  EXPECT_EQ(req["term_id"], 9u);
+  EXPECT_FALSE(req.contains("bit"));
+  EXPECT_FALSE(req.contains("bits"));
+  EXPECT_TRUE(callbackFired);
+}
+
+TEST(NetlistTree, SendTraceDriverSingleBitUsesBitKey) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+
+  tree.sendTraceDriver({}, 4, {3});
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["bit"], 3);
+  EXPECT_FALSE(req.contains("bits"));
+}
+
+TEST(NetlistTree, SendTraceDriverBusSendsOneRequestWithAllBits) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+
+  tree.sendTraceDriver({}, 4, {0, 1, 2});
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["bits"], (std::vector<int>{0, 1, 2}));
+  EXPECT_FALSE(req.contains("bit"));
 }

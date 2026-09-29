@@ -32,7 +32,7 @@ struct SourceLoc {
 // standard schematic symbol instead of a generic box (see
 // SchematicView::drawInstance()). naja/najaeda expose no function/timing-arc
 // info -- only a design/cell name string -- so both LocalSNLProvider
-// (native, getPrimitiveType() in LocalSNLProvider.cpp) and najaeda_server.py
+// (native, getPrimitiveType() in LocalSNLProvider.cpp) and python/naja_schematic/protocol.py
 // (WASM/browser, get_primitive_type()) classify independently from that name
 // via a best-effort prefix match, same spirit as their existing isAssign()
 // special case (which maps here to Assign). Unknown is the default for
@@ -141,12 +141,17 @@ using Path = std::vector<std::string>;
 struct InstTermOccurrence {
   Path path;                       // instance names (display)
   std::vector<unsigned> pathIds;   // instance child_ids (used to send load_equipotential)
+  std::vector<std::string> pathModels; // model name per path entry ("" when the provider omits it)
   BitTerm term;
   DesignRef designRef;             // model of the tail instance — used to fetch its full interface
   PrimitiveType primitiveType = PrimitiveType::Unknown;  // tail instance's model, see PrimitiveType
   // True when the tail instance's own model has sub-instances worth showing
   // in a nested schematic — drives the hierarchy expand/collapse glyph.
   bool has_instances = false;
+  // Total bit-term count of the tail instance's model (bus terms counted per
+  // bit), if the provider sent it -- used to tell a fully-shown interface
+  // from a partial one.
+  std::optional<size_t> bit_term_count;
   // RTL source location of the tail instance itself, if available.
   std::optional<SourceLoc> source_loc;
 };
@@ -187,6 +192,13 @@ struct Equipotential {
   std::vector<InstTermOccurrence> occurrences;
 };
 
+// True when every endpoint (top-level term or instance pin) of `candidate` is
+// already one of `shown`'s -- adding it to the view would only redraw wires
+// already there. Covers exact duplicates (clicking a pin whose net is shown)
+// and the partial nets of a driver trace (which list only the receivers the
+// trace entered through) whose full net is already displayed.
+bool equipotentialCovers(const Equipotential& shown, const Equipotential& candidate);
+
 //
 // --- Diagnosis overlay types ---
 // A diagnosis_response annotates an already-loaded netlist with findings from
@@ -216,24 +228,36 @@ inline const char* toString(DiagnosisSeverity s) {
   }
 }
 
+//
+// --- Instance paths ---
+// An instance is identified by its instance names from the top design
+// (excluded) down to it: {} is the top design itself. It stays a list
+// everywhere -- on the wire, as map/set keys, in stores -- and is never
+// joined into a string that gets parsed back: escaped Verilog names can
+// contain '/' (or any other separator). Composite keys are std::tuples.
+//
+
+using InstancePath = std::vector<std::string>;
+
+// "u1/u2" for a human to read (labels, tooltips, log lines). Never parse it
+// or use it as a key.
+inline std::string displayPath(const InstancePath& path) {
+  std::string out;
+  for (size_t i = 0; i < path.size(); ++i) {
+    if (i) out += '/';
+    out += path[i];
+  }
+  return out;
+}
+
 struct DiagnosisItem {
   DiagnosisKind             kind     = DiagnosisKind::Instance;
-  std::vector<std::string>  path;              // instance-name path, root excluded; empty = top level
+  InstancePath              path;              // instance-name path, root excluded; empty = top level
   std::string               terminal;          // pin/port base name (no bus-bit suffix); Kind::Net only
   DiagnosisSeverity          severity = DiagnosisSeverity::Info;
   std::string               message;
   std::string               source;            // e.g. "kepler-formal", "naja-scope"
 
-  // Slash-joined instance path, matching NetlistTree::getPathKey() and
-  // EquipotentialView's instance-item keys.
-  std::string pathKey() const {
-    std::string out;
-    for (size_t i = 0; i < path.size(); ++i) {
-      if (i) out += '/';
-      out += path[i];
-    }
-    return out;
-  }
 };
 
 //
@@ -243,7 +267,7 @@ struct DiagnosisItem {
 // request/response pair (get_properties -> properties_response), answered by
 // both LocalSNLProvider (native) and najaeda_server.py (WASM/browser) the
 // same way load_terms etc. are. The object is identified the same way
-// DiagnosisItem identifies things: a slash-joined instance-name path (root
+// DiagnosisItem identifies things: a list of instance names (root
 // excluded), not provider-specific numeric ids, so both backends resolve it
 // by walking instance names from the top design.
 //
@@ -257,20 +281,6 @@ struct PropertiesResponseJson {
   std::vector<PropertyItem> properties;
 };
 
-// Inverse of DiagnosisItem::pathKey(): splits a slash-joined instance-name
-// path back into per-segment names. "" (root/top-level) yields an empty path.
-inline std::vector<std::string> splitPathKey(const std::string& key) {
-  std::vector<std::string> out;
-  size_t start = 0;
-  while (start <= key.size()) {
-    size_t slash = key.find('/', start);
-    std::string seg = key.substr(start, slash == std::string::npos ? std::string::npos : slash - start);
-    if (!seg.empty()) out.push_back(seg);
-    if (slash == std::string::npos) break;
-    start = slash + 1;
-  }
-  return out;
-}
 
 //
 // --- Renderer / UI types (kept separate from the JSON / API types above) ---
@@ -287,24 +297,37 @@ struct Port {
     bool isInput = false; // used by renderer to pick red/green
     ImU32 color = 0;      // optional explicit color override (0 == no override)
     // True when this pin represents multiple merged bus bits rather than a
-    // single bit/scalar terminal — drives a distinct draw style and toggles
-    // expand/collapse (instead of load_equipotential) on double-click.
+    // single bit/scalar terminal — drives a distinct draw style and expands
+    // the bus (instead of load_equipotential) on click.
     bool isBus = false;
+    // True when this pin's net isn't in the view yet (only revealed by
+    // expanding the instance's full interface): clicking it adds that net.
+    // Drawn with an open-circle stub so it reads as "more to see here".
+    bool open = false;
+    // An open pin whose net has been requested but hasn't arrived yet.
+    bool pending = false;
 };
 
 struct InstanceShape {
     int id = 0;
-    std::string name;       // instance path (display label)
+    // The instance this box stands for (a module frame's module); {} for a
+    // top-level port stub. The identity key -- `name` is only displayed.
+    InstancePath path;
+    std::string name;       // display label (displayPath(path) for an instance box)
+    // Optional display label overriding `name` on the box (e.g. just the
+    // leaf name when a hierarchy frame around the box already shows the
+    // rest of the path).
+    std::string label;
     // Gate/cell function classification — drives the standard-shape dispatch
     // in SchematicView::drawInstance(); PrimitiveType::Unknown draws the
     // generic box. Actual input-pin count (2..N) comes from `ports` below,
     // not from this enum.
     PrimitiveType primitiveType = PrimitiveType::Unknown;
+    std::string modelName;  // "port" for a top-level port stub, else empty
     float x = 0.0f;
     float y = 0.0f;  // world coords (top-left)
     float w = 100.0f;
     float h = 50.0f;  // size in world units
-    ImU32 color = IM_COL32(120,120,120,255);
     // When true, only a subset of ports is shown (e.g. only those on the
     // current net).  The renderer draws a dashed border so the user knows
     // the instance can be expanded to reveal its full interface.
@@ -326,6 +349,21 @@ struct InstanceShape {
     // -1 = top-level box; otherwise the id of the InstanceShape this box is
     // nested inside of.
     int parentShapeId = -1;
+
+    // --- Hierarchy grouping (driver traces) ---
+    // True for a frame standing for a hierarchical module that encloses some
+    // of the traced leaf instances (see EquipotentialView's hierarchy
+    // grouping). Drawn as a translucent labeled frame *under* the nets rather
+    // than an opaque box, has no ports, and is never a parentShapeId target:
+    // the leaves it surrounds stay top-level shapes so the existing wiring/
+    // hit-test code is unaffected.
+    bool isHierGroup = false;
+    // Nesting depth of a hierarchy group frame (1 = directly under the top
+    // design), used to shade nested frames progressively.
+    int  hierDepth = 0;
+    // The instance (or module frame) selected in the viewer -- see
+    // SelectionStore. Drawn with a selection outline.
+    bool selected = false;
 };
 
 struct NetWire {
@@ -334,9 +372,13 @@ struct NetWire {
     int srcPortId = 0;
     int dstInstance = 0;
     int dstPortId = 0;
-    ImU32 color = IM_COL32(200,200,100,255);
+    // Schematic-style default: near-monochrome. Color is reserved for
+    // highlighting (diagnosis severity, selection) via an explicit override
+    // further down the pipeline -- see EquipotentialView.cpp's srcPort/
+    // dstPort->color checks -- rather than being a per-net decoration.
+    ImU32 color = IM_COL32(150,150,150,255);
     // True when this wire represents multiple merged bus-bit nets between
-    // the same two (merged) pins — drawn thicker.
+    // the same two (merged) pins — drawn thicker, with a diagonal bus slash.
     bool isBus = false;
     // -1 = a top-level net (drawn under all instances, as before). Otherwise
     // the id of the InstanceShape whose internals this net belongs to — drawn
@@ -344,7 +386,19 @@ struct NetWire {
     // wiring nested inside it, but before that instance's children so the
     // children still render on top.
     int containerShapeId = -1;
+
+    // Best-effort display name for the underlying net (driver pin/port name,
+    // or the InternalNet name for hierarchy-embedded nets), shown next to
+    // the bus slash mark on a merged bus wire -- see SchematicView::drawNet.
+    std::string netName;
 };
+
+// World-space point where a pin meets its box (and where its wire attaches):
+// lx/ly are normalized -0.5..0.5 across the box, 0 at its center.
+inline ImVec2 portAnchor(const InstanceShape& inst, const Port& port) {
+    return ImVec2(inst.x + inst.w * (0.5f + port.lx),
+                  inst.y + inst.h * (0.5f + port.ly));
+}
 
 // World-space rect of an instance's hierarchy expand/collapse glyph
 // (a small square straddling the top-center of the box). Shared by

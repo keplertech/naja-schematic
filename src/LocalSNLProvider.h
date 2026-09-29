@@ -68,10 +68,12 @@ class LocalSNLProvider : public INetlistProvider {
     std::string buildNetsResponse(unsigned guiId, unsigned dbId,
                                   unsigned libId, unsigned designId) const;
     std::string buildEquipotentialResponse(const nlohmann::json& req) const;
+    std::string buildTraceDriverResponse(const nlohmann::json& req) const;
     std::string buildExpandInstanceTermsResponse(const nlohmann::json& req) const;
     std::string buildInstanceInternalsResponse(const nlohmann::json& req) const;
     std::string buildSourceResponse(const nlohmann::json& req) const;
     std::string buildPropertiesResponse(const nlohmann::json& req) const;
+    std::string buildResolveInstanceResponse(const nlohmann::json& req) const;
 };
 
 #endif // __EMSCRIPTEN__

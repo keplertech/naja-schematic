@@ -1,5 +1,8 @@
 #include "Types.h"
 
+#include <set>
+#include <tuple>
+
 #include "Console.h"
 
 static std::optional<SourceLoc> parseSourceLoc(const json& j) {
@@ -153,6 +156,10 @@ void from_json(const json& j, Equipotential& e) {
           const auto& child_id = pathElem[1].get<unsigned>();
           occurrence.path.push_back(name);
           occurrence.pathIds.push_back(child_id);
+          // Optional third element: the instance's model name.
+          occurrence.pathModels.push_back(
+              pathElem.size() > 2 && pathElem[2].is_string() ? pathElem[2].get<std::string>()
+                                                             : std::string());
         }
       }
 
@@ -181,6 +188,8 @@ void from_json(const json& j, Equipotential& e) {
 
       occurrence.primitiveType = primitiveTypeFromString(occJson.value("primitive_type", std::string("unknown")));
       occurrence.has_instances = occJson.value("has_instances", false);
+      if (occJson.contains("bit_term_count") && occJson["bit_term_count"].is_number_unsigned())
+        occurrence.bit_term_count = occJson["bit_term_count"].get<size_t>();
       occurrence.source_loc    = parseSourceLoc(occJson);
 
       e.occurrences.push_back(std::move(occurrence));
@@ -227,4 +236,22 @@ void from_json(const json& j, PropertiesResponseJson& r) {
       r.properties.push_back(raw.get<PropertyItem>());
     }
   }
+}
+
+// One endpoint of an equipotential, by name: (false, {}, "<term>[bit]") for
+// a top-level term, (true, instance path, "<pin>[bit]") for an instance pin.
+using EndpointKey = std::tuple<bool, InstancePath, std::string>;
+
+static std::set<EndpointKey> endpointKeys(const Equipotential& e) {
+  std::set<EndpointKey> keys;
+  for (const auto& t : e.terms) keys.insert({false, {}, t.getString()});
+  for (const auto& o : e.occurrences) keys.insert({true, o.path, o.term.getString()});
+  return keys;
+}
+
+bool equipotentialCovers(const Equipotential& shown, const Equipotential& candidate) {
+  const auto have = endpointKeys(shown);
+  for (const auto& k : endpointKeys(candidate))
+    if (!have.count(k)) return false;
+  return true;
 }

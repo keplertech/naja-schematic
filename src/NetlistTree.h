@@ -1,5 +1,7 @@
 #pragma once
 
+#include <optional>
+#include <set>
 #include <string>
 #include <vector>
 #include "imgui.h"
@@ -35,6 +37,10 @@ class NetlistTree {
     NetlistTreeNode* getNode(unsigned id) const;
     NetlistTreeNode* getRoot() const { return root_; }
     void sendLoadEquipotential(const Path& path, const TermID& termID) const;
+    // Requests the full combinational fan-in cone of the term's net, back to
+    // the drivers (see "trace_driver" in CLAUDE.md). For a bus, pass every bit.
+    void sendTraceDriver(const Path& path, unsigned termChildID,
+                         const std::vector<int>& bits = {}) const;
     INetlistProvider* getProvider() const { return ws_; }
 
     // Called before every tree-initiated equipotential request.
@@ -45,12 +51,32 @@ class NetlistTree {
 
     void render();
     void insertNodeInMap(NetlistTreeNode* node);
+
+    // Opens the tree down to the instance at `path` ({} = root) and scrolls to it. Levels load on demand, so
+    // this is asynchronous: each level's Instances/Primitives groups are
+    // requested as needed and advanceReveal() continues once their replies
+    // have created the child nodes. A new reveal replaces a pending one.
+    void reveal(const InstancePath& path);
+    // One step of a pending reveal; called by render() every frame (public
+    // so tests can drive it without an ImGui frame).
+    void advanceReveal();
+    bool isRevealPending() const { return revealPath_.has_value(); }
+    // The instance node at `path`, if its level is already loaded.
+    NetlistTreeNode* findInstance(const InstancePath& path) const;
   private:
+    friend class NetlistTreeNode;
     INetlistProvider*       ws_                    {nullptr};
     std::function<void()>   onEquipotentialRequest_;
     NetlistTreeNode*        root_       {nullptr};
     unsigned                nextGUIID_ {0};
     NodesMap                nodes_;
+    // Pending reveal: the instance names still to walk down from the root.
+    std::optional<InstancePath> revealPath_;
+    // Nodes render() must open (once each) / scroll to, after a reveal.
+    std::set<unsigned>      forceOpen_;
+    std::optional<unsigned> scrollTo_;
+    // Last SelectionStore revision render() reacted to.
+    unsigned                seenSelectionRevision_ {0};
 };
 
 class NetlistTreeInstanceNode;
@@ -142,9 +168,9 @@ class NetlistTreeNode {
       return 0;
     }
     virtual void getPath(NetlistTree::Path& path) const;
-    // Slash-joined instance-name path, root excluded ("" at/above root).
-    // Matches DiagnosisItem::pathKey() and EquipotentialView's instance keys.
-    virtual std::string getPathKey() const;
+    // Instance-name path, root excluded ({} at/above root). Matches
+    // DiagnosisItem::path and InstanceShape::path.
+    virtual InstancePath getInstancePath() const;
     // Diagnosis items attached to this node's path, if any (only
     // NetlistTreeInstanceNode currently reports these).
     virtual std::vector<const DiagnosisItem*> getDiagnostics() const { return {}; }
@@ -195,7 +221,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual DesignRef getDesignRef() const override { return designRef_; }
     virtual std::string getLabel() const override;
     virtual void getPath(NetlistTree::Path& path) const override;
-    virtual std::string getPathKey() const override;
+    virtual InstancePath getInstancePath() const override;
     virtual unsigned getChildID() const override { return childID_; }
     virtual bool isLeaf() const override {
       return !(hasTerms_ || hasPrimitives_ || hasInstances_ || hasNets_);
@@ -207,6 +233,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual std::vector<const DiagnosisItem*> getDiagnostics() const override;
     virtual std::optional<SourceLoc> getSourceLoc() const override { return sourceLoc_; }
     virtual bool isInstanceNode() const override { return true; }
+    const std::string& getName() const { return name_; }
   private:
     bool        isRoot_         {false};
     std::string name_           {};
@@ -230,6 +257,7 @@ class NetlistTreeGroupNode : public NetlistTreeNode {
     };
     NetlistTreeGroupNode(NetlistTreeNode* parent, Type type);
 
+    Type getType() const { return type_; }
     virtual std::string getLabel() const override;
     virtual void sendLoadRequest() const override;
     virtual bool isLeaf() const override {

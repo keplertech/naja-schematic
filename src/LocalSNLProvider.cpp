@@ -9,6 +9,7 @@
 #include <cctype>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <set>
 #include <sstream>
 
@@ -34,6 +35,7 @@
 #include "SNLPath.h"
 #include "SNLOccurrence.h"
 #include "SNLEquipotential.h"
+#include "SNLDesignModeling.h"
 // naja formats
 #include "SNLVRLConstructor.h"
 #include "SNLSVConstructor.h"
@@ -72,7 +74,7 @@ static std::string instanceName(const SNLInstance* i) {
 // naming conventions ("AND2X1", "nand3_1", "DFFX2", ...) match regardless of
 // the vendor-specific drive-strength/version suffix; arity itself is read
 // from the instance's actual port count at render time, not parsed here.
-// najaeda_server.py's get_primitive_type() mirrors this independently, same
+// protocol.py's get_primitive_type() mirrors this independently, same
 // as the rest of the wire protocol (see CLAUDE.md).
 static PrimitiveType getPrimitiveType(const SNLDesign* model) {
   if (!model) return PrimitiveType::Unknown;
@@ -172,6 +174,35 @@ static json bitTermJson(const SNLBitTerm* bt) {
 // RTL source location for an elaborated object, if naja has one recorded
 // (SNLRTLInfos -- populated today only by the SystemVerilog/slang frontend).
 // Returns JSON null when unavailable, which the client treats as "no link".
+// Every pin of a design, bus terms expanded bit by bit ("data[3]", with
+// "bit" set) so each gets its own schematic pin.
+static json allBitTermsJson(const SNLDesign* design) {
+  json terms = json::array();
+  for (auto* term : design->getTerms()) {
+    if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
+      int lo = std::min(static_cast<int>(bus->getLSB()),
+                        static_cast<int>(bus->getMSB()));
+      int hi = std::max(static_cast<int>(bus->getLSB()),
+                        static_cast<int>(bus->getMSB()));
+      for (int b = lo; b <= hi; ++b) {
+        if (auto* bit = bus->getBit(b)) {
+          json t = bitTermJson(bit);
+          // Append the bit index to the name for display ("data[3]"),
+          // but keep the "bit" field so the client can build requests.
+          if (t.contains("bit")) {
+            t["name"] = t["name"].get<std::string>() +
+                        "[" + std::to_string(t["bit"].get<int>()) + "]";
+          }
+          terms.push_back(std::move(t));
+        }
+      }
+    } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
+      terms.push_back(bitTermJson(st));
+    }
+  }
+  return terms;
+}
+
 static json sourceLocJson(const SNLDesignObject* obj) {
   if (!obj || !obj->hasRTLInfos()) return nullptr;
   auto* rtl = obj->getRTLInfos();
@@ -447,6 +478,8 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildNetsResponse(guiId, dbId, libId, designId));
   } else if (request == "load_equipotential") {
     msgCb_(buildEquipotentialResponse(req));
+  } else if (request == "trace_driver") {
+    msgCb_(buildTraceDriverResponse(req));
   } else if (request == "expand_instance_terms") {
     msgCb_(buildExpandInstanceTermsResponse(req));
   } else if (request == "load_instance_internals") {
@@ -455,6 +488,11 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildSourceResponse(req));
   } else if (request == "get_properties") {
     msgCb_(buildPropertiesResponse(req));
+  } else if (request == "resolve_instance") {
+    msgCb_(buildResolveInstanceResponse(req));
+  } else if (request == "instance_selected") {
+    // A notification (the user's selection), for hosts that script the
+    // viewer -- nothing to answer in the standalone app.
   } else {
     Console::Error("LocalSNLProvider: unknown request: " + request);
   }
@@ -616,6 +654,101 @@ std::string LocalSNLProvider::buildNetsResponse(
   }.dump();
 }
 
+// Wire-format body of an equipotential (no "response" key): its top-level
+// terms plus every leaf inst-term occurrence on the net.
+// With `sinks` set, only the net's drivers and those listed receivers (top
+// terms as SNLOccurrence(term), inst terms as (path, instTerm)) are emitted
+// -- a driver trace shows the path it followed, not every reader on the net.
+static json equipotentialJson(const SNLEquipotential& equi,
+                              const std::set<SNLOccurrence>* sinks = nullptr) {
+  json terms = json::array();
+  for (auto* bt : equi.getTermsSet()) {
+    // A top-level output is a receiver of the net; an input/inout drives it.
+    if (sinks && bt->getDirection() == SNLTerm::Direction::Output &&
+        !sinks->count(SNLOccurrence(bt))) continue;
+    terms.push_back(bitTermJson(bt));
+  }
+
+  json occs = json::array();
+  for (const auto& occ : equi.getInstTermOccurrencesSet()) {
+    auto* it = occ.getInstTerm();
+    if (sinks && it->getDirection() == SNLTerm::Direction::Input &&
+        !sinks->count(occ)) continue;
+    auto* bt = it->getBitTerm();
+    // Each path entry is [name, child_id, model_name]: the model name lets
+    // the schematic label the hierarchical module boxes it draws around a
+    // driver trace (see EquipotentialView's hierarchy grouping).
+    json pathArr = json::array();
+    for (auto* inst : occ.getPath().getInstances())
+      pathArr.push_back(json::array({inst->getString(),
+                                     static_cast<unsigned>(inst->getID()),
+                                     designName(inst->getModel())}));
+    // The occurrence path is to the parent design; append the instance itself
+    auto* theInst = it->getInstance();
+    pathArr.push_back(json::array({theInst->getString(),
+                                   static_cast<unsigned>(theInst->getID()),
+                                   designName(theInst->getModel())}));
+    auto entry = bitTermJson(bt);
+    entry["path"] = std::move(pathArr);
+    if (auto* model = theInst->getModel()) {
+      entry["design_ref"] = {
+        {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
+        {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
+        {"design_id",  static_cast<unsigned>(model->getID())}
+      };
+    }
+    entry["primitive_type"] = toString(getPrimitiveType(theInst));
+    entry["has_instances"] = hasAnySubInstances(theInst->getModel());
+    // Lets the view tell whether every pin of this instance is already on
+    // screen (solid box) or only a subset (dashed, double-click to expand).
+    if (auto* model = theInst->getModel())
+      entry["bit_term_count"] = model->getBitTerms().size();
+    entry["source_loc"]    = sourceLocJson(theInst);
+    occs.push_back(std::move(entry));
+  }
+  return json{{"terms", std::move(terms)}, {"occurrences", std::move(occs)}};
+}
+
+// Resolves a load_equipotential-style request (path of instance child IDs,
+// term_id, optional bit) to the net-component occurrence an equipotential is
+// computed from. Returns an invalid occurrence when it can't be resolved.
+// `bitOverride`, when set, takes precedence over req["bit"] (lets a bus
+// request fan out over several bits of the same term).
+static SNLOccurrence resolveStartOccurrence(SNLDesign* topDesign,
+                                            const json& req,
+                                            std::optional<int> bitOverride) {
+  SNLPath::PathIDDescriptor pathIDs;
+  if (req.contains("path") && req["path"].is_array())
+    for (auto& pid : req["path"])
+      pathIDs.push_back(static_cast<NLID::DesignObjectID>(pid.get<unsigned>()));
+
+  unsigned termId = req.value("term_id", 0u);
+  std::optional<int> bit = bitOverride;
+  if (!bit && req.contains("bit")) bit = req["bit"].get<int>();
+
+  auto resolveBitTerm = [&](SNLDesign* design) -> SNLBitTerm* {
+    auto* term = design->getTerm(static_cast<NLID::DesignObjectID>(termId));
+    if (!term) return nullptr;
+    if (!bit) return dynamic_cast<SNLBitTerm*>(term);
+    auto* bus = dynamic_cast<SNLBusTerm*>(term);
+    return bus ? bus->getBit(static_cast<NLID::Bit>(*bit)) : nullptr;
+  };
+
+  if (pathIDs.empty()) {
+    // Top-level term
+    auto* bitTerm = resolveBitTerm(topDesign);
+    return bitTerm ? SNLOccurrence(bitTerm) : SNLOccurrence();
+  }
+  // Instance term — occurrence of the tail instance's inst term
+  SNLPath snlPath(topDesign, pathIDs);
+  auto* model = snlPath.getModel();
+  if (!model) return SNLOccurrence();
+  auto* bitTerm = resolveBitTerm(model);
+  if (!bitTerm) return SNLOccurrence();
+  auto* instTerm = snlPath.getTailInstance()->getInstTerm(bitTerm);
+  return instTerm ? SNLOccurrence(snlPath.getHeadPath(), instTerm) : SNLOccurrence();
+}
+
 std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const {
   static const json empty = {
     {"response",    "equipotential_response"},
@@ -626,119 +759,108 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
   auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
   if (!topDesign) return empty.dump();
 
-  // Parse path (instance child IDs from top to the containing instance)
-  SNLPath::PathIDDescriptor pathIDs;
-  if (req.contains("path") && req["path"].is_array())
-    for (auto& pid : req["path"])
-      pathIDs.push_back(static_cast<NLID::DesignObjectID>(pid.get<unsigned>()));
-
-  unsigned termId = req.value("term_id", 0u);
-  bool hasBit = req.contains("bit");
-  NLID::Bit bitVal = hasBit ? static_cast<NLID::Bit>(req["bit"].get<int>()) : 0;
-
-  // Resolve the bit term
-  auto resolveBitTerm = [&](SNLDesign* design) -> SNLBitTerm* {
-    auto* term = design->getTerm(static_cast<NLID::DesignObjectID>(termId));
-    if (!term) return nullptr;
-    if (!hasBit) return dynamic_cast<SNLBitTerm*>(term);
-    auto* bus = dynamic_cast<SNLBusTerm*>(term);
-    return bus ? bus->getBit(bitVal) : nullptr;
-  };
-
   try {
-    if (pathIDs.empty()) {
-      // Top-level term — compute flat equipotential from the bit term directly
-      auto* bitTerm = resolveBitTerm(topDesign);
-      if (!bitTerm) return empty.dump();
-
-      SNLEquipotential equi(bitTerm, SNLEquipotential::Mode::TraverseAssigns);
-
-      json terms = json::array();
-      for (auto* bt : equi.getTermsSet()) terms.push_back(bitTermJson(bt));
-
-      json occs = json::array();
-      for (const auto& occ : equi.getInstTermOccurrencesSet()) {
-        auto* it = occ.getInstTerm();
-        auto* bt = it->getBitTerm();
-        json pathArr = json::array();
-        for (auto* inst : occ.getPath().getInstances())
-          pathArr.push_back(json::array({inst->getString(),
-                                         static_cast<unsigned>(inst->getID())}));
-        // The occurrence path is to the parent design; append the instance itself
-        auto* theInst = it->getInstance();
-        pathArr.push_back(json::array({theInst->getString(),
-                                       static_cast<unsigned>(theInst->getID())}));
-        auto entry = bitTermJson(bt);
-        entry["path"] = std::move(pathArr);
-        if (auto* model = theInst->getModel()) {
-          entry["design_ref"] = {
-            {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
-            {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
-            {"design_id",  static_cast<unsigned>(model->getID())}
-          };
-        }
-        entry["primitive_type"] = toString(getPrimitiveType(theInst));
-        entry["has_instances"] = hasAnySubInstances(theInst->getModel());
-        entry["source_loc"]    = sourceLocJson(theInst);
-        occs.push_back(std::move(entry));
-      }
-      return json{{"response","equipotential_response"},{"terms",terms},{"occurrences",occs}}.dump();
-
-    } else {
-      // Instance term — build occurrence and compute hierarchical equipotential
-      SNLPath snlPath(topDesign, pathIDs);
-      auto* model = snlPath.getModel();
-      if (!model) return empty.dump();
-
-      auto* bitTerm = resolveBitTerm(model);
-      if (!bitTerm) return empty.dump();
-
-      auto* tailInst = snlPath.getTailInstance();
-      auto* instTerm = tailInst->getInstTerm(bitTerm);
-      if (!instTerm) return empty.dump();
-
-      SNLEquipotential equi(SNLOccurrence(snlPath.getHeadPath(), instTerm),
-                            SNLEquipotential::Mode::TraverseAssigns);
-
-      json terms = json::array();
-      for (auto* bt : equi.getTermsSet()) terms.push_back(bitTermJson(bt));
-
-      json occs = json::array();
-      for (const auto& occ : equi.getInstTermOccurrencesSet()) {
-        auto* it = occ.getInstTerm();
-        auto* bt = it->getBitTerm();
-        json pathArr = json::array();
-        for (auto* inst : occ.getPath().getInstances())
-          pathArr.push_back(json::array({inst->getString(),
-                                         static_cast<unsigned>(inst->getID())}));
-        // The occurrence path is to the parent design; append the instance itself
-        auto* theInst = it->getInstance();
-        pathArr.push_back(json::array({theInst->getString(),
-                                       static_cast<unsigned>(theInst->getID())}));
-        auto entry = bitTermJson(bt);
-        entry["path"] = std::move(pathArr);
-        if (auto* model = theInst->getModel()) {
-          entry["design_ref"] = {
-            {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
-            {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
-            {"design_id",  static_cast<unsigned>(model->getID())}
-          };
-        }
-        entry["primitive_type"] = toString(getPrimitiveType(theInst));
-        entry["has_instances"] = hasAnySubInstances(theInst->getModel());
-        entry["source_loc"]    = sourceLocJson(theInst);
-        occs.push_back(std::move(entry));
-      }
-      return json{{"response","equipotential_response"},{"terms",terms},{"occurrences",occs}}.dump();
-    }
+    auto start = resolveStartOccurrence(topDesign, req, std::nullopt);
+    if (!start.isValid()) return empty.dump();
+    SNLEquipotential equi(start, SNLEquipotential::Mode::TraverseAssigns);
+    auto response = equipotentialJson(equi);
+    response["response"] = "equipotential_response";
+    return response.dump();
   } catch (const std::exception& e) {
     Console::Error("buildEquipotentialResponse: " + std::string(e.what()));
     return empty.dump();
   }
 }
 
+// Upper bound on nets returned by one trace_driver request: every net is a
+// schematic wire plus its instance boxes, so an unbounded cone through a big
+// design would bury the view (and the frame time) rather than help.
+static constexpr size_t kMaxTraceNets = 500;
+
+std::string LocalSNLProvider::buildTraceDriverResponse(const json& req) const {
+  static const json empty = {
+    {"response",       "trace_driver_response"},
+    {"equipotentials", json::array()},
+    {"truncated",      false}
+  };
+
+  auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
+  if (!topDesign) return empty.dump();
+
+  try {
+    // One start per requested bus bit, or the single term/bit otherwise.
+    std::vector<SNLOccurrence> starts;
+    if (req.contains("bits") && req["bits"].is_array()) {
+      for (auto& b : req["bits"])
+        starts.push_back(resolveStartOccurrence(topDesign, req, b.get<int>()));
+    } else {
+      starts.push_back(resolveStartOccurrence(topDesign, req, std::nullopt));
+    }
+
+    // Breadth-first from the start nets toward the drivers, so each net in the
+    // result shares an instance with an earlier one (the layout relies on
+    // that to chain nets left-to-right).
+    // `sinks` = the receiver pins the trace entered this net through (the
+    // start pin, or the input pin of the cell being crossed); a net reached
+    // through several of them accumulates all of them.
+    struct ConeNet {
+      SNLEquipotential          equi;
+      std::set<SNLOccurrence>   sinks;
+    };
+    std::vector<ConeNet> cone;
+    std::map<SNLEquipotential, size_t> indexOf;
+    auto enqueue = [&](const SNLOccurrence& sink) {
+      SNLEquipotential equi(sink, SNLEquipotential::Mode::TraverseAssigns);
+      auto [it, inserted] = indexOf.emplace(equi, cone.size());
+      if (inserted) cone.push_back({std::move(equi), {sink}});
+      else          cone[it->second].sinks.insert(sink);
+    };
+    for (const auto& start : starts)
+      if (start.isValid()) enqueue(start);
+
+    bool truncated = false;
+    for (size_t i = 0; i < cone.size(); ++i) {
+      // Copy: enqueue() below may reallocate `cone`.
+      const auto instTermOccs = cone[i].equi.getInstTermOccurrencesSet();
+      for (const auto& occ : instTermOccs) {
+        auto* driverTerm = occ.getInstTerm();
+        if (driverTerm->getDirection() != SNLTerm::Direction::Output) continue;
+        // The cone ends at sequential cells and at cells with no timing
+        // model (blackboxes): no combinational arc to cross.
+        auto* model = driverTerm->getInstance()->getModel();
+        if (SNLDesignModeling::isSequential(model) ||
+            !SNLDesignModeling::hasModeling(model)) continue;
+        for (auto* input : SNLDesignModeling::getCombinatorialInputs(driverTerm)) {
+          SNLOccurrence sink(occ.getPath(), input);
+          // Already-known nets don't grow the cone, so only cap new ones.
+          if (cone.size() >= kMaxTraceNets &&
+              !indexOf.count(SNLEquipotential(sink, SNLEquipotential::Mode::TraverseAssigns))) {
+            truncated = true; break;
+          }
+          enqueue(sink);
+        }
+        if (truncated) break;
+      }
+      if (truncated) break;
+    }
+    if (truncated)
+      Console::Log("trace_driver: cone truncated at " +
+                    std::to_string(kMaxTraceNets) + " nets");
+
+    json equis = json::array();
+    for (const auto& net : cone) equis.push_back(equipotentialJson(net.equi, &net.sinks));
+    return json{{"response", "trace_driver_response"},
+                {"equipotentials", std::move(equis)},
+                {"truncated", truncated}}.dump();
+  } catch (const std::exception& e) {
+    Console::Error("buildTraceDriverResponse: " + std::string(e.what()));
+    return empty.dump();
+  }
+}
+
 std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) const {
-  std::string pathKey = req.value("path_key", std::string(""));
+  // The requesting box's instance path, echoed back as is.
+  json instancePath = req.value("instance_path", json::array());
   unsigned dbId = 0, libId = 0, designId = 0;
   if (req.contains("design_ref")) {
     dbId     = req["design_ref"].value("db_id",      0u);
@@ -746,39 +868,57 @@ std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) 
     designId = req["design_ref"].value("design_id",  0u);
   }
 
-  json terms = json::array();
   auto* design = findDesign(dbId, libId, designId);
-  if (design) {
-    for (auto* term : design->getTerms()) {
-      if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
-        // Expand bus into individual bits so each gets its own port indicator.
-        int lo = std::min(static_cast<int>(bus->getLSB()),
-                          static_cast<int>(bus->getMSB()));
-        int hi = std::max(static_cast<int>(bus->getLSB()),
-                          static_cast<int>(bus->getMSB()));
-        for (int b = lo; b <= hi; ++b) {
-          if (auto* bit = bus->getBit(b)) {
-            json t = bitTermJson(bit);
-            // Append the bit index to the name for display ("data[3]"),
-            // but keep the "bit" field so the client can build requests.
-            if (t.contains("bit")) {
-              t["name"] = t["name"].get<std::string>() +
-                          "[" + std::to_string(t["bit"].get<int>()) + "]";
-            }
-            terms.push_back(std::move(t));
-          }
-        }
-      } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
-        terms.push_back(bitTermJson(st));
-      }
-    }
-  }
-
   return json{
     {"response", "expanded_instance_terms"},
-    {"path_key", pathKey},
-    {"terms",    terms}
+    {"instance_path", instancePath},
+    {"terms",    design ? allBitTermsJson(design) : json::array()}
   }.dump();
+}
+
+// Everything the viewer needs to show one instance given only its
+// instance-name path (same convention as get_properties): each path level's
+// [name, child_id, model_name], and the instance's model and full pin list,
+// to reveal it in the tree and draw it alone in the schematic. Mirrors
+// protocol.py's _handle_resolve_instance.
+std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) const {
+  std::vector<std::string> path;
+  if (req.contains("path") && req["path"].is_array())
+    for (auto& seg : req["path"]) path.push_back(seg.get<std::string>());
+
+  json reply = {{"response", "instance_resolved"}, {"path", path}, {"found", false}};
+  auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
+  if (!topDesign) return reply.dump();
+
+  SNLDesign*   design   = topDesign;
+  SNLInstance* instance = nullptr;
+  json levels = json::array();
+  for (const auto& name : path) {
+    instance = design ? design->getInstance(NLName(name)) : nullptr;
+    if (!instance) {
+      Console::Error("resolve_instance: could not resolve instance path");
+      return reply.dump();
+    }
+    design = instance->getModel();
+    levels.push_back(json::array({instance->getString(),
+                                  static_cast<unsigned>(instance->getID()),
+                                  designName(design)}));
+  }
+  reply["found"] = true;
+  if (!instance) return reply.dump();  // the top design itself
+
+  reply["instance"] = {
+    {"path",       std::move(levels)},
+    {"design_ref", {
+      {"db_id",      static_cast<unsigned>(design->getDB()->getID())},
+      {"library_id", static_cast<unsigned>(design->getLibrary()->getID())},
+      {"design_id",  static_cast<unsigned>(design->getID())}
+    }},
+    {"has_instances", hasAnySubInstances(design)},
+    {"source_loc",    sourceLocJson(instance)},
+    {"terms",         allBitTermsJson(design)}
+  };
+  return reply.dump();
 }
 
 // Resolve an instance's own model (the request's design_ref, exactly as the
@@ -788,7 +928,8 @@ std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) 
 // wiring them together (and, for a net that also reaches one of the model's
 // own boundary ports, that pass-through connection too).
 std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) const {
-  std::string pathKey = req.value("path_key", std::string(""));
+  // The requesting box's instance path, echoed back as is.
+  json instancePath = req.value("instance_path", json::array());
   unsigned dbId = 0, libId = 0, designId = 0;
   if (req.contains("design_ref")) {
     dbId     = req["design_ref"].value("db_id",      0u);
@@ -878,7 +1019,7 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
 
   return json{
     {"response",  "instance_internals_response"},
-    {"path_key",  pathKey},
+    {"instance_path", instancePath},
     {"children",  children},
     {"nets",      nets}
   }.dump();
@@ -913,11 +1054,10 @@ std::string LocalSNLProvider::buildSourceResponse(const json& req) const {
 
 // General name/value property inspector for whatever object the UI asks
 // about (an instance or a term/pin). The object is identified the same way
-// DiagnosisItem identifies things -- a slash-joined instance-name path, root
+// DiagnosisItem identifies things -- a list of instance names, root
 // excluded -- rather than provider-specific numeric child_ids, so it's
 // resolved here by walking instance names down from the top design (see
-// Types.h's splitPathKey() on the client side, and CLAUDE.md's "Path
-// matching convention"). Unknown/unresolvable objects yield an empty
+// CLAUDE.md's "Path matching convention"). Unknown/unresolvable objects yield an empty
 // properties list rather than an error, matching "no properties" semantics.
 std::string LocalSNLProvider::buildPropertiesResponse(const json& req) const {
   json properties = json::array();

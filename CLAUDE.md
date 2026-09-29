@@ -45,10 +45,11 @@ standalone build, a `--diagnosis <path>` CLI flag (`main_native.cpp`) that
 loads a design and a diagnosis JSON in one command, so an external caller
 (a script, or naja-agent's skill) can open a fully annotated view without a
 human clicking through File > Open .../Load Diagnosis JSON... by hand. This
-closes the "opening a view" half of the loop for native builds; the WASM/
-browser build still has no equivalent one-shot launch path (see "Wire
-protocol" below — it depends on a live server + browser tab already being
-connected). What's still missing upstream either way: neither kepler-formal
+closes the "opening a view" half of the loop for native builds. The browser
+build has the same one-shot launch through the `naja_schematic` Python
+package's CLI (`naja-schematic --verilog d.v --diagnosis diag.json --open`,
+see "Python package" below), and notebooks get it through
+`naja_schematic.show(diagnosis=...)`. What's still missing upstream either way: neither kepler-formal
 nor naja-scope emits `diagnosis_response` JSON today, so an adapter that
 turns kepler-formal's log/text output into `diagnosis_response` items is the
 remaining piece to actually produce the file this flag consumes.
@@ -116,15 +117,32 @@ emrun --port 8080 naja-schematic.html
 The WASM app doesn't link naja directly — it talks to a netlist server over a
 WebSocket instead. Start the server first, optionally with `--verilog <path>`
 (a single Verilog netlist) and `--liberty <path> [<path>...]` (one flag,
-listing the Liberty files defining its cell library — see the `argparse`
-setup in `najaeda_server.py`'s `__main__` block):
+listing the Liberty files defining its cell library — see
+`build_arg_parser()` in `python/naja_schematic/server.py`;
+`scripts/najaeda_server.py` is just a wrapper that runs that CLI from the
+source tree without installing the package):
 
 ```bash
 python3 scripts/najaeda_server.py   # serves ws://localhost:8081/ws
 
 # gate-level Verilog + Liberty example:
 python3 scripts/najaeda_server.py --verilog design.v --liberty cells.lib
+
+# SystemVerilog (elaborated with slang) example:
+python3 scripts/najaeda_server.py --systemverilog a.sv b.sv --top top -D SYNTHESIS
+
+# SystemVerilog from a slang command file (sources, +incdir+, +define+, ...):
+python3 scripts/najaeda_server.py --flist design.f --top top
 ```
+
+A design is required: either `--verilog`, or SystemVerilog via
+`--systemverilog`/`--sv <path>...` and/or `--flist`/`-f <file>` (the two SV
+inputs can be combined; `--flist` maps to `SystemVerilogConfig.flist`).
+Verilog and SV are mutually exclusive. `--top`/`--define`/`-D` apply only to
+SystemVerilog, and `--liberty` is rejected with SV — same restriction as the
+native CLI, since the SV loader has no liberty hook.
+`--allow_unknown_designs` maps to `SystemVerilogConfig.blackbox_unknown_modules`
+for SV.
 
 Note the flag shapes are *not* symmetric with the native CLI above: the
 server takes `--verilog <path>` (singular) + `--liberty <path>...` (one flag,
@@ -134,6 +152,49 @@ assume a reader moving between modes can reuse the same invocation shape.
 
 (`scripts/test_server.py` is a minimal canned-response stub for protocol
 testing without a real netlist backend.)
+
+### Python package (`python/`, PyPI `naja-schematic`)
+
+`python/naja_schematic` packages the Python side of the protocol with the
+WASM viewer, so najaeda users get a viewer from `pip install` alone:
+
+- `protocol.py` — the Python protocol implementation: `handle_request(dict)
+  -> [dict]`, transport-agnostic, answering from the live `NLUniverse`. This
+  is the file to keep in step with `LocalSNLProvider.cpp`.
+- `server.py` — the `naja-schematic` CLI (same flags as above, plus `--host`,
+  `--open`, `--diagnosis <json>`, `--stdio`) and its two transports: a
+  WebSocket server that also serves the viewer page on the same port
+  (`static/index.html` sets `Module.najaWsUrl` from `location`), and JSON
+  lines on stdin/stdout for a host that relays messages itself. In `--stdio`
+  mode fd 1 is pointed at stderr (naja's C++ logger writes to stdout) and
+  protocol output goes to a private dup of the original stdout. With
+  `--diagnosis`, a `diagnosis_response` is pushed after every
+  `root_response` (the viewer clears diagnoses on each root load).
+- `widget.py` — `naja_schematic.show()`: an anywidget for Jupyter/Colab/
+  VSCode notebooks. Its ES module is the bundle + `static/widget.js`; the
+  viewer's requests come back over the widget comm channel as
+  `{"json": "<message>"}` and are answered in the kernel, so the view shows
+  the netlist as edited by earlier cells. `Schematic.annotate(items)`
+  pushes diagnoses; `show_instance()`/`selected`/`on_select()` exchange
+  instances with najaeda (see "Getting to one hierarchical instance"
+  under Wire protocol).
+
+The viewer bundle `static/naja-schematic.js` is **not** checked in: it's the
+WASM target configured with `-DNAJA_SCHEMATIC_WASM_MODULE=ON` (single file,
+wasm inlined, `createNajaSchematic({canvas, ...})` factory, one instance per
+canvas), built by `.github/workflows/python-package.yml`, which also tests
+the wheel and publishes it to PyPI on a `v<version>` tag (version in
+`naja_schematic/__init__.py`, the project's single version: `CMakeLists.txt`
+also reads it into `NAJA_SCHEMATIC_VERSION_STRING` for the C++ app's About
+dialog, so a release is one edit plus a tag). For local work set
+`NAJA_SCHEMATIC_BUNDLE` to a locally built bundle (see `_bundle.py`). Tests:
+`pytest python/tests`. `python/notebooks/colab_test.ipynb` is the
+Open-in-Colab notebook (badge in the top `README.md`): a walkthrough of the
+widget against the released PyPI package. `tests/test_notebook.py` runs it
+in a real kernel (nbclient) and splices in a cell that plays the viewer
+against its `view`, so a `Schematic`/protocol change that breaks it fails
+CI; its install cell skips `pip install` when `naja_schematic` is already
+importable, so CI tests the fresh wheel, not PyPI's.
 
 ## Architecture
 
@@ -146,16 +207,24 @@ data is sourced:
   `while` loop calling `appFrame()`. Backed by `LocalSNLProvider`, which loads
   netlists directly through the naja SNL C++ API in-process (Verilog,
   SystemVerilog, or pre-built SNL directories).
-- **`src/main_wasm.cpp`** — browser/VSCode webview: SDL2 + OpenGL ES via
-  Emscripten's `emscripten_set_main_loop()`. Backed by `WebSocketProvider`,
-  a thin wrapper around `WebSocketClient` that connects to
-  `ws://localhost:8081/ws` (implemented by `scripts/najaeda_server.py`, a
-  Python asyncio server built on `najaeda`).
+- **`src/main_wasm.cpp`** — browser/VSCode webview/notebook: SDL2 + OpenGL
+  ES via Emscripten's `emscripten_set_main_loop()`. Backed by
+  `JsBridgeProvider` when the host page sets `Module.najaSend` (embedded
+  mode: the host owns the transport, requests go out through
+  `Module.najaSend(json)` and replies come back through the embind-exported
+  `Module.deliverMessage(json)` — what the notebook widget uses), otherwise
+  by `WebSocketProvider`, a thin wrapper around `WebSocketClient` that
+  connects to `Module.najaWsUrl` or `ws://localhost:8081/ws` (served by the
+  `naja_schematic` Python package, see above). `main()` maps SDL's
+  hard-coded `"#canvas"` selector to the instance's own `Module.canvas`
+  (`specialHTMLTargets`), so several viewers can share a page, and with
+  `Module.najaEmbedded` limits keyboard capture to the focused canvas.
 
 Both providers implement **`INetlistProvider`** (`src/INetlistProvider.h`):
 `send()`, `on_open()`/`on_message()`/`on_close()`/`on_error()` callback
 registration, and `start()`. `LocalSNLProvider::start()` fires `on_open`
-synchronously and answers requests in-process; `WebSocketProvider` is a passive
+synchronously and answers requests in-process, as does `JsBridgeProvider`'s
+(the host channel is already up); `WebSocketProvider` is a passive
 wrapper since the underlying socket connects in its constructor.
 
 `src/AppLogic.h/.cpp` holds the logic shared by both entry points:
@@ -172,11 +241,26 @@ wrapper since the underlying socket connects in its constructor.
 
 ### Wire protocol
 
+**Instance paths are lists of names.** Everywhere a hierarchical instance
+is named — wire-protocol `path` fields, `DiagnosisItem`s, the Python API
+(`show()`, `Schematic.show_instance()`, `selected_path`) and the docs'
+examples — it's a list of instance names, root excluded (`["u1", "u2"]`,
+`[]` = top), never a `"u1/u2"` string: escaped Verilog names
+(`\a/b `) can contain `/`, so splitting on it corrupts the path. A bare
+string passed to the Python API is one name, never split. Don't add
+`/`-parsing conveniences. The C++ viewer follows the same rule
+internally: an instance's identity is an `InstancePath`
+(`std::vector<std::string>`, `Types.h`) used directly as map/set key,
+and composite keys are `std::tuple`s, never strings joined with `/`, `|`
+or any other separator. Joined strings exist only for display
+(`displayPath()`, `properties_response`'s `subject`) and are never
+parsed back.
+
 Requests/responses are JSON with a `"request"`/`"response"` type field (e.g.
 `load_root`, `load_instance`, `load_primitives`, `load_terms`, `load_nets`,
 `load_equipotential` → `*_response`). Both `LocalSNLProvider` (native,
 `buildRootResponse()`/`buildInstancesResponse()`/etc.) and
-`najaeda_server.py` (WASM/browser) must independently implement this same
+`python/naja_schematic/protocol.py` (WASM/browser/notebook) must independently implement this same
 protocol — when changing one side, check the other.
 
 `load_nets`/`nets_response` mirrors `load_terms`/`terms_response` exactly
@@ -193,11 +277,73 @@ Both `nets_response` and the `has_nets` flag filter out anonymous scalar
 constant nets (unnamed 1'b0/1'b1 tie-offs, e.g. naja's implicit tie-off of
 an unconnected input) — structural noise, not user-authored signals — via
 `isAnonymousConstantNet()`/`hasVisibleNets()` (`LocalSNLProvider.cpp`) and
-`is_anonymous_constant_net()`/`has_nets()` (`najaeda_server.py`), the same
+`is_anonymous_constant_net()`/`has_nets()` (`protocol.py`), the same
 spirit as `hasVisiblePrimitiveInstances()` filtering `isAssign()`
 primitives. A *named* or *bus* constant is still shown — the filter is
 deliberately narrow (unnamed **and** scalar **and** constant 0/1) so it
 only hides the implicit tie-offs, not anything a designer wrote by hand.
+
+`trace_driver`/`trace_driver_response` is "Show Equipotential" extended to the
+whole combinational fan-in cone: same `path`/`term_id`/optional `bit` request
+shape as `load_equipotential` (plus an optional `bits` list to trace several
+bits of one bus term in a single request), but the reply is *one* message
+holding every net in the cone rather than one net:
+
+```json
+{ "response": "trace_driver_response",
+  "equipotentials": [ {"terms": [...], "occurrences": [...]}, ... ],  // each = an equipotential_response body
+  "truncated": false }
+```
+Starting from the requested net, each output pin on it is a driver; if its
+cell has a combinational timing model (`SNLDesignModeling`) the cone crosses
+it and continues with the net on every input pin that arc depends on. It stops
+at sequential cells (flop/latch outputs), cells with no timing model
+(blackboxes) and top-level input terms -- those are the "drivers" the cone
+ends at. Each net lists its drivers plus only the receiver pins the trace
+entered it through (the start pin, or the input pin of the cell being crossed;
+several if the net is reached more than once) -- *not* every reader on the net,
+unlike `equipotential_response`. Nets are returned breadth-first from the
+requested one and de-duplicated, capped at `kMaxTraceNets` (`MAX_TRACE_NETS` in
+`protocol.py`, 500) with `truncated: true` when hit. `AppLogic.cpp` adds
+each to `GUIData` in order; the incremental layout in `EquipotentialView.cpp`
+relies on that ordering (each net shares an already-placed instance with an
+earlier one) to chain the cone right-to-left. Reachable from the tree
+(right-click a term/bus-bit row -> "Trace to Driver", bus row -> "Trace Bus
+to Driver"; both clear the view first, like "Show Equipotential") and from the
+schematic (right-click a pin -> "Trace to Driver"; this one *adds* to the view
+instead of clearing it).
+
+Extending the schematic by hand works pin by pin. A box drawn with a dashed
+border shows only the pins on nets already in view; double-clicking its body
+sends `expand_instance_terms` and reveals the rest. Pins whose net isn't in
+the view yet are "open" (`Port::open`, drawn with a hollow-circle stub), and a
+**single click** on one sends `load_equipotential` for its net (the stub fills
+while it loads; `SchematicInteraction::PendingRequests` stops repeat sends).
+A single click on a merged bus pin shows its bits instead. Hovering a pin
+highlights it and shows a tooltip naming its click action. When the requested
+net arrives the view pans so the clicked box stays put on screen, even if the
+hierarchy frames re-lay everything out. Pins are hit-tested nearest-first by
+`SchematicInteraction::pickPin`. `GUIData::addEquipotential()` rejects a net
+whose endpoints are all already shown (`equipotentialCovers()`), so neither a
+re-click nor a trace re-listing a shown net draws its wires twice.
+
+Occurrence `path` entries (in `equipotential_response` and each
+`trace_driver_response` net) are `[name, child_id, model_name]`; the third
+element is optional on parse (`InstTermOccurrence::pathModels`, `""` when
+absent). It lets the schematic keep the design hierarchy of whatever it
+shows (**View > Show Hierarchy**, on by default, also in the canvas context
+menu): `layoutHierarchyGroups()` in `EquipotentialView.cpp` draws every
+module enclosing a displayed leaf as a nested translucent frame labelled
+`instance (Model)`, re-laying the leaves out inside it — each leaf keeps the
+logic column the incremental layout gave it, and inside a frame its leaves
+and sub-frames are bucketed into columns by that column. Frames are
+`InstanceShape`s with `isHierGroup` set, inserted at the front of
+`SchematicView::instances` and drawn before the nets
+(`SchematicView::render()`); the leaves stay top-level shapes, so wiring and
+hit-testing are unchanged. Right-clicking a frame offers Show Properties and
+"Zoom to Module". The bottom "Equipotential" table lists every net of the
+last trace (not just the last net) with a "Hierarchy" column giving each
+occurrence's enclosing modules.
 
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*
@@ -218,20 +364,57 @@ the already-loaded netlist rather than loading anything:
   ]
 }
 ```
-`najaeda_server.py` doesn't implement this yet (no upstream data source —
-see Vision above); `scripts/test_server.py` sends a canned example after
-`load_root` as a demo/test fixture. Native/standalone mode has no server at
+Nothing upstream produces it yet (see Vision above), so the Python side
+only relays a file or list it's given: the `naja-schematic --diagnosis
+<json>` CLI and `Schematic.annotate()`/`show(diagnosis=...)` in notebooks
+push it after each `root_response`; `scripts/test_server.py` sends a canned
+example after `load_root` as a demo/test fixture. Native/standalone mode has no server at
 all, so it gets diagnosis data via **File > Load Diagnosis JSON...**
 (reads a `{"items": [...]}` file or a bare array through the same
 `DiagnosisItem` parser) instead.
 
+Getting to one hierarchical instance works in both directions, keyed by
+the same instance-name path as diagnosis items:
+
+- **Host → viewer.** `focus_instance` is a server push,
+  `{"response":"focus_instance","path":["u1","u2"]}`, from
+  `Schematic.show_instance()` / `show(instance=...)`, re-pushed after each
+  `root_response` like diagnoses. The viewer answers it with a
+  `resolve_instance` request (`{"request":"resolve_instance","path":[...]}`),
+  which both providers implement (`protocol.py`
+  `_handle_resolve_instance`, `LocalSNLProvider::buildResolveInstanceResponse`).
+  The reply looks like this:
+  ```json
+  { "response": "instance_resolved", "path": ["u1","u2"], "found": true,
+    "instance": {                        // absent for the top design ([])
+      "path": [["u1", 3, "Mod"], ["u2", 7, "AND2"]],   // [name, child_id, model] per level
+      "design_ref": {...}, "has_instances": false, "source_loc": null,
+      "terms": [ {"name": "A", "child_id": 0, "direction": 0}, ... ] } }  // expanded_instance_terms shape
+  ```
+  The viewer then:
+  - clears the schematic and draws the instance alone with every pin open
+    (`EquipotentialView::showInstance()`, parsed by
+    `startInstanceFromResolved()`);
+  - selects it (`SelectionStore`);
+  - reveals it in the tree. `NetlistTree::reveal()` walks down the path,
+    requesting each level's Instances/Primitives group as needed; it's
+    asynchronous and `advanceReveal()` runs each frame.
+- **Viewer → host.** There is one selected instance: click an instance row
+  in the tree or a box/frame body in the schematic. Each change sends a
+  notification with no reply, `{"request":"instance_selected","path":[...]}`,
+  plus a `get_properties` for it. The notebook widget intercepts
+  `instance_selected` into `Schematic.selected_path`; `Schematic.selected`
+  returns it as a najaeda `netlist.Instance`, and `on_select()` gives a
+  callback. The other hosts only log it (`protocol.py`) or ignore it
+  (`LocalSNLProvider`).
+
 `get_properties`/`properties_response` is a general name/value inspector for
 whatever object the UI asks about — an instance (including the top design
 itself), a term/pin, or a net — answered by both `LocalSNLProvider`
-(`buildPropertiesResponse()`) and `najaeda_server.py` the same request/
+(`buildPropertiesResponse()`) and `protocol.py` the same request/
 response way as `load_terms` etc. (unlike `diagnosis_response`, it's not a
 push). The object is identified the same way `DiagnosisItem` identifies
-things — a slash-joined instance-name path, root excluded — rather than
+things — a list of instance names, root excluded — rather than
 provider-specific numeric `child_id`s, so both backends resolve it by
 walking instance names down from the top design:
 
@@ -292,6 +475,29 @@ appear as boxes/pins there).
   `root_response`/`root_loaded`.
 - **`PropertiesView`** — renders the current `PropertiesStore` contents as a
   two-column name/value table into the "Properties" bottom-panel tab.
+- **`SelectionStore`** — global static store (same pattern) for the one
+  selected instance, by `InstancePath` (`{}` = top). It's set from the tree, the
+  schematic or a host `focus_instance`, and drawn highlighted in both
+  views. Its listener (installed in `AppLogic.cpp`) reports each change to
+  the host. `NetlistTree` reveals selections made outside it by comparing
+  `revision()`. Cleared on every fresh `root_response`/`root_loaded`.
+- **`SchematicLayout`** — the schematic's pure placement geometry, split out
+  of `EquipotentialView` so it's unit-testable without ImGui frames or a
+  provider (`tests/SchematicLayoutTest.cpp`): `IncrementalLayout` (per-net
+  instance placement and column de-overlap) and `layoutHierarchyGroups()`
+  (module frames). Changes to how the schematic is laid out belong here,
+  with a test; `EquipotentialView` only turns the result into drawn shapes.
+- **`SchematicInteraction`** — the pure side of the schematic's pin
+  interactions: `pickPin()` (nearest-pin hit test, radius capped in world
+  units so a pin doesn't swallow box-body clicks at low zoom) and
+  `PendingRequests` (in-flight pin requests, which expire after 5 s).
+  `tests/SchematicInteractionTest.cpp` tests them. The click flow itself is
+  covered end to end by `tests/EquipotentialViewTest.cpp`. That test drives
+  the real `EquipotentialView::renderSchematic()` in a headless ImGui context
+  with no render backend: it moves the mouse and clicks through the ImGui IO
+  API, then asserts on what `FakeNetlistProvider` received and on the
+  geometry, read through `EquipotentialView::schematicForTesting()`. Use the
+  same pattern for new canvas interactions.
 
 ### Diagnosis overlay
 
@@ -307,15 +513,17 @@ just query the store each frame:
 - `DiagnosisView` — the flat list, independent of what's currently expanded/
   loaded in the tree or schematic.
 
-Path matching convention: `DiagnosisItem::pathKey()` (slash-joined instance
-names, root excluded) must match `NetlistTreeInstanceNode::getPathKey()` and
-`EquipotentialView`'s instance-item keys — all three are built the same way,
-from instance *names*, not the provider's numeric `child_id`s (those aren't
-stable inputs for an external tool like kepler-formal to reference).
-`get_properties` reuses this same path/pathKey convention (`splitPathKey()`
-in `Types.h` is the inverse of `pathKey()`) so its request-building code in
-`NetlistTree.cpp`/`EquipotentialView.cpp` and its resolution code in
-`LocalSNLProvider.cpp`/`najaeda_server.py` need no id/name translation layer
+Path matching convention: `DiagnosisItem::path` must match
+`NetlistTreeInstanceNode::getInstancePath()` and `InstanceShape::path` --
+all three are the same `InstancePath`, built from instance *names*, not
+the provider's numeric `child_id`s (those aren't stable inputs for an
+external tool like kepler-formal to reference). `get_properties`,
+`instance_selected` and `resolve_instance` send that same list as their
+`path`, and `expand_instance_terms`/`load_instance_internals` tag their
+request with it as `instance_path` (echoed back in the reply, so the view
+knows which box it's for), so the request-building code in
+`NetlistTree.cpp`/`EquipotentialView.cpp` and the resolution code in
+`LocalSNLProvider.cpp`/`protocol.py` need no id/name translation layer
 of their own.
 
 ### VSCode integration
