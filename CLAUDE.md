@@ -161,19 +161,46 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
 - `protocol.py` — the Python protocol implementation: `handle_request(dict)
   -> [dict]`, transport-agnostic, answering from the live `NLUniverse`. This
   is the file to keep in step with `LocalSNLProvider.cpp`.
+- `session.py` — `ViewerSession`, one viewer's state above the protocol,
+  shared by every transport below: it answers a message
+  (`answer(json) -> [json]`), keeps the host's pushes (`annotate()`,
+  `show_instance()`) and re-sends them after every `root_response` (the
+  viewer clears diagnoses and selection on each root load), and records
+  `instance_selected` notifications (`on_select(cb(id_path, path))`). Add
+  host-facing behavior here, not in one transport. Universe access is split
+  by who starts it: the viewer's requests go through the session's
+  `run(fn)` hook (default: a private `RLock`), the host's own calls touch
+  the universe directly on the host's thread -- so a host holding its lock,
+  or running on the thread `run` hops to, never deadlocks on itself.
 - `server.py` — the `naja-schematic` CLI (same flags as above, plus `--host`,
   `--open`, `--diagnosis <json>`, `--stdio`) and its two transports: a
   WebSocket server that also serves the viewer page on the same port
-  (`static/index.html` sets `Module.najaWsUrl` from `location`), and JSON
+  (`static/index.html` sets `Module.najaWsUrl` from `location`, query
+  string included), and JSON
   lines on stdin/stdout for a host that relays messages itself. In `--stdio`
   mode fd 1 is pointed at stderr (naja's C++ logger writes to stdout) and
   protocol output goes to a private dup of the original stdout. With
   `--diagnosis`, a `diagnosis_response` is pushed after every
-  `root_response` (the viewer clears diagnoses on each root load).
+  `root_response`.
+  Also `ViewerServer`, the same page + WebSocket as an object for a host
+  application that already holds the design (nothing is loaded):
+  `start()`/`stop()`/context manager, on a background thread with its own
+  event loop; `port=0` (the default) binds a free port, final once
+  `start()` returns (`.port`, `.url`). Viewer requests are answered one at
+  a time on a single worker thread, through `lock=` (held around each,
+  exposed as `.lock`; a private `RLock` by default) or `run=` (e.g. hop to
+  the host's thread). `stop()` abandons a request stuck in the host rather
+  than waiting for it. The WebSocket requires a random `token` (in `.url`'s
+  query, forwarded by `index.html`) and rejects browser `Origin`s other
+  than its own page and `allowed_origins`, so other web pages can't read
+  the design; `token=None` turns the token off. Pushes go to every
+  connected viewer (`websockets` `broadcast`); selection callbacks get
+  `(id_path, path)` on the worker thread with no lock held.
 - `widget.py` — `naja_schematic.show()`: an anywidget for Jupyter/Colab/
   VSCode notebooks. Its ES module is the bundle + `static/widget.js`; the
   viewer's requests come back over the widget comm channel as
-  `{"json": "<message>"}` and are answered in the kernel, so the view shows
+  `{"json": "<message>"}` and are answered in the kernel (through a
+  `ViewerSession`), so the view shows
   the netlist as edited by earlier cells. `Schematic.annotate(items)`
   pushes diagnoses; `show_instance()`/`selected`/`on_select()` exchange
   instances with najaeda (see "Getting to one hierarchical instance"

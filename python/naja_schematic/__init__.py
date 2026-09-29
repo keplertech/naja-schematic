@@ -4,12 +4,15 @@
   the design currently loaded with najaeda.
 - From a shell: ``naja-schematic --verilog design.v --open`` serves the
   viewer page and opens it in a browser.
+- From an application that already holds the design: ``ViewerServer``
+  serves the viewer page from a background thread.
 """
 # Single version for the whole project: CMakeLists.txt reads this line into the
 # C++ app too (NAJA_SCHEMATIC_VERSION_STRING), so keep it a plain literal.
 __version__ = "0.1.5"
 
 from .protocol import diagnosis_response, handle_request
+from .server import ViewerServer
 
 
 def show(instance=None, *, height=600, diagnosis=None):
@@ -20,4 +23,4 @@ def show(instance=None, *, height=600, diagnosis=None):
     return _show(instance, height=height, diagnosis=diagnosis)
 
 
-__all__ = ["__version__", "show", "handle_request", "diagnosis_response"]
+__all__ = ["__version__", "show", "handle_request", "diagnosis_response", "ViewerServer"]

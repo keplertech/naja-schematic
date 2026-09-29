@@ -71,6 +71,31 @@ opens it in a browser. `--stdio` speaks the same protocol as JSON lines on
 stdin/stdout instead, for a host (e.g. an editor extension) that relays
 messages itself. `naja-schematic --help` lists every option.
 
+## From an application that already holds the design
+
+A tool that loads and edits the design itself (with najaeda or the raw
+`naja` bindings) can serve the viewer on it without loading anything:
+
+```python
+import threading, naja_schematic
+
+design_lock = threading.RLock()   # held by the host while it edits the design
+server = naja_schematic.ViewerServer(lock=design_lock)   # port 0: any free port
+server.start()
+server.open_browser()             # or hand server.url to the user
+
+server.annotate(items)            # diagnosis overlay, kept across reloads
+server.show_instance([3, 7])      # instance ids, names, or a najaeda Instance
+server.on_select(lambda id_path, path: print("selected", path))
+...
+server.stop()
+```
+
+Viewer requests are answered on a background thread while `lock` is held
+(or pass `run=` to answer them on a thread of your choosing). The page's
+URL carries a random access token, and other web pages can't connect to
+the WebSocket.
+
 ## Development
 
 The viewer bundle (`naja_schematic/static/naja-schematic.js`) is built from
