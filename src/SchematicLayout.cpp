@@ -58,6 +58,43 @@ float labelWidth(const std::vector<std::string>& names) {
 }
 } // namespace
 
+// ---------------------------------------------------------------------------
+// Instance names
+// ---------------------------------------------------------------------------
+std::string shortenMiddle(const std::string& name, const NameWidthFn& width, float maxW) {
+    if (width(name) <= maxW) return name;
+    static const std::string kEllipsis = "...";
+    if (width(kEllipsis) > maxW) return "";
+    // Most characters kept, split evenly between head and tail (the tail
+    // gets the odd one: it's what tells siblings apart most often).
+    auto cut = [&](size_t kept) {
+        const size_t head = kept / 2;
+        return name.substr(0, head) + kEllipsis + name.substr(name.size() - (kept - head));
+    };
+    size_t lo = 0, hi = name.size() - 1;
+    while (lo < hi) {
+        const size_t mid = (lo + hi + 1) / 2;
+        if (width(cut(mid)) <= maxW) lo = mid; else hi = mid - 1;
+    }
+    return cut(lo);
+}
+
+std::string shownName(const InstanceShape& s, const NameWidthFn& width) {
+    if (s.isHierGroup || s.modelName == "port") return "";
+    return shortenMiddle(s.label.empty() ? s.name : s.label, width, kNameMaxW);
+}
+
+float footprintWidth(const InstanceShape& s, const NameWidthFn& width) {
+    const std::string name = shownName(s, width);
+    return name.empty() ? s.w : std::max(s.w, width(name));
+}
+
+std::optional<RouteRect> nameRect(const InstanceShape& s, const NameWidthFn& width) {
+    const std::string name = shownName(s, width);
+    if (name.empty()) return std::nullopt;
+    return RouteRect{ s.x, s.y - kNameH, s.x + width(name), s.y };
+}
+
 bool isGateSymbol(PrimitiveType type) {
     switch (type) {
         case PrimitiveType::And:  case PrimitiveType::Nand:
@@ -619,20 +656,22 @@ struct GroupNode {
     std::vector<std::pair<InstanceShape*, ImVec2>> leafRel;
 };
 
-void measureGroup(GroupNode& node, bool isRoot) {
+void measureGroup(GroupNode& node, bool isRoot, const NameWidthFn& nameWidth) {
     struct Elem { GroupNode* g; InstanceShape* leaf; float center, sortY, w, h; };
     std::vector<Elem> elems;
     node.levelMin = 1e9f; node.levelMax = -1e9f; node.sortY = 1e9f;
     for (auto& g : node.groups) {
-        measureGroup(*g, false);
+        measureGroup(*g, false, nameWidth);
         elems.push_back({ g.get(), nullptr, 0.5f * (g->levelMin + g->levelMax), g->sortY, g->w, g->h });
         node.levelMin = std::min(node.levelMin, g->levelMin);
         node.levelMax = std::max(node.levelMax, g->levelMax);
         node.sortY    = std::min(node.sortY, g->sortY);
     }
     for (auto [leaf, level] : node.leaves) {
+        // The frame already names the module: a leaf in it shows its own name.
+        if (!isRoot && !leaf->path.empty()) leaf->label = displayName(leaf->path.back());
         float lv = float(level);
-        elems.push_back({ nullptr, leaf, lv, leaf->y, leaf->w, leaf->h });
+        elems.push_back({ nullptr, leaf, lv, leaf->y, footprintWidth(*leaf, nameWidth), leaf->h });
         node.levelMin = std::min(node.levelMin, lv);
         node.levelMax = std::max(node.levelMax, lv);
         node.sortY    = std::min(node.sortY, leaf->y);
@@ -693,7 +732,6 @@ void placeGroup(const GroupNode& node, ImVec2 origin, bool isRoot,
     for (const auto& [leaf, rel] : node.leafRel) {
         leaf->x = origin.x + rel.x;
         leaf->y = origin.y + rel.y;
-        if (!isRoot && !leaf->path.empty()) leaf->label = displayName(leaf->path.back());
     }
     for (const auto& g : node.groups)
         placeGroup(*g, ImVec2(origin.x + g->rel.x, origin.y + g->rel.y), false, nextInstId, frames);
@@ -703,7 +741,8 @@ void placeGroup(const GroupNode& node, ImVec2 origin, bool isRoot,
 std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHier>& leafHier,
                                              std::vector<InstanceShape>& instances,
                                              const std::map<InstancePath, int>& pathToInstId,
-                                             int& nextInstId) {
+                                             int& nextInstId,
+                                             const NameWidthFn& nameWidth) {
     std::vector<HierFrame> frames;
     bool anyNested = false;
     for (const auto& [path, lh] : leafHier)
@@ -741,7 +780,7 @@ std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHi
         node->leaves.push_back({ leaf, lh.level });
     }
 
-    measureGroup(root, true);
+    measureGroup(root, true, nameWidth);
     placeGroup(root, ImVec2(kLeftMargin, 0.f), true, nextInstId, frames);
     return frames;
 }

@@ -20,6 +20,7 @@ path = [
   "CMakeLists.txt",
   "CMakePresets.json",
   "README.md",
+  "docs/demo.gif",
   "python/README.md",
   "python/naja_schematic/__init__.py",
   "python/naja_schematic/__main__.py",

@@ -5,6 +5,8 @@ netlists: the [naja-schematic](https://github.com/najaeda/naja-schematic)
 WASM viewer, packaged with the Python backend that answers it from a live
 najaeda netlist.
 
+![naja-schematic demo: tracing an output port back to its drivers, then extending the schematic pin by pin](https://raw.githubusercontent.com/najaeda/naja-schematic/main/docs/demo.gif)
+
 ```bash
 pip install naja-schematic
 ```

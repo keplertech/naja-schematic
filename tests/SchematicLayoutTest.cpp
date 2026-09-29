@@ -66,7 +66,72 @@ const InstanceShape& byRef(const std::vector<InstanceShape>& v, const InstancePa
 
 bool onGrid(float v) { return std::abs(v / kGrid - std::round(v / kGrid)) < 1e-4f; }
 
+// A monospace stand-in for the view's font.
+constexpr float kCharW = 7.f;
+float charWidth(const std::string& s) { return kCharW * float(s.size()); }
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Instance names
+// ---------------------------------------------------------------------------
+
+TEST(InstanceNames, ANameThatFitsIsShownWhole) {
+  EXPECT_EQ(shortenMiddle("u_alu", charWidth, 100.f), "u_alu");
+}
+
+TEST(InstanceNames, ALongNameKeepsItsHeadAndTail) {
+  const std::string name = "buffer_1.Queue.value_1$_SDFFE_PP0P_";
+  const float maxW = 20.f * kCharW;
+  const std::string shown = shortenMiddle(name, charWidth, maxW);
+
+  EXPECT_LE(charWidth(shown), maxW);
+  EXPECT_EQ(shown.size(), 20u);   // as many characters as fit
+  EXPECT_EQ(shown, "buffer_1...FFE_PP0P_");
+  EXPECT_EQ(shown.substr(0, 8), name.substr(0, 8));
+  EXPECT_EQ(shown.substr(shown.size() - 9), name.substr(name.size() - 9));
+}
+
+TEST(InstanceNames, NoRoomAtAllGivesNoName) {
+  EXPECT_EQ(shortenMiddle("abcdef", charWidth, 2.f * kCharW), "");
+}
+
+TEST(InstanceNames, ALabelIsShownInsteadOfTheName) {
+  InstanceShape s = box(1, P({"core", "g1"}), 0.f, 0.f);
+  s.label = "g1";
+  EXPECT_EQ(shownName(s, charWidth), "g1");
+}
+
+TEST(InstanceNames, FramesAndTopLevelPortsHaveNone) {
+  InstanceShape frame = box(1, P({"core"}), 0.f, 0.f);
+  frame.isHierGroup = true;
+  InstanceShape port = box(2, {}, 0.f, 0.f, 0.f, 0.f);
+  port.name = "clk"; port.modelName = "port";
+  EXPECT_EQ(shownName(frame, charWidth), "");
+  EXPECT_EQ(shownName(port, charWidth), "");
+  EXPECT_FALSE(nameRect(frame, charWidth));
+  EXPECT_EQ(footprintWidth(frame, charWidth), frame.w);
+}
+
+TEST(InstanceNames, TheFootprintIsTheWiderOfSymbolAndName) {
+  InstanceShape shortName = box(1, P({"u1"}), 0.f, 0.f);
+  InstanceShape longName  = box(2, P({"a_rather_long_instance_name"}), 30.f, 50.f);
+  EXPECT_EQ(footprintWidth(shortName, charWidth), kBoxW);
+  EXPECT_EQ(footprintWidth(longName, charWidth), charWidth(longName.name));
+
+  auto r = nameRect(longName, charWidth);
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->x0, 30.f);
+  EXPECT_EQ(r->x1, 30.f + charWidth(longName.name));
+  EXPECT_EQ(r->y0, 50.f - kNameH);
+  EXPECT_EQ(r->y1, 50.f);
+}
+
+TEST(InstanceNames, AVeryLongNameIsCappedInTheFootprint) {
+  InstanceShape s = box(1, P({std::string(200, 'x')}), 0.f, 0.f);
+  EXPECT_LE(footprintWidth(s, charWidth), kNameMaxW);
+  EXPECT_GT(footprintWidth(s, charWidth), kNameMaxW - kCharW);
+}
 
 // ---------------------------------------------------------------------------
 // buildItems
@@ -177,6 +242,13 @@ TEST(LayeredPlacement, AChainRunsLeftToRightOnOneStraightLine) {
   EXPECT_LT(p.pos[1].x + kBoxW, p.pos[2].x);
   EXPECT_EQ(p.pos[0].y, p.pos[1].y);
   EXPECT_EQ(p.pos[1].y, p.pos[2].y);
+}
+
+TEST(LayeredPlacement, AColumnIsAsWideAsItsWidestFootprint) {
+  // Node 0's name makes its footprint 200 wide: node 1 starts after it.
+  std::vector<PlaceNode> nodes{{200.f, kBoxH}, {kBoxW, kBoxH}};
+  auto p = layeredPlacement(nodes, {link(0, {1})});
+  EXPECT_GE(p.pos[1].x, p.pos[0].x + 200.f + kChannelMin);
 }
 
 TEST(LayeredPlacement, ReceiversPinIsLevelWithItsDriversPin) {
@@ -343,6 +415,18 @@ TEST(RouteNets, ASpineDetoursAroundABoxInTheWay) {
   }
 }
 
+TEST(RouteNets, ATrunkStaysRightOfANameInItsChannel) {
+  // A box with a name row reaching 100 past its right edge: the channel
+  // (and so every trunk) starts after the name, not after the box.
+  const RouteRect box{0.f, 40.f, 60.f, 80.f}, name{0.f, 20.f, 160.f, 40.f};
+  const RouteRect rcv{250.f, 0.f, 310.f, 120.f};
+  auto r = routeNets({{{{60.f, 60.f}, true}, {{{250.f, 100.f}, false}}}}, {box, name, rcv});
+  ASSERT_EQ(r.size(), 1u);
+  for (const auto& s : r[0].segments)
+    if (std::abs(s.a.x - s.b.x) < 0.5f && std::abs(s.a.y - s.b.y) > 0.5f)
+      EXPECT_GT(s.a.x, name.x1);
+}
+
 TEST(RouteNets, TwoSpinesDoNotShareAHeight) {
   // Both nets have to detour around the middle box, the same way.
   std::vector<RouteRect> boxes = {{0.f, 0.f, 40.f, 100.f}, {100.f, 0.f, 140.f, 100.f},
@@ -391,7 +475,7 @@ struct HierFixture {
     }
   }
   std::vector<HierFrame> run() {
-    return layoutHierarchyGroups(leafHier, shapes, pathToInstId, nextInstId);
+    return layoutHierarchyGroups(leafHier, shapes, pathToInstId, nextInstId, charWidth);
   }
 };
 
@@ -556,6 +640,18 @@ TEST(HierarchyGroups, TopLevelLeavesStayOutsideFramesAndKeepTheirLabel) {
   // Signal flow still reads left to right across the frame.
   EXPECT_LT(src.x + src.w, core.x);
   EXPECT_LT(core.x + core.w, dst.x);
+}
+
+TEST(HierarchyGroups, ALongLeafNameWidensItsColumn) {
+  HierFixture fx({{{"core", "a_long_register_name_q_reg"}, {}, 0, 0.f},
+                  {{"core", "g"}, {}, 1, 0.f}});
+  fx.run();
+  const auto& reg = byPath(fx.shapes, {"core", "a_long_register_name_q_reg"});
+  const auto& g   = byPath(fx.shapes, {"core", "g"});
+  ASSERT_GT(charWidth(reg.label), reg.w);
+  // The name (the leaf name, as the frame names the module) ends before
+  // the next column, with the usual gap.
+  EXPECT_GE(g.x, reg.x + charWidth(reg.label) + kGroupColGap);
 }
 
 TEST(HierarchyGroups, LeavesWithoutAShapeAreIgnored) {

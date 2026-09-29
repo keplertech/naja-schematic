@@ -67,4 +67,21 @@ class PendingRequests {
     std::map<PinRequestKey, double> started_;
 };
 
+// The canvas's view of the world: `offset` is the world point at its top-left
+// corner, `scale` the pixels per world unit.
+struct View {
+    ImVec2 offset;
+    float  scale = 1.0f;
+};
+
+// `view` changed as little as possible so the world rect [rMin, rMax] is on a
+// `canvas`-pixel canvas with `margin` pixels around it: unchanged if it
+// already is, else panned by the smallest amount, and zoomed out (about the
+// canvas center, never below minScale) only when the rect is too big for the
+// canvas at the current zoom. Used to show what a pin click just added
+// without re-fitting the whole drawing. A rect too big even at minScale is
+// shown from its top-left.
+View revealRect(View view, ImVec2 rMin, ImVec2 rMax, ImVec2 canvas, float margin,
+                float minScale);
+
 } // namespace SchematicInteraction

@@ -31,7 +31,7 @@ inline float clampf(float v, float lo, float hi) {
 // rather than persisting as a fixed-size clutter of ticks/lines under
 // illegible text.
 // ---------------------------------------------------------------------------
-constexpr float kInstanceLabelBaseSize = 13.0f; // world-space "1x zoom" size
+constexpr float kInstanceLabelBaseSize = SchematicLayout::kNameFontSize; // world-space "1x zoom" size
 constexpr float kPortLabelBaseSize     = 11.0f;
 constexpr float kMinLabelFontSize      = 7.0f;
 constexpr float kMaxLabelFontSize      = 30.0f;
@@ -323,13 +323,19 @@ static void drawPorts(ImDrawList* dl, const InstanceShape& inst,
     }
 }
 
+float instanceNameWidth(const std::string& name) {
+    return ImGui::GetFont()->CalcTextSizeA(kInstanceLabelBaseSize, FLT_MAX, 0.0f, name.c_str()).x;
+}
+
 // Instance name above its symbol: a box's inside holds its pin
-// names, and a gate symbol has no room for text.
+// names, and a gate symbol has no room for text. The layout reserved this
+// exact (possibly shortened) text's row, so it never overlaps anything.
 static void drawInstanceName(ImDrawList* dl, const InstanceShape& inst,
                              const SchematicView& sv, ImVec2 rmin) {
     float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
-    const std::string& shown = inst.label.empty() ? inst.name : inst.label;
-    if (shown.empty() || fontSize <= 0.0f) return;
+    if (fontSize <= 0.0f) return;
+    const std::string shown = SchematicLayout::shownName(inst, instanceNameWidth);
+    if (shown.empty()) return;
     ImFont* font = ImGui::GetFont();
     ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, shown.c_str());
     dl->AddText(font, fontSize, ImVec2(rmin.x, rmin.y - ts.y - 2.0f * sv.transform.scale),
@@ -837,22 +843,31 @@ void SchematicView::drawRoute(ImDrawList* dl, const NetRoute& route,
 }
 
 // Main render entry
+// What a shape covers when drawn: the shape itself, plus a port's flag (as
+// long as drawBoundaryPortInstance makes it at 1x) or an instance's name
+// above it.
+void shapeWorldExtent(const InstanceShape& inst, ImVec2& outMin, ImVec2& outMax) {
+    const bool port = inst.modelName == "port";
+    float flag = 0.0f;
+    if (port && !inst.ports.empty()) {
+        const float textW = ImGui::GetFont()->CalcTextSizeA(kPortLabelBaseSize, FLT_MAX, 0.0f,
+                                                            inst.ports[0].name.c_str()).x;
+        flag = std::max(2.0f * kBoundaryPortHalfHBase, textW + 10.0f) + kBoundaryPortHalfHBase;
+    }
+    const bool named = !SchematicLayout::shownName(inst, instanceNameWidth).empty();
+    outMin = ImVec2(inst.x - flag, inst.y - (named ? SchematicLayout::kNameH : 0.0f));
+    outMax = ImVec2(inst.x + SchematicLayout::footprintWidth(inst, instanceNameWidth) + flag,
+                    inst.y + inst.h);
+}
+
 bool SchematicView::computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const {
     if (instances.empty()) return false;
-    float minX = instances[0].x;
-    float minY = instances[0].y;
-    float maxX = instances[0].x + instances[0].w;
-    float maxY = instances[0].y + instances[0].h;
+    float minX = 1e30f, minY = 1e30f, maxX = -1e30f, maxY = -1e30f;
     for (const auto& inst : instances) {
-        // Room for what's drawn outside the shape itself: a port's flag, an
-        // instance's name above it.
-        const bool  port = inst.modelName == "port";
-        const float flag = port ? 60.0f : 0.0f;
-        const float name = port || inst.isHierGroup ? 0.0f : 18.0f;
-        minX = std::min(minX, inst.x - flag);
-        minY = std::min(minY, inst.y - name);
-        maxX = std::max(maxX, inst.x + inst.w + flag);
-        maxY = std::max(maxY, inst.y + inst.h);
+        ImVec2 lo, hi;
+        shapeWorldExtent(inst, lo, hi);
+        minX = std::min(minX, lo.x); minY = std::min(minY, lo.y);
+        maxX = std::max(maxX, hi.x); maxY = std::max(maxY, hi.y);
     }
     for (const auto& route : routes)
         for (const auto& seg : route.segments)

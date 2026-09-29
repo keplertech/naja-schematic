@@ -233,16 +233,10 @@ TEST_F(SchematicClicks, ClickOnAPinWhoseNetIsShownSendsNothing) {
   EXPECT_TRUE(provider.sent.empty());
 }
 
-TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
-  showFirstNet();
-  expandU2();
-  moveTo(pinScreen({{2, "u2"}}, "B"));
-  click();
-  const ImVec2 before = boxCenterScreen({{2, "u2"}});
-  const float scaleBefore = sv().transform.scale;
-
-  // The reply: u9 (inside module "core", so hierarchy frames re-lay out the
-  // whole drawing) drives u2.B.
+namespace {
+// The reply to a click on u2.B: u9 (inside module "core", so hierarchy
+// frames re-lay out the whole drawing) drives it.
+Equipotential u9DrivesU2B() {
   Equipotential e{true, {}, {}};
   InstTermOccurrence drv;
   drv.path = {{5, "core"}, {9, "u9"}}; drv.pathIds = {5, 9}; drv.pathModels = {"Core", ""};
@@ -250,7 +244,26 @@ TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
   drv.bit_term_count = 1;
   e.occurrences.push_back(drv);
   e.occurrences.push_back(occ("u2", 2, "B", 21, Direction::Input, 3));
-  add(e);
+  return e;
+}
+} // namespace
+
+TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
+  showFirstNet();
+  expandU2();
+  // Zoomed out (about u2) far enough that what the net adds is on screen
+  // anyway.
+  moveTo(boxCenterScreen({{2, "u2"}}));
+  for (int i = 0; i < 14; ++i) {
+    ImGui::GetIO().AddMouseWheelEvent(0.f, -1.f);
+    frame();
+  }
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  const ImVec2 before = boxCenterScreen({{2, "u2"}});
+  const float scaleBefore = sv().transform.scale;
+
+  add(u9DrivesU2B());
   frame(2);
 
   ASSERT_NE(shape({{5, "core"}, {9, "u9"}}), nullptr);
@@ -260,6 +273,32 @@ TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
   EXPECT_NEAR(after.x, before.x, 0.5f);
   EXPECT_NEAR(after.y, before.y, 0.5f);
   EXPECT_EQ(sv().transform.scale, scaleBefore);  // no re-fit zoom either
+}
+
+// At the fitted zoom of two boxes, u9 would land off the canvas: the view
+// pans/zooms out just enough to show it next to the clicked box.
+TEST_F(SchematicClicks, WhatAPinClickAddsOffScreenIsBroughtIntoView) {
+  showFirstNet();
+  expandU2();
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  const float scaleBefore = sv().transform.scale;
+
+  add(u9DrivesU2B());
+  frame(2);
+
+  const ImVec2 lo = EquipotentialView::canvasOriginForTesting();
+  const ImVec2 hi(lo.x + ImGui::GetIO().DisplaySize.x, lo.y + ImGui::GetIO().DisplaySize.y);
+  for (const InstancePath& path : {InstancePath{{5, "core"}, {9, "u9"}}, InstancePath{{2, "u2"}}}) {
+    const InstanceShape* s = shape(path);
+    ASSERT_NE(s, nullptr);
+    const ImVec2 a = toScreen(ImVec2(s->x, s->y)), b = toScreen(ImVec2(s->x + s->w, s->y + s->h));
+    EXPECT_GE(a.x, lo.x) << displayPath(path);
+    EXPECT_GE(a.y, lo.y) << displayPath(path);
+    EXPECT_LE(b.x, hi.x) << displayPath(path);
+    EXPECT_LE(b.y, hi.y) << displayPath(path);
+  }
+  EXPECT_LE(sv().transform.scale, scaleBefore);  // zoomed out at most, never in
 }
 
 TEST_F(SchematicClicks, ClickOnMergedBusPinShowsItsBits) {
@@ -493,4 +532,88 @@ TEST_F(SchematicClicks, ASelectionMadeElsewhereIsDrawnInTheSchematic) {
   SelectionStore::select(InstancePath{{1, "u1"}}, SelectionStore::Origin::Host);
   frame();
   EXPECT_TRUE(shape({{1, "u1"}})->selected);
+}
+
+// Instance names are part of the layout: the long register names of a
+// synthesized design never run into a neighbor's box, its name or a wire.
+namespace {
+
+bool overlapRect(const SchematicLayout::RouteRect& a, const SchematicLayout::RouteRect& b) {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+}
+
+void expectNamesClear(const SchematicView& sv) {
+  using SchematicLayout::RouteRect;
+  std::vector<std::pair<const InstanceShape*, RouteRect>> names, boxes;
+  for (const auto& s : sv.instances) {
+    if (s.isHierGroup || s.w <= 0.f || s.h <= 0.f) continue;
+    boxes.push_back({&s, RouteRect{s.x, s.y, s.x + s.w, s.y + s.h}});
+    if (auto r = SchematicLayout::nameRect(s, instanceNameWidth)) names.push_back({&s, *r});
+  }
+  ASSERT_FALSE(names.empty());
+  for (const auto& [owner, name] : names) {
+    for (const auto& [s, box] : boxes)
+      EXPECT_FALSE(overlapRect(name, box)) << owner->name << "'s name over " << s->name;
+    for (const auto& [s, other] : names)
+      if (s != owner) EXPECT_FALSE(overlapRect(name, other)) << owner->name << " / " << s->name;
+    for (const auto& route : sv.routes)
+      for (const auto& seg : route.segments) {
+        const RouteRect r{std::min(seg.a.x, seg.b.x) + 0.5f, std::min(seg.a.y, seg.b.y) - 0.5f,
+                          std::max(seg.a.x, seg.b.x) - 0.5f, std::max(seg.a.y, seg.b.y) + 0.5f};
+        EXPECT_FALSE(overlapRect(name, r)) << "a wire through " << owner->name << "'s name";
+      }
+  }
+}
+
+// The fan-in cone of the README demo: three flops with long names in one
+// column, each feeding a gate with a short one.
+void addFlopCone(std::vector<Equipotential>& out, const std::vector<std::string>& prefix) {
+  auto at = [&](const std::string& name, unsigned id, const std::string& term, unsigned termId,
+                Direction dir) {
+    InstTermOccurrence o = occ(name, id, term, termId, dir, 3);
+    unsigned pid = 900;
+    InstancePath path;
+    for (const auto& p : prefix) path.push_back({pid++, p});
+    path.push_back({id, name});
+    o.path = path;
+    o.pathIds.clear();
+    for (const auto& ref : path) o.pathIds.push_back(ref.id);
+    o.pathModels.assign(path.size(), "");
+    return o;
+  };
+  auto net = [&](std::vector<InstTermOccurrence> occs) {
+    Equipotential e{true, {}, {}};
+    e.occurrences = std::move(occs);
+    out.push_back(std::move(e));
+  };
+  net({at("buffer_1.Queue._T_1$_SDFFE_PP0P_", 1, "Q", 10, Direction::Output),
+       at("_2678_", 2, "A", 20, Direction::Input)});
+  net({at("buffer_1.Queue.value$_SDFFE_PP0P_", 3, "Q", 30, Direction::Output),
+       at("_2178_", 4, "A", 40, Direction::Input)});
+  net({at("buffer_1.Queue.value_1$_SDFFE_PP0P_", 5, "Q", 50, Direction::Output),
+       at("_2177_", 6, "A", 60, Direction::Input)});
+  net({at("_2177_", 6, "Z", 61, Direction::Output), at("_2178_", 4, "B", 41, Direction::Input)});
+  net({at("_2678_", 2, "ZN", 21, Direction::Output), at("_2679_", 7, "A1", 70, Direction::Input)});
+  net({at("_2178_", 4, "Z", 42, Direction::Output), at("_2679_", 7, "A2", 71, Direction::Input)});
+}
+
+} // namespace
+
+TEST_F(SchematicClicks, LongInstanceNamesNeverOverlapAnything) {
+  std::vector<Equipotential> cone;
+  addFlopCone(cone, {});
+  for (auto& e : cone) add(std::move(e));
+  frame(3);
+  expectNamesClear(sv());
+}
+
+TEST_F(SchematicClicks, LongLeafNamesInsideAModuleFrameNeverOverlapAnything) {
+  std::vector<Equipotential> cone;
+  addFlopCone(cone, {"core"});
+  for (auto& e : cone) add(std::move(e));
+  frame(3);
+  bool framed = false;
+  for (const auto& s : sv().instances) framed |= s.isHierGroup;
+  ASSERT_TRUE(framed);
+  expectNamesClear(sv());
 }

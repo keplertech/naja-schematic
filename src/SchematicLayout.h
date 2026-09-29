@@ -7,6 +7,7 @@
 // tests/SchematicLayoutTest.cpp).
 #pragma once
 
+#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -37,6 +38,34 @@ inline constexpr float kPortGap    = 50.0f;  // top-level ports -> nearest box
 inline constexpr float kGroupHeader = 40.0f; // room for the frame's label and a leaf's name
 inline constexpr float kGroupPad    = 20.0f; // inner padding of a frame
 inline constexpr float kGroupColGap = 70.0f; // gap between columns inside a frame
+
+// ---------------------------------------------------------------------------
+// Instance names. A symbol's name is drawn above it, left-aligned, and is
+// part of the symbol's footprint: a column (flat, or inside a module frame)
+// is as wide as its widest symbol or name, the sheet's edges clear the names,
+// and names are routing obstacles. So a name never runs into another symbol,
+// another name or a wire, at any zoom (the drawn name never gets wider in
+// world units than at kNameFontSize). A name wider than kNameMaxW is
+// shortened in the middle, keeping its start and its end.
+// ---------------------------------------------------------------------------
+inline constexpr float kNameFontSize = 13.0f;     // world-space size of a name
+inline constexpr float kNameH        = kPinPitch; // the row a name takes above its symbol
+inline constexpr float kNameMaxW     = 240.0f;
+
+// World width of a string drawn at kNameFontSize. The view measures with its
+// font; tests can pass any function.
+using NameWidthFn = std::function<float(const std::string&)>;
+
+// `name` fitted into maxW: whole if it fits, else its head and tail around
+// "...". Empty when not even the ellipsis fits.
+std::string shortenMiddle(const std::string& name, const NameWidthFn& width, float maxW);
+
+// The name drawn above `s` (its label, else its name, shortened to
+// kNameMaxW), or "" for shapes drawn without one (frames, top-level ports).
+std::string shownName(const InstanceShape& s, const NameWidthFn& width);
+
+// Width of `s`'s footprint: its symbol, or its shown name when wider.
+float footprintWidth(const InstanceShape& s, const NameWidthFn& width);
 
 // ---------------------------------------------------------------------------
 // Symbols. A gate (AND/OR/XOR families, INV/BUF, assign) is drawn as its
@@ -116,6 +145,9 @@ std::vector<float> stackPorts(const std::vector<float>& desiredY);
 struct RouteRect {
     float x0 = 0.f, y0 = 0.f, x1 = 0.f, y1 = 0.f;
 };
+// The row `s`'s shown name takes above it, if it has one -- an obstacle
+// like the symbol itself.
+std::optional<RouteRect> nameRect(const InstanceShape& s, const NameWidthFn& width);
 struct RoutePin {
     ImVec2 at;
     bool   right = true;   // the wire leaves the pin to the right (else left)
@@ -197,11 +229,13 @@ struct HierFrame {
 // Moves the leaves of `instances` (looked up through pathToInstId) into their
 // module frames and returns the frames, parent first, with ids allocated from
 // nextInstId. Leaves inside a frame get their `label` shortened to the leaf
-// name. Returns an empty vector, leaving every shape untouched, when no
-// displayed leaf sits below the top design (no hierarchy to show).
+// name; a column is as wide as its widest footprint (see footprintWidth).
+// Returns an empty vector, leaving every shape untouched, when no displayed
+// leaf sits below the top design (no hierarchy to show).
 std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHier>& leafHier,
                                              std::vector<InstanceShape>& instances,
                                              const std::map<InstancePath, int>& pathToInstId,
-                                             int& nextInstId);
+                                             int& nextInstId,
+                                             const NameWidthFn& nameWidth);
 
 } // namespace SchematicLayout

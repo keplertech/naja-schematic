@@ -377,7 +377,11 @@ while it loads; `SchematicInteraction::PendingRequests` stops repeat sends).
 A single click on a merged bus pin shows its bits instead. Hovering a pin
 highlights it and shows a tooltip naming its click action. When the requested
 net arrives the view pans so the clicked box stays put on screen, even though
-the whole schematic is laid out again. Pins are hit-tested nearest-first by
+the whole schematic is laid out again; then, if what the net added (boxes and
+port flags not shown before the click) lands off the canvas, the view pans
+just enough to show it next to the clicked box, zooming out only when it
+can't fit at the current zoom (`SchematicInteraction::revealRect`, extents
+from `shapeWorldExtent()`). Pins are hit-tested nearest-first by
 `SchematicInteraction::pickPin`. `GUIData::addEquipotential()` rejects a net
 whose endpoints are all already shown (`equipotentialCovers()`), so neither a
 re-click nor a trace re-listing a shown net draws its wires twice.
@@ -625,7 +629,12 @@ appear as boxes/pins there).
   `EquipotentialView` only turns the result into drawn shapes, and
   `SchematicView` draws them. A gate symbol's body fills its box exactly, so
   pin ticks always touch it. Pin names go inside boxes, none on gates, and
-  instance names above.
+  instance names above. An instance name is part of its symbol's footprint
+  (`footprintWidth()`, `nameRect()`): columns, module frames, the sheet's
+  edges and the fit bounds make room for it, and it's a routing obstacle,
+  so it never overlaps a box, another name or a wire. The view measures it
+  with its font (`instanceNameWidth()`); past `kNameMaxW` it's shortened in
+  the middle (`shortenMiddle()`), and layout and drawing use the same text.
 - **`SchematicInteraction`** — the pure side of the schematic's pin
   interactions: `pickPin()` (nearest-pin hit test, radius capped in world
   units so a pin doesn't swallow box-body clicks at low zoom) and

@@ -1,9 +1,18 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include <imgui.h>
 #include "Types.h"   // ensures InstanceShape, Port, NetWire are known
 #include "SchematicLayout.h"
+
+// World width of an instance name drawn with the current ImGui font at
+// SchematicLayout::kNameFontSize: what the layout makes room for.
+float instanceNameWidth(const std::string& name);
+
+// The world rect a shape covers when drawn: the shape, plus its name row or
+// its port flag.
+void shapeWorldExtent(const InstanceShape& inst, ImVec2& outMin, ImVec2& outMax);
 
 struct Transform {
     float scale = 1.0f;

@@ -46,7 +46,13 @@ static bool               g_skipNextAutoFit  = false;
 // the view is panned so that box stays put on screen, even though adding a
 // net can re-lay out everything (hierarchy frames grow and shift).
 static InstancePath       g_keepInPlacePath;
+// Screen pixels kept clear around what a pin click brings into view.
+static constexpr float    kRevealMargin = 40.0f;
 static ImVec2             g_keepInPlaceWorld{};
+// What was shown when the pin was clicked (instance boxes, top-level port
+// flags by name): whatever else the net brings is then panned into view.
+static std::set<InstancePath> g_shownBeforePinNet;
+static std::set<std::string>  g_portsBeforePinNet;
 // Pin nets requested by a click and not arrived yet (keyed by
 // SchematicInteraction::pinRequestKey), so a second click doesn't re-send.
 static SchematicInteraction::PendingRequests g_pendingPinNets;
@@ -200,6 +206,13 @@ static void requestPinNet(const InstanceShape& inst, const Port& port) {
     g_skipNextAutoFit  = true;
     g_keepInPlacePath  = inst.path;
     g_keepInPlaceWorld = ImVec2(inst.x, inst.y);
+    g_shownBeforePinNet.clear();
+    g_portsBeforePinNet.clear();
+    for (const auto& s : g_schematic.instances) {
+        if (s.isHierGroup) continue;
+        if (s.modelName == "port") { if (!s.ports.empty()) g_portsBeforePinNet.insert(s.ports[0].name); }
+        else g_shownBeforePinNet.insert(s.path);
+    }
 }
 
 // Runs the click action of the pin under `wp`, if any. Returns true when a
@@ -398,6 +411,8 @@ void EquipotentialView::resetLayout() {
     g_instanceInternals.clear();
     g_skipNextAutoFit = false;
     g_keepInPlacePath.clear();
+    g_shownBeforePinNet.clear();
+    g_portsBeforePinNet.clear();
     g_pendingPinNets.clear();
     g_pendingFit   = true;
 }
@@ -1020,12 +1035,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
 
     // Layered placement of the instance boxes (see SchematicLayout): every
     // net between two instances is an edge from its driver pin to each
-    // receiver pin.
+    // receiver pin. A box takes its footprint's width: its name included.
     std::map<int, int> nodeOfShape;
     std::vector<PlaceNode> placeNodes;
     for (const auto& inst : g_schematic.instances) {
         nodeOfShape[inst.id] = int(placeNodes.size());
-        placeNodes.push_back({ inst.w, inst.h });
+        placeNodes.push_back({ footprintWidth(inst, instanceNameWidth), inst.h });
     }
     std::vector<PlaceNet> placeNets;
     for (const auto& ends : equiEnds) {
@@ -1056,7 +1071,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         std::map<InstancePath, LeafHier> leafHier;
         for (const auto& [path, mi] : minsts)
             leafHier[path] = { mi.path, mi.pathModels, placement.level[nodeOfShape[pathToInstId[path]]] };
-        auto frames = layoutHierarchyGroups(leafHier, g_schematic.instances, pathToInstId, nextInstId);
+        auto frames = layoutHierarchyGroups(leafHier, g_schematic.instances, pathToInstId, nextInstId,
+                                            instanceNameWidth);
         grouped = !frames.empty();
         std::vector<InstanceShape> frameShapes;
         for (auto& f : frames) {
@@ -1099,7 +1115,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     for (const auto& inst : g_schematic.instances) {
         if (inst.parentShapeId >= 0 || inst.w <= 0.f) continue;
         sheetX0 = std::min(sheetX0, inst.x);
-        sheetX1 = std::max(sheetX1, inst.x + inst.w);
+        sheetX1 = std::max(sheetX1, inst.x + footprintWidth(inst, instanceNameWidth));
     }
     if (sheetX0 > sheetX1) { sheetX0 = kLeftMargin; sheetX1 = kLeftMargin; }
     struct PortStub { size_t ei; std::string label; Direction direction; int portId; float wantY; };
@@ -1248,7 +1264,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 continue;
             }
             obstacles.push_back({ inst.x, inst.y, inst.x + inst.w, inst.y + inst.h });
-            keepOut.push_back({ inst.x, inst.y - kPinPitch, inst.x + inst.w, inst.y });  // its name
+            if (auto name = nameRect(inst, instanceNameWidth)) obstacles.push_back(*name);
         }
         std::map<std::pair<int, int>, size_t> routeOfSource;
         std::vector<RouteNet> routeNetsIn;
@@ -1300,7 +1316,35 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 g_schematic.transform.offset.y += inst.y - g_keepInPlaceWorld.y;
                 break;
             }
+            // Then bring what the net added into view with it, panning (or
+            // zooming out) as little as possible: it can land anywhere,
+            // e.g. a driver placed left of the clicked box, off the canvas.
+            ImVec2 lo(1e30f, 1e30f), hi(-1e30f, -1e30f);
+            bool added = false;
+            for (const auto& inst : g_schematic.instances) {
+                if (inst.isHierGroup || inst.parentShapeId >= 0) continue;
+                const bool isPort = inst.modelName == "port";
+                const bool isNew  = isPort
+                    ? !inst.ports.empty() && !g_portsBeforePinNet.count(inst.ports[0].name)
+                    : !g_shownBeforePinNet.count(inst.path);
+                const bool clicked = !isPort && inst.path == g_keepInPlacePath;
+                if (!isNew && !clicked) continue;
+                added |= isNew;
+                ImVec2 a, b;
+                shapeWorldExtent(inst, a, b);
+                lo = ImVec2(std::min(lo.x, a.x), std::min(lo.y, a.y));
+                hi = ImVec2(std::max(hi.x, b.x), std::max(hi.y, b.y));
+            }
+            if (added) {
+                auto v = SchematicInteraction::revealRect(
+                    { g_schematic.transform.offset, g_schematic.transform.scale },
+                    lo, hi, inner, kRevealMargin, g_schematic.minScale);
+                g_schematic.transform.offset = v.offset;
+                g_schematic.transform.scale  = v.scale;
+            }
             g_keepInPlacePath.clear();
+            g_shownBeforePinNet.clear();
+            g_portsBeforePinNet.clear();
         } else {
             g_schematic.requestFit(true);
         }
