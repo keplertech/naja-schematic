@@ -68,36 +68,24 @@ static std::string instanceName(const SNLInstance* i) {
   return i->getString();
 }
 
-// Best-effort gate/cell function classification from a design's name (naja
-// has no function/timing-arc API to ask directly -- see PrimitiveType in
-// Types.h). Checked as a case-insensitive prefix so common Liberty/Verilog
-// naming conventions ("AND2X1", "nand3_1", "DFFX2", ...) match regardless of
-// the vendor-specific drive-strength/version suffix; arity itself is read
-// from the instance's actual port count at render time, not parsed here.
-// protocol.py's get_primitive_type() mirrors this independently, same
-// as the rest of the wire protocol (see CLAUDE.md).
+// Gate/cell function classification, from naja's own modeling of the cell
+// (the truth table a Liberty `function` or an NLDB0 gate defines, and its
+// sequential model) -- never from its name. A cell naja has no model for
+// (e.g. gate-level Verilog loaded without Liberty) is Unknown and draws as
+// the generic box. protocol.py's get_primitive_type() mirrors this, same as
+// the rest of the wire protocol (see CLAUDE.md).
 static PrimitiveType getPrimitiveType(const SNLDesign* model) {
   if (!model) return PrimitiveType::Unknown;
   if (NLDB0::isAssign(model)) return PrimitiveType::Assign;
-
-  std::string name = designName(model);
-  for (auto& c : name) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-
-  static const std::pair<const char*, PrimitiveType> kPrefixes[] = {
-    {"XNOR", PrimitiveType::Xnor},
-    {"NAND", PrimitiveType::Nand},
-    {"NOR",  PrimitiveType::Nor},
-    {"XOR",  PrimitiveType::Xor},
-    {"AND",  PrimitiveType::And},
-    {"OR",   PrimitiveType::Or},
-    {"DFF",  PrimitiveType::Dff},
-    {"INV",  PrimitiveType::Inv},
-    {"NOT",  PrimitiveType::Inv},
-    {"BUF",  PrimitiveType::Buf},
-  };
-  for (const auto& [prefix, type] : kPrefixes) {
-    if (name.rfind(prefix, 0) == 0) return type;
-  }
+  if (SNLDesignModeling::isSequential(model)) return PrimitiveType::Dff;
+  if (SNLDesignModeling::isInv(model))  return PrimitiveType::Inv;
+  if (SNLDesignModeling::isBuf(model))  return PrimitiveType::Buf;
+  if (SNLDesignModeling::isAnd(model))  return PrimitiveType::And;
+  if (SNLDesignModeling::isNand(model)) return PrimitiveType::Nand;
+  if (SNLDesignModeling::isOr(model))   return PrimitiveType::Or;
+  if (SNLDesignModeling::isNor(model))  return PrimitiveType::Nor;
+  if (SNLDesignModeling::isXor(model))  return PrimitiveType::Xor;
+  if (SNLDesignModeling::isXnor(model)) return PrimitiveType::Xnor;
   return PrimitiveType::Unknown;
 }
 
@@ -168,6 +156,8 @@ static json bitTermJson(const SNLBitTerm* bt) {
   };
   if (auto* btb = dynamic_cast<const SNLBusTermBit*>(bt))
     t["bit"] = static_cast<int>(btb->getBit());
+  // Only sent when set: marks a flip-flop's clock pin (see drawDffInstance).
+  if (SNLDesignModeling::isClock(bt)) t["clock"] = true;
   return t;
 }
 
@@ -914,6 +904,7 @@ std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) cons
       {"library_id", static_cast<unsigned>(design->getLibrary()->getID())},
       {"design_id",  static_cast<unsigned>(design->getID())}
     }},
+    {"primitive_type", toString(getPrimitiveType(design))},
     {"has_instances", hasAnySubInstances(design)},
     {"source_loc",    sourceLocJson(instance)},
     {"terms",         allBitTermsJson(design)}

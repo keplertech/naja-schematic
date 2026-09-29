@@ -238,6 +238,7 @@ void setupProvider(AppState& state) {
           ep.childId = t.value("child_id", 0u);
           if (t.contains("bit") && !t["bit"].is_null())
             ep.bit = t["bit"].get<int>();
+          ep.clock = t.value("clock", false);
           int dirInt   = t.value("direction", 0);
           ep.direction = dirInt == 1 ? Direction::Output
                        : dirInt == 2 ? Direction::Inout

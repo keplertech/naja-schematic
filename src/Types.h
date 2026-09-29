@@ -30,17 +30,16 @@ struct SourceLoc {
 
 // Coarse gate/cell function classification for an instance, used to pick a
 // standard schematic symbol instead of a generic box (see
-// SchematicView::drawInstance()). naja/najaeda expose no function/timing-arc
-// info -- only a design/cell name string -- so both LocalSNLProvider
-// (native, getPrimitiveType() in LocalSNLProvider.cpp) and python/naja_schematic/protocol.py
-// (WASM/browser, get_primitive_type()) classify independently from that name
-// via a best-effort prefix match, same spirit as their existing isAssign()
-// special case (which maps here to Assign). Unknown is the default for
-// anything that doesn't match -- including ordinary hierarchical modules and
-// blackboxed cells with unrecognized names -- and always falls back to the
-// generic box. Gate arity (2..N inputs) is NOT part of this enum: the actual
-// input port count already carried on InstanceShape::ports is used instead,
-// so no separate arity field needs to travel over the wire.
+// SchematicView::drawInstance()). It comes from naja's modeling of the cell
+// -- SNLDesignModeling's truth-table checks (isAnd, isNor, ...) and
+// isSequential -- never from its name: both LocalSNLProvider
+// (getPrimitiveType()) and python/naja_schematic/protocol.py
+// (get_primitive_type()) compute it the same way. Unknown is the default for
+// anything naja has no such model for -- hierarchical modules, blackboxes,
+// cells loaded without Liberty -- and always falls back to the generic box.
+// Gate arity (2..N inputs) is NOT part of this enum: the actual input port
+// count already carried on InstanceShape::ports is used instead, so no
+// separate arity field needs to travel over the wire.
 enum class PrimitiveType {
   Unknown = 0,
   And,
@@ -124,6 +123,7 @@ struct BitTerm {
   unsigned child_id;
   Direction direction;
   std::optional<int> bit;
+  bool clock = false;  // a sequential cell's clock pin (naja's isClock)
 
   std::string getString() const {
     return name + (bit.has_value() ? ("[" + std::to_string(bit.value()) + "]") : "");
@@ -306,6 +306,9 @@ struct Port {
     bool open = false;
     // An open pin whose net has been requested but hasn't arrived yet.
     bool pending = false;
+    // A sequential cell's clock pin, as naja models it (never guessed from
+    // the pin name) -- drawDffInstance() marks it with the clock notch.
+    bool clock = false;
 };
 
 struct InstanceShape {
@@ -372,7 +375,7 @@ struct NetWire {
     int srcPortId = 0;
     int dstInstance = 0;
     int dstPortId = 0;
-    // Schematic-style default: near-monochrome. Color is reserved for
+    // Default: near-monochrome. Color is reserved for
     // highlighting (diagnosis severity, selection) via an explicit override
     // further down the pipeline -- see EquipotentialView.cpp's srcPort/
     // dstPort->color checks -- rather than being a per-net decoration.
@@ -386,6 +389,9 @@ struct NetWire {
     // wiring nested inside it, but before that instance's children so the
     // children still render on top.
     int containerShapeId = -1;
+    // Drawn as part of its driver pin's routed tree (SchematicView::routes)
+    // rather than on its own.
+    bool routed = false;
 
     // Best-effort display name for the underlying net (driver pin/port name,
     // or the InternalNet name for hierarchy-embedded nets), shown next to
@@ -401,12 +407,13 @@ inline ImVec2 portAnchor(const InstanceShape& inst, const Port& port) {
 }
 
 // World-space rect of an instance's hierarchy expand/collapse glyph
-// (a small square straddling the top-center of the box). Shared by
+// (a small square straddling the box's top border, near its right corner,
+// clear of the instance name drawn above the left corner). Shared by
 // SchematicView's draw code and EquipotentialView's click hit-test so the
 // two never drift apart.
 inline void hierToggleGlyphRect(const InstanceShape& inst,
                                 float& x0, float& y0, float& x1, float& y1) {
-    x0 = inst.x + inst.w * 0.5f - 8.0f;
+    x0 = inst.x + inst.w - 20.0f;
     x1 = x0 + 16.0f;
     y0 = inst.y - 2.0f;
     y1 = y0 + 16.0f;

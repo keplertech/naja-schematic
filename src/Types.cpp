@@ -173,6 +173,7 @@ void from_json(const json& j, Equipotential& e) {
       if (occJson.contains("direction") && !occJson["direction"].is_null()) {
         term.direction = intToDirection(occJson["direction"].get<int>());
       }
+      term.clock = occJson.value("clock", false);
       if (occJson.contains("bit") && !occJson["bit"].is_null()) {
         term.bit = occJson["bit"].get<int>();
       } else {

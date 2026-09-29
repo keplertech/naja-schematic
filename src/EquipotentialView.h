@@ -16,6 +16,7 @@ class EquipotentialView {
       Direction            direction = Direction::Inout;
       unsigned             childId   = 0;      // term child_id on the model
       std::optional<int>   bit;                // set for bus bits
+      bool                 clock = false;      // a sequential cell's clock pin
     };
 
     // --- Hierarchy embedding (nested boxes) ---
@@ -53,6 +54,7 @@ class EquipotentialView {
       std::vector<unsigned>    pathIds;     // matching child_ids
       std::vector<std::string> pathModels;  // matching model names
       DesignRef                designRef{}; // the instance's model
+      PrimitiveType            primitiveType = PrimitiveType::Unknown;
       bool                     hasInstances = false;
       std::optional<SourceLoc> sourceLoc;
       std::vector<ExpandedPort> ports;      // every pin, bus bits expanded

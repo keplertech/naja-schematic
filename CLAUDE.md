@@ -305,9 +305,8 @@ several if the net is reached more than once) -- *not* every reader on the net,
 unlike `equipotential_response`. Nets are returned breadth-first from the
 requested one and de-duplicated, capped at `kMaxTraceNets` (`MAX_TRACE_NETS` in
 `protocol.py`, 500) with `truncated: true` when hit. `AppLogic.cpp` adds
-each to `GUIData` in order; the incremental layout in `EquipotentialView.cpp`
-relies on that ordering (each net shares an already-placed instance with an
-earlier one) to chain the cone right-to-left. Reachable from the tree
+each to `GUIData` in order; the layered placement breaks ordering ties by
+first appearance, so the cone keeps a stable shape as it grows. Reachable from the tree
 (right-click a term/bus-bit row -> "Trace to Driver", bus row -> "Trace Bus
 to Driver"; both clear the view first, like "Show Equipotential") and from the
 schematic (right-click a pin -> "Trace to Driver"; this one *adds* to the view
@@ -321,8 +320,8 @@ the view yet are "open" (`Port::open`, drawn with a hollow-circle stub), and a
 while it loads; `SchematicInteraction::PendingRequests` stops repeat sends).
 A single click on a merged bus pin shows its bits instead. Hovering a pin
 highlights it and shows a tooltip naming its click action. When the requested
-net arrives the view pans so the clicked box stays put on screen, even if the
-hierarchy frames re-lay everything out. Pins are hit-tested nearest-first by
+net arrives the view pans so the clicked box stays put on screen, even though
+the whole schematic is laid out again. Pins are hit-tested nearest-first by
 `SchematicInteraction::pickPin`. `GUIData::addEquipotential()` rejects a net
 whose endpoints are all already shown (`equipotentialCovers()`), so neither a
 re-click nor a trace re-listing a shown net draws its wires twice.
@@ -335,8 +334,9 @@ shows (**View > Show Hierarchy**, on by default, also in the canvas context
 menu): `layoutHierarchyGroups()` in `EquipotentialView.cpp` draws every
 module enclosing a displayed leaf as a nested translucent frame labelled
 `instance (Model)`, re-laying the leaves out inside it — each leaf keeps the
-logic column the incremental layout gave it, and inside a frame its leaves
-and sub-frames are bucketed into columns by that column. Frames are
+logic level the layered placement gave it (inside a frame its leaves and
+sub-frames are bucketed into columns by level) and, where the column allows,
+the height that aligned its pins. Frames are
 `InstanceShape`s with `isHierGroup` set, inserted at the front of
 `SchematicView::instances` and drawn before the nets
 (`SchematicView::render()`); the leaves stay top-level shapes, so wiring and
@@ -344,6 +344,17 @@ hit-testing are unchanged. Right-clicking a frame offers Show Properties and
 "Zoom to Module". The bottom "Equipotential" table lists every net of the
 last trace (not just the last net) with a "Hierarchy" column giving each
 occurrence's enclosing modules.
+
+Instance entries (`instances_response`/`primitives_response` children,
+equipotential occurrences, `instance_resolved`'s `instance`) carry a
+`primitive_type` (`"and"`, `"nand"`, `"or"`, `"nor"`, `"xor"`, `"xnor"`,
+`"inv"`, `"buf"`, `"dff"`, `"assign"`, `"unknown"`) that picks the gate
+symbol `SchematicView::drawInstance()` draws, and term entries carry
+`"clock": true` on a sequential cell's clock pin (the DFF clock notch).
+Both come from naja's modeling of the cell -- `SNLDesignModeling`'s
+truth-table checks (`isAnd`, ...), `isSequential` and `isClock` -- and
+**never from a cell or pin name**: a cell naja has no model for (e.g.
+gate-level Verilog without Liberty) is `"unknown"` and draws as a box.
 
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*
@@ -388,7 +399,7 @@ the same instance-name path as diagnosis items:
   { "response": "instance_resolved", "path": ["u1","u2"], "found": true,
     "instance": {                        // absent for the top design ([])
       "path": [["u1", 3, "Mod"], ["u2", 7, "AND2"]],   // [name, child_id, model] per level
-      "design_ref": {...}, "has_instances": false, "source_loc": null,
+      "design_ref": {...}, "primitive_type": "and", "has_instances": false, "source_loc": null,
       "terms": [ {"name": "A", "child_id": 0, "direction": 0}, ... ] } }  // expanded_instance_terms shape
   ```
   The viewer then:
@@ -481,12 +492,28 @@ appear as boxes/pins there).
   views. Its listener (installed in `AppLogic.cpp`) reports each change to
   the host. `NetlistTree` reveals selections made outside it by comparing
   `revision()`. Cleared on every fresh `root_response`/`root_loaded`.
-- **`SchematicLayout`** — the schematic's pure placement geometry, split out
-  of `EquipotentialView` so it's unit-testable without ImGui frames or a
-  provider (`tests/SchematicLayoutTest.cpp`): `IncrementalLayout` (per-net
-  instance placement and column de-overlap) and `layoutHierarchyGroups()`
-  (module frames). Changes to how the schematic is laid out belong here,
-  with a test; `EquipotentialView` only turns the result into drawn shapes.
+- **`SchematicLayout`** — the schematic's pure geometry, split out of
+  `EquipotentialView` so it's unit-testable without ImGui frames or a
+  provider (`tests/SchematicLayoutTest.cpp`). It follows the classic
+  schematic-generation pipeline and is recomputed from scratch every frame (deterministic, so
+  nothing moves unless the inputs change):
+  - `symbolGeometry()`: symbol sizes, and pins on a `kPinPitch` grid (gate
+    inputs centered on the output, box pins down from the top).
+  - `layeredPlacement()`: Sugiyama-style placement. It breaks cycles, assigns
+    longest-path levels, orders each column by barycenter, then places heights
+    by isotonic regression so connected pins line up (straight wires).
+  - `stackPorts()`: top-level ports on the sheet's left/right edges.
+  - `routeNets()`: one orthogonal tree per driving pin. Trunks go in the
+    box-free channels between columns, on distinct tracks that respect
+    channel routing's vertical constraints, plus a spine that detours around
+    boxes, labels and other spines. Junction dots mark real branch points.
+  - `layoutHierarchyGroups()`: module frames.
+
+  Changes to how the schematic is laid out belong here, with a test;
+  `EquipotentialView` only turns the result into drawn shapes, and
+  `SchematicView` draws them. A gate symbol's body fills its box exactly, so
+  pin ticks always touch it. Pin names go inside boxes, none on gates, and
+  instance names above.
 - **`SchematicInteraction`** — the pure side of the schematic's pin
   interactions: `pickPin()` (nearest-pin hit test, radius capped in world
   units so a pin doesn't swallow box-body clicks at low zoom) and
