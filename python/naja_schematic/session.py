@@ -195,8 +195,9 @@ class ViewerSession:
 
     def on_select(self, callback):
         """Call `callback(id_path, path)` on each selection the viewer
-        reports, from the thread that answers the viewer. Returns
-        `callback`, for remove_select_callback()."""
+        reports, from the thread that answers the viewer, and with
+        (None, None) when design_changed() clears it. Returns `callback`,
+        for remove_select_callback()."""
         with self._state_lock:
             self._select_callbacks.append(callback)
         return callback
@@ -228,6 +229,31 @@ class ViewerSession:
         with self._state_lock:
             self._focus_push = message
         self._send(message)
+
+    def design_changed(self, diagnosis=None, instance=None):
+        """Tell the viewer(s) that the design was replaced or edited: they
+        reload it from the root. The diagnoses and focused instance kept so
+        far name the old design, so they are replaced by `diagnosis` and
+        `instance` (resolved against the new design; None: none), sent
+        after the new root loads. The selection is cleared: selection
+        callbacks get (None, None)."""
+        diagnosis_push = (json.dumps(protocol.diagnosis_response(diagnosis))
+                          if diagnosis is not None else None)
+        focus_push = None
+        if instance is not None:
+            names, ids = instance_paths(instance)
+            focus_push = json.dumps(protocol.focus_instance(names, ids))
+        with self._state_lock:
+            self._diagnosis_push, self._focus_push = diagnosis_push, focus_push
+            had_selection = self.selected_id_path is not None or self.selected_path is not None
+            self.selected_path = self.selected_id_path = None
+            callbacks = list(self._select_callbacks) if had_selection else []
+        self._send(json.dumps(protocol.design_changed()))
+        for callback in callbacks:
+            try:
+                callback(None, None)
+            except Exception:
+                log.exception("Error in a selection callback")
 
     @property
     def selected(self):

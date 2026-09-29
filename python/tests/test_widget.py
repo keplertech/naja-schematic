@@ -117,3 +117,35 @@ def test_selection_that_no_longer_resolves_is_none(top, view):
     v, _ = view
     v.selected_path = ["gone"]
     assert v.selected is None
+
+
+def test_design_changed_reloads_the_view_with_new_pushes(top, view):
+    v, sent = view
+    seen = []
+    v.on_select(seen.append)
+    v.annotate([{"kind": "instance", "path": ["u_sub"], "severity": "error", "message": "old"}])
+    v.show_instance("u_sub")
+    v._on_viewer_message(v, {"json": json.dumps({"request": "instance_selected", "path": ["u_sub"]})}, [])
+    sent.clear()
+
+    new_items = [{"kind": "instance", "path": ["u_sub"], "severity": "info", "message": "new"}]
+    v.design_changed(diagnosis=new_items)
+    assert sent_kinds(sent) == ["design_changed"]
+    assert v.selected_id_path is None and v.selected is None
+    assert seen[-1] is None  # on_select hears the selection go away
+
+    # The viewer reloads: only the new diagnoses follow the root, no focus.
+    sent.clear()
+    v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
+    assert sent_kinds(sent) == ["root_response", "diagnosis_response"]
+    assert json.loads(sent[1]["json"])["items"] == new_items
+
+
+def test_design_changed_resolves_the_new_focus_first(top, view):
+    v, sent = view
+    with pytest.raises(ValueError):
+        v.design_changed(instance=["nope"])
+    assert sent == []  # nothing changed
+    v.design_changed(instance=["u_sub", "u_and"])
+    v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
+    assert sent_kinds(sent) == ["design_changed", "root_response", "focus_instance"]

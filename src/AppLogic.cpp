@@ -58,6 +58,22 @@ static void attachTreeCallbacks(AppState& state) {
   });
 }
 
+// Throw the loaded design away and ask the provider for the root again:
+// after File > Open (native) and on a host's design_changed push. The
+// root_response clears diagnoses, properties and the selection.
+static void reloadNetlist(AppState& state) {
+  // Cleared now, not with clearNets()' next-frame clear: a focus_instance
+  // re-pushed after the new root can be drawn before that frame, and the
+  // deferred clear would wipe it.
+  state.guiData->clearEquipotentials();
+  EquipotentialView::resetLayout();
+  delete state.guiData->netlist_;
+  state.guiData->netlist_ = new NetlistTree(state.provider);
+  attachTreeCallbacks(state);
+  state.reloadGuard.reloadStarted();
+  state.provider->send(R"({"request":"load_root"})");
+}
+
 void setupProvider(AppState& state) {
   state.guiData->netlist_ = new NetlistTree(state.provider);
   EquipotentialView::setProvider(state.provider);
@@ -106,6 +122,18 @@ void setupProvider(AppState& state) {
     std::string resp = j.value("response", "");
     if (resp.empty()) {
       Console::Error("Missing response field.");
+      return;
+    }
+
+    if (resp == "design_changed") {
+      // Host push: the design behind the provider was replaced (or edited
+      // in place), so every node and id the viewer holds may be stale.
+      Console::Log("Design changed by the host: reloading");
+      reloadNetlist(state);
+      return;
+    }
+    if (!state.reloadGuard.accept(resp)) {
+      Console::Log("Dropping " + resp + " for the previous design");
       return;
     }
 
@@ -462,16 +490,6 @@ bool appFrame(AppState& state) {
   }
 
 #ifndef __EMSCRIPTEN__
-  // Helper: reset the netlist tree and re-request root after loading
-  auto reloadNetlist = [&]() {
-    state.guiData->clearEquipotentials();
-    EquipotentialView::clearNets();
-    delete state.guiData->netlist_;
-    state.guiData->netlist_ = new NetlistTree(state.provider);
-    attachTreeCallbacks(state);
-    state.provider->send(R"({"request":"load_root"})");
-  };
-
   // Helper: split a text buffer into non-empty trimmed lines
   auto splitLines = [](const char* buf) {
     std::vector<std::string> out;
@@ -518,7 +536,7 @@ bool appFrame(AppState& state) {
                                ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::Spacing();
     if ((ImGui::Button("Open", ImVec2(120,0)) || ok) && snlPathBuf[0]) {
-      if (localProvider) { localProvider->loadSNL(snlPathBuf); reloadNetlist(); }
+      if (localProvider) { localProvider->loadSNL(snlPathBuf); reloadNetlist(state); }
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
@@ -549,7 +567,7 @@ bool appFrame(AppState& state) {
     if (ImGui::Button("Open", ImVec2(120,0)) && vrlFilesBuf[0]) {
       if (localProvider) {
         localProvider->loadVerilog(splitLines(vrlFilesBuf), splitLines(vrlLibertyBuf));
-        reloadNetlist();
+        reloadNetlist(state);
       }
       ImGui::CloseCurrentPopup();
     }
@@ -582,7 +600,7 @@ bool appFrame(AppState& state) {
     if (ImGui::Button("Open", ImVec2(120,0)) && svFilesBuf[0]) {
       if (localProvider) {
         localProvider->loadSystemVerilog(splitLines(svFilesBuf), svTopBuf);
-        reloadNetlist();
+        reloadNetlist(state);
       }
       ImGui::CloseCurrentPopup();
     }

@@ -883,3 +883,11 @@ def focus_instance(path=None, id_path=None):
     if id_path is not None:
         message["id_path"] = [int(i) for i in id_path]
     return message
+
+
+def design_changed():
+    """Build a design_changed push message: the design behind the viewer was
+    replaced or edited, so the viewer drops its tree, schematic, diagnoses
+    and selection and loads the root again. Replies still on their way for
+    requests it sent before are ignored until the new root_response."""
+    return {"response": "design_changed"}

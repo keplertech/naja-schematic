@@ -124,7 +124,8 @@ class ViewerServer:
         webbrowser.open(server.url)               # or server.open_browser()
         server.annotate(items); server.show_instance(instance)
         server.on_select(lambda id_path, path: ...)
-        ...
+        ...                                        # host swaps the design
+        server.design_changed()                    # viewers reload it
         server.stop()
 
     It is also a context manager (start on enter, stop on exit).
@@ -253,12 +254,22 @@ class ViewerServer:
         one name for a child of the top."""
         self._session.show_instance(target)
 
+    def design_changed(self, diagnosis=None, instance=None):
+        """Call after replacing or editing the design: every viewer reloads
+        it from the root, dropping replies meant for the old one. Kept
+        diagnoses and focus are replaced by `diagnosis` and `instance`
+        (resolved against the new design; None: none), and the selection is
+        cleared. Call it where the host's design operations are allowed,
+        after the new design is in place."""
+        self._session.design_changed(diagnosis, instance)
+
     def on_select(self, callback):
         """Call `callback(id_path, path)` each time a viewer selects an
         instance: its instance ids and names, top excluded ([] = the top
-        design; a name is "" for an anonymous instance). Called on the
-        server's worker thread, with no lock held. Returns `callback`, for
-        remove_select_callback()."""
+        design; a name is "" for an anonymous instance), or (None, None)
+        when design_changed() clears the selection. Called on the server's
+        worker thread (or design_changed()'s caller), with no lock held.
+        Returns `callback`, for remove_select_callback()."""
         return self._session.on_select(callback)
 
     def remove_select_callback(self, callback):
