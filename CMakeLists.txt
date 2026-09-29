@@ -267,8 +267,31 @@ if(NOT EMSCRIPTEN_BUILD)
     )
     target_link_libraries(naja-schematic-tests PRIVATE gtest_main)
 
+    # LocalSNLProvider against the wire-protocol cases shared with the
+    # Python backend (tests/data/anonymous_protocol_cases.json, also run by
+    # python/tests/test_anonymous_instances.py). Its own executable: unlike
+    # the tests above, it links naja.
+    add_executable(naja-schematic-provider-tests
+      src/Console.cpp
+      src/Types.cpp
+      src/LocalSNLProvider.cpp
+      tests/provider/LocalSNLProviderProtocolTest.cpp
+    )
+    target_link_libraries(naja-schematic-provider-tests PRIVATE
+      gtest_main
+      naja_nl
+      naja_snl_verilog
+      naja_snl_liberty
+      naja_snl_systemverilog
+      naja_nl_dump
+    )
+    target_compile_definitions(naja-schematic-provider-tests PRIVATE
+      NAJA_SCHEMATIC_PROTOCOL_CASES="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/anonymous_protocol_cases.json"
+    )
+
     enable_testing()
     include(GoogleTest)
     gtest_discover_tests(naja-schematic-tests)
+    gtest_discover_tests(naja-schematic-provider-tests)
   endif()
 endif()

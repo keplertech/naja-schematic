@@ -1,0 +1,188 @@
+{
+  "comment": [
+    "Wire-protocol cases both backends must answer the same way: run by",
+    "python/tests/test_anonymous_instances.py against protocol.py and by",
+    "tests/provider/LocalSNLProviderProtocolTest.cpp against LocalSNLProvider.",
+    "Each runner builds `design` with the raw naja API, creating instances in",
+    "list order so their ids are their list indices, then sends each case's",
+    "request. \"$design:<name>\" in a request stands for that design's",
+    "design_ref. `expect` lists the replies: every key given must be in the",
+    "reply with that value (objects recursively; lists element-wise, same",
+    "length); keys not given aren't checked. `absent` lists top-level keys the",
+    "(first) reply must not have. `unordered` lists top-level keys of the first",
+    "reply whose list isn't in a specified order (e.g. equipotential",
+    "occurrences): each expected element must match a different actual one."
+  ],
+  "design": {
+    "primitives": [
+      {"name": "LEAF", "terms": [["A", "input"], ["Y", "output"]]}
+    ],
+    "designs": [
+      {"name": "mid",
+       "terms": [["i", "input"], ["o", "output"]],
+       "instances": [["", "LEAF"], ["", "LEAF"], ["u_leaf", "LEAF"]],
+       "nets": [{"name": "i", "term": "i", "pins": [[0, "A"], [1, "A"]]},
+                {"name": "o", "term": "o", "pins": [[1, "Y"]]}]},
+      {"name": "top_anon",
+       "terms": [["x", "input"]],
+       "instances": [["", "mid"], ["", "mid"], ["a/b", "mid"], ["u_mid", "mid"]],
+       "nets": [{"name": "x", "term": "x", "pins": [[0, "i"], [1, "i"]]}]}
+    ],
+    "top": "top_anon"
+  },
+  "cases": [
+    {"name": "anonymous siblings are listed with the empty name and their own ids",
+     "request": {"request": "load_instances", "design_ref": "$design:top_anon", "gui_id": 4},
+     "expect": [{"response": "instances_response", "gui_id": 4, "children": [
+       {"name": "", "child_id": 0, "model_name": "mid"},
+       {"name": "", "child_id": 1, "model_name": "mid"},
+       {"name": "a/b", "child_id": 2, "model_name": "mid"},
+       {"name": "u_mid", "child_id": 3, "model_name": "mid"}]}]},
+
+    {"name": "anonymous primitives are listed with the empty name and their own ids",
+     "request": {"request": "load_primitives", "design_ref": "$design:mid", "gui_id": 5},
+     "expect": [{"response": "primitives_response", "gui_id": 5, "children": [
+       {"name": "", "child_id": 0, "model_name": "LEAF"},
+       {"name": "", "child_id": 1, "model_name": "LEAF"},
+       {"name": "u_leaf", "child_id": 2, "model_name": "LEAF"}]}]},
+
+    {"name": "resolve the first anonymous sibling by id_path",
+     "request": {"request": "resolve_instance", "id_path": [0]},
+     "expect": [{"response": "instance_resolved", "found": true, "path": [""], "id_path": [0],
+                 "instance": {"path": [["", 0, "mid"]], "has_instances": true}}]},
+
+    {"name": "resolve the second anonymous sibling by id_path",
+     "request": {"request": "resolve_instance", "id_path": [1]},
+     "expect": [{"response": "instance_resolved", "found": true, "path": [""], "id_path": [1],
+                 "instance": {"path": [["", 1, "mid"]]}}]},
+
+    {"name": "resolve an anonymous instance nested in an anonymous instance",
+     "request": {"request": "resolve_instance", "id_path": [1, 1]},
+     "expect": [{"response": "instance_resolved", "found": true, "path": ["", ""], "id_path": [1, 1],
+                 "instance": {"path": [["", 1, "mid"], ["", 1, "LEAF"]], "has_instances": false,
+                              "terms": [{"name": "A", "child_id": 0, "direction": 0},
+                                        {"name": "Y", "child_id": 1, "direction": 1}]}}]},
+
+    {"name": "a name path still resolves, and the reply adds its ids",
+     "request": {"request": "resolve_instance", "path": ["u_mid", "u_leaf"]},
+     "expect": [{"response": "instance_resolved", "found": true,
+                 "path": ["u_mid", "u_leaf"], "id_path": [3, 2],
+                 "instance": {"path": [["u_mid", 3, "mid"], ["u_leaf", 2, "LEAF"]]}}]},
+
+    {"name": "an escaped name containing a slash is one level",
+     "request": {"request": "resolve_instance", "path": ["a/b"]},
+     "expect": [{"response": "instance_resolved", "found": true, "path": ["a/b"], "id_path": [2]}]},
+
+    {"name": "an id path below an escaped name reports the names",
+     "request": {"request": "resolve_instance", "id_path": [2, 1]},
+     "expect": [{"response": "instance_resolved", "found": true, "path": ["a/b", ""], "id_path": [2, 1]}]},
+
+    {"name": "the empty name never resolves: anonymous instances need id_path",
+     "request": {"request": "resolve_instance", "path": [""]},
+     "expect": [{"response": "instance_resolved", "found": false, "path": [""]}],
+     "absent": ["instance", "id_path"]},
+
+    {"name": "id_path wins over path",
+     "request": {"request": "resolve_instance", "path": ["u_mid"], "id_path": [1]},
+     "expect": [{"response": "instance_resolved", "found": true, "path": [""], "id_path": [1]}]},
+
+    {"name": "an unknown id is not found and is echoed back",
+     "request": {"request": "resolve_instance", "id_path": [0, 99]},
+     "expect": [{"response": "instance_resolved", "found": false, "id_path": [0, 99]}],
+     "absent": ["instance"]},
+
+    {"name": "a negative id is not an instance id",
+     "request": {"request": "resolve_instance", "id_path": [-1]},
+     "expect": [{"response": "instance_resolved", "found": false}],
+     "absent": ["instance"]},
+
+    {"name": "a boolean is not an instance id",
+     "request": {"request": "resolve_instance", "id_path": [true]},
+     "expect": [{"response": "instance_resolved", "found": false}],
+     "absent": ["instance"]},
+
+    {"name": "a string is not an instance id",
+     "request": {"request": "resolve_instance", "id_path": ["0"]},
+     "expect": [{"response": "instance_resolved", "found": false}],
+     "absent": ["instance"]},
+
+    {"name": "an empty id_path is the top design",
+     "request": {"request": "resolve_instance", "id_path": []},
+     "expect": [{"response": "instance_resolved", "found": true, "path": [], "id_path": []}],
+     "absent": ["instance"]},
+
+    {"name": "properties of a nested anonymous instance",
+     "request": {"request": "get_properties", "kind": "instance", "id_path": [1, 0]},
+     "expect": [{"response": "properties_response", "subject": "<#0>", "properties": [
+       {"name": "Name", "value": ""},
+       {"name": "ID", "value": "0"},
+       {"name": "Model", "value": "LEAF"},
+       {"name": "Type", "value": "Primitive"}]}]},
+
+    {"name": "properties of an escaped instance by name",
+     "request": {"request": "get_properties", "kind": "instance", "path": ["a/b"]},
+     "expect": [{"response": "properties_response", "subject": "a/b", "properties": [
+       {"name": "Name", "value": "a/b"},
+       {"name": "ID", "value": "2"},
+       {"name": "Model", "value": "mid"},
+       {"name": "Type", "value": "Hierarchical"}]}]},
+
+    {"name": "properties of the top design",
+     "request": {"request": "get_properties", "kind": "instance", "id_path": []},
+     "expect": [{"response": "properties_response", "subject": "top_anon", "properties": [
+       {"name": "Name", "value": "top_anon"},
+       {"name": "Type", "value": "Top Design"}]}]},
+
+    {"name": "properties of a term on an anonymous instance",
+     "request": {"request": "get_properties", "kind": "term", "id_path": [1], "terminal": "i"},
+     "expect": [{"response": "properties_response", "subject": "<#1>/i", "properties": [
+       {"name": "Name", "value": "i"},
+       {"name": "Direction", "value": "Input"}]}]},
+
+    {"name": "properties of a term two anonymous levels down",
+     "request": {"request": "get_properties", "kind": "term", "id_path": [1, 1], "terminal": "Y"},
+     "expect": [{"response": "properties_response", "subject": "<#1>/<#1>/Y", "properties": [
+       {"name": "Name", "value": "Y"},
+       {"name": "Direction", "value": "Output"}]}]},
+
+    {"name": "properties of a net inside an anonymous instance",
+     "request": {"request": "get_properties", "kind": "net", "id_path": [0], "net": "i"},
+     "expect": [{"response": "properties_response", "subject": "<#0>/i", "properties": [
+       {"name": "Name", "value": "i"}]}]},
+
+    {"name": "properties of an unresolvable name path are empty",
+     "request": {"request": "get_properties", "kind": "instance", "path": [""]},
+     "expect": [{"response": "properties_response", "subject": "", "properties": []}]},
+
+    {"name": "expand_instance_terms echoes the instance path and id path",
+     "request": {"request": "expand_instance_terms", "instance_path": ["", ""],
+                 "instance_id_path": [1, 0], "design_ref": "$design:LEAF"},
+     "expect": [{"response": "expanded_instance_terms", "instance_path": ["", ""],
+                 "instance_id_path": [1, 0],
+                 "terms": [{"name": "A", "child_id": 0, "direction": 0},
+                           {"name": "Y", "child_id": 1, "direction": 1}]}]},
+
+    {"name": "load_instance_internals echoes the id path and lists anonymous children",
+     "request": {"request": "load_instance_internals", "instance_path": [""],
+                 "instance_id_path": [1], "design_ref": "$design:mid"},
+     "expect": [{"response": "instance_internals_response", "instance_path": [""],
+                 "instance_id_path": [1],
+                 "children": [{"name": "", "child_id": 0}, {"name": "", "child_id": 1},
+                              {"name": "u_leaf", "child_id": 2}]}]},
+
+    {"name": "equipotential occurrences tell anonymous instances apart by id",
+     "request": {"request": "load_equipotential", "path": [], "term_id": 0},
+     "expect": [{"response": "equipotential_response",
+                 "terms": [{"name": "x", "child_id": 0}],
+                 "occurrences": [
+                   {"path": [["", 0, "mid"], ["", 0, "LEAF"]], "name": "A"},
+                   {"path": [["", 0, "mid"], ["", 1, "LEAF"]], "name": "A"},
+                   {"path": [["", 1, "mid"], ["", 0, "LEAF"]], "name": "A"},
+                   {"path": [["", 1, "mid"], ["", 1, "LEAF"]], "name": "A"}]}],
+     "unordered": ["occurrences"]},
+
+    {"name": "instance_selected is a notification",
+     "request": {"request": "instance_selected", "path": ["", ""], "id_path": [1, 0]},
+     "expect": []}
+  ]
+}

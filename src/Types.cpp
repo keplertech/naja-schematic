@@ -154,7 +154,7 @@ void from_json(const json& j, Equipotential& e) {
           }
           const auto& name     = pathElem[0].get<std::string>();
           const auto& child_id = pathElem[1].get<unsigned>();
-          occurrence.path.push_back(name);
+          occurrence.path.push_back({child_id, name});
           occurrence.pathIds.push_back(child_id);
           // Optional third element: the instance's model name.
           occurrence.pathModels.push_back(
@@ -198,6 +198,13 @@ void from_json(const json& j, Equipotential& e) {
   }
 }
 
+// An instance ID on the wire: a non-negative integer (nlohmann keeps
+// integers built in C++ from an `int` signed, so is_number_unsigned() alone
+// would reject them).
+static bool isInstanceId(const json& v) {
+  return v.is_number_integer() && v.get<long long>() >= 0;
+}
+
 static DiagnosisKind diagnosisKindFromString(const std::string& s) {
   if (s == "net") return DiagnosisKind::Net;
   return DiagnosisKind::Instance;
@@ -217,6 +224,17 @@ void from_json(const json& j, DiagnosisItem& d) {
     for (const auto& seg : j["path"]) {
       if (seg.is_string()) d.path.push_back(seg.get<std::string>());
     }
+  }
+  d.idPath.reset();
+  if (j.contains("id_path") && j["id_path"].is_array()) {
+    std::vector<unsigned> ids;
+    for (const auto& seg : j["id_path"]) {
+      if (!isInstanceId(seg)) { ids.clear(); break; }
+      ids.push_back(seg.get<unsigned>());
+    }
+    // A malformed id_path is ignored (the item falls back to `path`)
+    // rather than silently truncated to a different instance.
+    if (ids.size() == j["id_path"].size()) d.idPath = std::move(ids);
   }
 
   d.terminal = j.value("terminal", std::string(""));
@@ -255,4 +273,25 @@ bool equipotentialCovers(const Equipotential& shown, const Equipotential& candid
   for (const auto& k : endpointKeys(candidate))
     if (!have.count(k)) return false;
   return true;
+}
+
+void writePath(json& j, const InstancePath& path, const char* namesKey, const char* idsKey) {
+  j[namesKey] = pathNames(path);
+  j[idsKey]   = pathIds(path);
+}
+
+std::optional<InstancePath> readPath(const json& j, const char* namesKey, const char* idsKey) {
+  if (!j.contains(idsKey) || !j[idsKey].is_array()) return std::nullopt;
+  const json& ids = j[idsKey];
+  const json* names = j.contains(namesKey) && j[namesKey].is_array() ? &j[namesKey] : nullptr;
+  if (names && names->size() != ids.size()) return std::nullopt;
+  InstancePath path;
+  for (size_t i = 0; i < ids.size(); ++i) {
+    if (!isInstanceId(ids[i])) return std::nullopt;
+    InstanceRef ref;
+    ref.id = ids[i].get<unsigned>();
+    if (names && (*names)[i].is_string()) ref.name = (*names)[i].get<std::string>();
+    path.push_back(std::move(ref));
+  }
+  return path;
 }

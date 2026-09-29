@@ -37,9 +37,10 @@ view
 ```
 
 The view and your najaeda code can point each other at instances.
-`show_instance()` takes a najaeda `Instance` or a list of instance names
-(a plain string is one name, never split on `/`, since escaped names can
-contain it). The viewer opens its tree down to that instance, selects it, and
+`show_instance()` takes a najaeda `Instance`, a list of instance ids (as
+`Instance.pathIDs`) or a list of instance names (a plain string is one
+name, never split on `/`, since escaped names can contain it). Anonymous
+instances have no name to go by: reach them with an `Instance` or ids. The viewer opens its tree down to that instance, selects it, and
 draws it alone in the schematic. Each pin there is open, so you can click
 one to add its net and grow the schematic from the instance. In the other
 direction, the instance selected in the viewer (click it in the tree or the

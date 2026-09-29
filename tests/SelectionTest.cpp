@@ -28,15 +28,26 @@ TEST_F(SelectionStoreTest, SelectNotifiesOncePerChange) {
   EXPECT_FALSE(SelectionStore::hasSelection());
   const unsigned rev = SelectionStore::revision();
 
-  SelectionStore::select(InstancePath{"u1", "u2"}, SelectionStore::Origin::Schematic);
-  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{"u1", "u2"}));
-  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{"u1"}));
+  SelectionStore::select(InstancePath{{1, "u1"}, {2, "u2"}}, SelectionStore::Origin::Schematic);
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{1, "u1"}, {2, "u2"}}));
+  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{1, "u1"}}));
   EXPECT_EQ(SelectionStore::origin(), SelectionStore::Origin::Schematic);
   EXPECT_EQ(SelectionStore::revision(), rev + 1);
 
-  SelectionStore::select(InstancePath{"u1", "u2"}, SelectionStore::Origin::Tree);  // same: no-op
+  SelectionStore::select(InstancePath{{1, "u1"}, {2, "u2"}}, SelectionStore::Origin::Tree);  // same: no-op
   EXPECT_EQ(SelectionStore::revision(), rev + 1);
-  EXPECT_EQ(notified, (std::vector<InstancePath>{{"u1", "u2"}}));
+  EXPECT_EQ(notified, (std::vector<InstancePath>{{{1, "u1"}, {2, "u2"}}}));
+}
+
+// Anonymous siblings share the name "": the id tells them apart, so
+// switching from one to the other is a selection change.
+TEST_F(SelectionStoreTest, AnonymousSiblingsAreDistinctSelections) {
+  SelectionStore::select(InstancePath{{3, ""}}, SelectionStore::Origin::Schematic);
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{3, ""}}));
+  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{4, ""}}));
+  SelectionStore::select(InstancePath{{4, ""}}, SelectionStore::Origin::Schematic);
+  EXPECT_EQ(notified, (std::vector<InstancePath>{{{3, ""}}, {{4, ""}}}));
+  EXPECT_EQ(pathIds(notified.back()), (std::vector<unsigned>{4}));
 }
 
 TEST_F(SelectionStoreTest, TopDesignIsSelectable) {
@@ -47,10 +58,10 @@ TEST_F(SelectionStoreTest, TopDesignIsSelectable) {
 }
 
 TEST_F(SelectionStoreTest, ClearDoesNotNotify) {
-  SelectionStore::select(InstancePath{"u1"}, SelectionStore::Origin::Tree);
+  SelectionStore::select(InstancePath{{1, "u1"}}, SelectionStore::Origin::Tree);
   SelectionStore::clear();
   EXPECT_FALSE(SelectionStore::hasSelection());
-  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{"u1"}));
+  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{1, "u1"}}));
   EXPECT_EQ(notified.size(), 1u);
 }
 
@@ -101,7 +112,7 @@ class TreeReveal : public ::testing::Test {
 } // namespace
 
 TEST_F(TreeReveal, WalksDownLoadingOnlyWhatIsNeeded) {
-  tree.reveal(InstancePath{"u1", "u2"});
+  tree.reveal(InstancePath{{11, "u1"}, {20, "u2"}});
   tree.advanceReveal();
   EXPECT_TRUE(tree.isRevealPending());
 
@@ -132,14 +143,15 @@ TEST_F(TreeReveal, WalksDownLoadingOnlyWhatIsNeeded) {
   answer(prim[0]["gui_id"], {{"u2", 20, false}});
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
-  NetlistTreeNode* u2 = tree.findInstance(InstancePath{"u1", "u2"});
+  NetlistTreeNode* u2 = tree.findInstance(InstancePath{{11, "u1"}, {20, "u2"}});
   ASSERT_NE(u2, nullptr);
-  EXPECT_EQ(u2->getInstancePath(), (InstancePath{"u1", "u2"}));
+  EXPECT_EQ(u2->getInstancePath(), (InstancePath{{11, "u1"}, {20, "u2"}}));
+  EXPECT_EQ(pathNames(u2->getInstancePath()), (std::vector<std::string>{"u1", "u2"}));
 }
 
 // An escaped instance name can contain '/': it's one level, not two.
 TEST_F(TreeReveal, NamesContainingSlashesAreOneLevel) {
-  const InstancePath key{"a/b", "u2"};
+  const InstancePath key{{11, "a/b"}, {20, "u2"}};
   tree.reveal(key);
   tree.advanceReveal();
   auto inst = take("load_instances");
@@ -158,10 +170,38 @@ TEST_F(TreeReveal, NamesContainingSlashesAreOneLevel) {
   NetlistTreeNode* u2 = tree.findInstance(key);
   ASSERT_NE(u2, nullptr);
   EXPECT_EQ(u2->getInstancePath(), key);
+  EXPECT_EQ(pathNames(u2->getInstancePath()), (std::vector<std::string>{"a/b", "u2"}));
+}
+
+// Anonymous instances all have the name "": the reveal walks by id, so it
+// reaches the right one of several anonymous siblings, at every level.
+TEST_F(TreeReveal, AnonymousSiblingsAreRevealedById) {
+  const InstancePath key{{11, ""}, {21, ""}};
+  tree.reveal(key);
+  tree.advanceReveal();
+  auto inst = take("load_instances");
+  auto prim = take("load_primitives");
+  answer(inst[0]["gui_id"], {{"", 10, true}, {"", 11, true}});
+  answer(prim[0]["gui_id"], {});
+  tree.advanceReveal();
+  inst = take("load_instances");
+  prim = take("load_primitives");
+  ASSERT_EQ(inst.size(), 1u);
+  EXPECT_EQ(inst[0]["design_ref"]["design_id"], 11);  // the second anonymous one
+  answer(inst[0]["gui_id"], {});
+  answer(prim[0]["gui_id"], {{"", 20, false}, {"", 21, false}});
+  tree.advanceReveal();
+  EXPECT_FALSE(tree.isRevealPending());
+  NetlistTreeNode* leaf = tree.findInstance(key);
+  ASSERT_NE(leaf, nullptr);
+  EXPECT_EQ(leaf->getChildID(), 21u);
+  EXPECT_EQ(leaf->getInstancePath(), key);
+  EXPECT_EQ(leaf->getLabel(), "<#21> (M_)");
+  EXPECT_NE(tree.findInstance(InstancePath{{11, ""}, {20, ""}}), leaf);
 }
 
 TEST_F(TreeReveal, AlreadyLoadedLevelsNeedNoRequest) {
-  tree.reveal(InstancePath{"u1"});
+  tree.reveal(InstancePath{{11, "u1"}});
   tree.advanceReveal();
   auto inst = take("load_instances");
   auto prim = take("load_primitives");
@@ -170,31 +210,31 @@ TEST_F(TreeReveal, AlreadyLoadedLevelsNeedNoRequest) {
   tree.advanceReveal();
   ASSERT_FALSE(tree.isRevealPending());
 
-  tree.reveal(InstancePath{"u1"});  // again: everything is there
+  tree.reveal(InstancePath{{11, "u1"}});  // again: everything is there
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
   EXPECT_TRUE(provider.sent.empty());
 }
 
 TEST_F(TreeReveal, FindsAnInstanceInTheFirstLoadedGroupWithoutWaitingForOthers) {
-  tree.reveal(InstancePath{"u1"});
+  tree.reveal(InstancePath{{11, "u1"}});
   tree.advanceReveal();
   auto inst = take("load_instances");
   take("load_primitives");  // never answered
   answer(inst[0]["gui_id"], {{"u1", 11, true}});
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
-  EXPECT_NE(tree.findInstance(InstancePath{"u1"}), nullptr);
+  EXPECT_NE(tree.findInstance(InstancePath{{11, "u1"}}), nullptr);
 }
 
-TEST_F(TreeReveal, UnknownNameStopsTheReveal) {
-  tree.reveal(InstancePath{"nope"});
+TEST_F(TreeReveal, UnknownIdStopsTheReveal) {
+  tree.reveal(InstancePath{{99, "u1"}});  // the name alone doesn't make it u1
   tree.advanceReveal();
   answer(take("load_instances")[0]["gui_id"], {{"u1", 11, true}});
   answer(take("load_primitives")[0]["gui_id"], {});
   tree.advanceReveal();
   EXPECT_FALSE(tree.isRevealPending());
-  EXPECT_EQ(tree.findInstance(InstancePath{"nope"}), nullptr);
+  EXPECT_EQ(tree.findInstance(InstancePath{{99, "u1"}}), nullptr);
 }
 
 TEST_F(TreeReveal, RootIsRevealedImmediately) {
@@ -226,11 +266,11 @@ TEST_F(TreeReveal, RevealsASelectionMadeElsewhereOnRender) {
   frame();
   provider.sent.clear();
 
-  SelectionStore::select(InstancePath{"u1"}, SelectionStore::Origin::Tree);
+  SelectionStore::select(InstancePath{{1, "u1"}}, SelectionStore::Origin::Tree);
   frame();
   EXPECT_FALSE(tree.isRevealPending());
 
-  SelectionStore::select(InstancePath{"u9"}, SelectionStore::Origin::Schematic);
+  SelectionStore::select(InstancePath{{9, "u9"}}, SelectionStore::Origin::Schematic);
   frame();
   EXPECT_TRUE(tree.isRevealPending());
   EXPECT_FALSE(take("load_instances").empty());

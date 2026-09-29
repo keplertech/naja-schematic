@@ -38,13 +38,15 @@ TEST(NetlistTree, InstancePathViaGetNode) {
   // Root's guiID is 0 (first node inserted); u1 is inserted right after.
   auto* u1 = tree.getNode(1);
   ASSERT_NE(u1, nullptr);
-  EXPECT_EQ(u1->getInstancePath(), (InstancePath{"u1"}));
+  EXPECT_EQ(u1->getInstancePath(), (InstancePath{{1, "u1"}}));
 
   u1->createChildren();
   u1->createInstanceNode("u2", "MOD_B", 2, someDesign(), false, false, false, false);
   auto* u2 = tree.getNode(2);
   ASSERT_NE(u2, nullptr);
-  EXPECT_EQ(u2->getInstancePath(), (InstancePath{"u1", "u2"}));
+  EXPECT_EQ(u2->getInstancePath(), (InstancePath{{1, "u1"}, {2, "u2"}}));
+  EXPECT_EQ(pathNames(u2->getInstancePath()), (std::vector<std::string>{"u1", "u2"}));
+  EXPECT_EQ(pathIds(u2->getInstancePath()), (std::vector<unsigned>{1, 2}));
 }
 
 TEST(NetlistTree, InstancePathKeepsSlashesInsideNames) {
@@ -60,7 +62,35 @@ TEST(NetlistTree, InstancePathKeepsSlashesInsideNames) {
   ab->createInstanceNode("u2", "MOD_B", 2, someDesign(), false, false, false, false);
   auto* u2 = tree.getNode(2);
   ASSERT_NE(u2, nullptr);
-  EXPECT_EQ(u2->getInstancePath(), (InstancePath{"a/b", "u2"}));
+  EXPECT_EQ(u2->getInstancePath(), (InstancePath{{1, "a/b"}, {2, "u2"}}));
+  EXPECT_EQ(pathNames(u2->getInstancePath()), (std::vector<std::string>{"a/b", "u2"}));
+}
+
+// Anonymous instances (name "") are told apart by id, at every level, and
+// get_properties addresses them by id_path.
+TEST(NetlistTree, AnonymousSiblingsHaveDistinctInstancePaths) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  tree.createRootNode("top", someDesign(), false, false, true, false);
+  auto* root = tree.getRoot();
+
+  root->createChildren();
+  root->createInstanceNode("", "MOD_A", 4, someDesign(), false, false, true, false);
+  root->createInstanceNode("", "MOD_A", 7, someDesign(), false, false, true, false);
+  auto* a4 = tree.getNode(1);
+  auto* a7 = tree.getNode(2);
+  ASSERT_NE(a4, nullptr);
+  ASSERT_NE(a7, nullptr);
+  EXPECT_NE(a4->getInstancePath(), a7->getInstancePath());
+  EXPECT_EQ(pathNames(a4->getInstancePath()), pathNames(a7->getInstancePath()));
+  EXPECT_EQ(a7->getLabel(), "<#7> (MOD_A)");
+
+  a7->createChildren();
+  a7->createInstanceNode("", "MOD_B", 0, someDesign(), false, false, false, false);
+  auto* leaf = tree.getNode(3);
+  ASSERT_NE(leaf, nullptr);
+  EXPECT_EQ(leaf->getInstancePath(), (InstancePath{{7, ""}, {0, ""}}));
+  EXPECT_EQ(displayPath(leaf->getInstancePath()), "<#7>/<#0>");
 }
 
 TEST(NetlistTree, TermNodeBusBitsCountDownFromMsb) {

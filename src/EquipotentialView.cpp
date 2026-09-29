@@ -259,7 +259,7 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         InstanceShape cs;
         cs.id            = nextInstId++;
         cs.path          = parent.path;
-        cs.path.push_back(c.name);
+        cs.path.push_back({c.childId, c.name});
         cs.name          = displayPath(cs.path);
         cs.primitiveType = c.primitiveType;
         cs.w             = kHierChildW;
@@ -373,7 +373,7 @@ static void requestExpansion(const InstancePath& path, const DesignRef& designRe
     g_pendingExpansions.insert(path);
     json req;
     req["request"]                  = "expand_instance_terms";
-    req["instance_path"]            = path;
+    writePath(req, path, "instance_path", "instance_id_path");
     req["design_ref"]["db_id"]      = designRef.db_id;
     req["design_ref"]["library_id"] = designRef.library_id;
     req["design_ref"]["design_id"]  = designRef.design_id;
@@ -436,7 +436,7 @@ EquipotentialView::startInstanceFromResolved(const json& reply) {
     StartInstance start;
     for (const auto& level : inst.value("path", json::array())) {
         if (!level.is_array() || level.size() < 2) continue;
-        start.path.push_back(level[0].get<std::string>());
+        start.path.push_back({level[1].get<unsigned>(), level[0].get<std::string>()});
         start.pathIds.push_back(level[1].get<unsigned>());
         start.pathModels.push_back(level.size() > 2 ? level[2].get<std::string>() : "");
     }
@@ -587,7 +587,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 json req;
                 req["request"] = "get_properties";
                 req["kind"]    = "instance";
-                req["path"]    = occIt->second.path;
+                writePath(req, occIt->second.path);
                 g_provider->send(req.dump());
             }
             // A module frame covers a lot of canvas, so right-clicking its
@@ -629,7 +629,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                         g_hierPending.insert(inst.path);
                         json req;
                         req["request"]                  = "load_instance_internals";
-                        req["instance_path"]            = inst.path;
+                        writePath(req, inst.path, "instance_path", "instance_id_path");
                         req["design_ref"]["db_id"]      = occIt->second.designRef.db_id;
                         req["design_ref"]["library_id"] = occIt->second.designRef.library_id;
                         req["design_ref"]["design_id"]  = occIt->second.designRef.design_id;
@@ -715,9 +715,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         bool                  hasInstances = false;
         std::optional<size_t> bitTermCount;
         std::optional<SourceLoc> sourceLoc;
-        std::vector<std::string> path;
+        InstancePath             path;
         std::vector<std::string> pathModels;
-        std::vector<unsigned>    pathIds;   // child_ids down to this instance
+        std::vector<unsigned>    pathIds;   // pathIds(path), for pin requests
         std::vector<PortSlot> ports;
     };
     std::map<InstancePath, MInst> minsts;
@@ -846,7 +846,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 g_hierPending.insert(key);
                 json req;
                 req["request"]                  = "load_instance_internals";
-                req["instance_path"]            = key;
+                writePath(req, key, "instance_path", "instance_id_path");
                 req["design_ref"]["db_id"]      = mi.designRef.db_id;
                 req["design_ref"]["library_id"] = mi.designRef.library_id;
                 req["design_ref"]["design_id"]  = mi.designRef.design_id;
@@ -1458,7 +1458,7 @@ void EquipotentialView::renderTable(const std::vector<Equipotential*>& equipoten
             std::string context;
             for (size_t k = 0; k + 1 < occ.path.size(); ++k) {
                 if (k) context += " > ";
-                context += occ.path[k];
+                context += displayName(occ.path[k]);
                 if (k < occ.pathModels.size() && !occ.pathModels[k].empty())
                     context += " (" + occ.pathModels[k] + ")";
             }
