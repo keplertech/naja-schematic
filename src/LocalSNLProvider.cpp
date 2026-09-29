@@ -768,14 +768,19 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
 static constexpr size_t kMaxTraceNets = 500;
 
 std::string LocalSNLProvider::buildTraceDriverResponse(const json& req) const {
-  static const json empty = {
-    {"response",       "trace_driver_response"},
-    {"equipotentials", json::array()},
-    {"truncated",      false}
+  // The viewer's trace_id is echoed back, so it knows which trace the nets
+  // are for (see TraceStore).
+  auto reply = [&req](json equis, bool truncated) {
+    json r = {{"response", "trace_driver_response"},
+              {"equipotentials", std::move(equis)},
+              {"truncated", truncated}};
+    if (req.contains("trace_id")) r["trace_id"] = req["trace_id"];
+    return r.dump();
   };
+  const std::string empty = reply(json::array(), false);
 
   auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
-  if (!topDesign) return empty.dump();
+  if (!topDesign) return empty;
 
   try {
     // One start per requested bus bit, or the single term/bit otherwise.
@@ -839,12 +844,10 @@ std::string LocalSNLProvider::buildTraceDriverResponse(const json& req) const {
 
     json equis = json::array();
     for (const auto& net : cone) equis.push_back(equipotentialJson(net.equi, &net.sinks));
-    return json{{"response", "trace_driver_response"},
-                {"equipotentials", std::move(equis)},
-                {"truncated", truncated}}.dump();
+    return reply(std::move(equis), truncated);
   } catch (const std::exception& e) {
     Console::Error("buildTraceDriverResponse: " + std::string(e.what()));
-    return empty.dump();
+    return empty;
   }
 }
 

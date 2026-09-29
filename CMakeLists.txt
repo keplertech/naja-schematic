@@ -99,6 +99,8 @@ set(CORE_SOURCES
   src/PropertiesStore.cpp
   src/PropertiesView.cpp
   src/SelectionStore.cpp
+  src/TraceStore.cpp
+  src/TraceView.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
 )
@@ -255,6 +257,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/SourceStore.cpp
       src/PropertiesStore.cpp
       src/SelectionStore.cpp
+      src/TraceStore.cpp
       src/SchematicLayout.cpp
       src/SchematicInteraction.cpp
       src/EquipotentialView.cpp

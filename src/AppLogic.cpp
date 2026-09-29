@@ -24,6 +24,8 @@ using json = nlohmann::json;
 #include "SourceView.h"
 #include "PropertiesStore.h"
 #include "SelectionStore.h"
+#include "TraceStore.h"
+#include "TraceView.h"
 #include "PropertiesView.h"
 #include "DroidSansFont.h"
 
@@ -216,12 +218,16 @@ void setupProvider(AppState& state) {
       // adding them in order lets the layout chain each one off an instance
       // that's already placed.
       // Nets already on screen (e.g. the one the trace started from, when
-      // it's launched from a schematic pin) are skipped rather than drawn twice.
+      // it's launched from a schematic pin) are skipped rather than drawn
+      // twice, but still recorded as on this trace.
+      // A provider that doesn't echo trace_id still gets a trace of its own.
+      int traceId = j.value("trace_id", 0);
+      if (!TraceStore::find(traceId)) traceId = TraceStore::begin("Trace");
       size_t n = 0, added = 0;
       if (j.contains("equipotentials") && j["equipotentials"].is_array()) {
         for (const auto& e : j["equipotentials"]) {
           ++n;
-          if (state.guiData->addEquipotential(new Equipotential(e.get<Equipotential>()))) ++added;
+          if (state.guiData->addEquipotential(new Equipotential(e.get<Equipotential>()), traceId)) ++added;
         }
       }
       state.tableEquipotentialCount = std::max<size_t>(added, 1);
@@ -673,6 +679,10 @@ bool appFrame(AppState& state) {
             size_t n = std::min(state.tableEquipotentialCount, eqs.size());
             std::vector<Equipotential*> lastEquip(eqs.end() - n, eqs.end());
             EquipotentialView::renderTable(lastEquip);
+            ImGui::EndTabItem();
+          }
+          if (ImGui::BeginTabItem("Traces")) {
+            TraceView::render(*state.guiData);
             ImGui::EndTabItem();
           }
           // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.

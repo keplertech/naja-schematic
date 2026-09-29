@@ -190,6 +190,13 @@ struct Equipotential {
   bool found;
   std::vector<BitTerm> terms;
   std::vector<InstTermOccurrence> occurrences;
+  // Viewer-side, not part of the wire format: who put this net in the view
+  // (see GUIData::addEquipotential). `traceIds` lists the driver traces
+  // (TraceStore ids) that reached it; `direct` is set when it was also shown
+  // on its own (Show Equipotential, a pin click). A net stays in the view
+  // while it has at least one of them.
+  std::vector<int> traceIds;
+  bool direct = false;
 };
 
 // True when every endpoint (top-level term or instance pin) of `candidate` is
@@ -335,7 +342,8 @@ struct InstanceShape {
     // current net).  The renderer draws a dashed border so the user knows
     // the instance can be expanded to reveal its full interface.
     bool partialInterface = false;
-    // Severity color from DiagnosisStore::instanceColor(), 0 if unflagged.
+    // Severity color from DiagnosisStore::instanceColor(), else the trace
+    // convergence color when two visible traces go through it, 0 if neither.
     // Drawn as an extra outline so it doesn't fight partialInterface's dash.
     ImU32 diagOutline = 0;
     std::vector<Port> ports;
@@ -376,10 +384,16 @@ struct NetWire {
     int dstInstance = 0;
     int dstPortId = 0;
     // Default: near-monochrome. Color is reserved for
-    // highlighting (diagnosis severity, selection) via an explicit override
+    // highlighting (diagnosis severity, selection, driver traces) via an explicit override
     // further down the pipeline -- see EquipotentialView.cpp's srcPort/
     // dstPort->color checks -- rather than being a per-net decoration.
     ImU32 color = IM_COL32(150,150,150,255);
+    // The visible driver traces (TraceStore ids) this wire is on, and whether
+    // it's only in the view for traces that are hidden (drawn faint so the
+    // layout doesn't move). Turned into `color` once wires are merged --
+    // see EquipotentialView's traceWireColor(); a diagnosis color wins.
+    std::vector<int> traceIds;
+    bool faint = false;
     // True when this wire represents multiple merged bus-bit nets between
     // the same two (merged) pins — drawn thicker, with a diagonal bus slash.
     bool isBus = false;

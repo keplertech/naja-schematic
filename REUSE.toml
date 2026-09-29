@@ -82,6 +82,10 @@ path = [
   "src/SourceStore.h",
   "src/SourceView.cpp",
   "src/SourceView.h",
+  "src/TraceStore.cpp",
+  "src/TraceStore.h",
+  "src/TraceView.cpp",
+  "src/TraceView.h",
   "src/Types.cpp",
   "src/Types.h",
   "src/Version.h",
@@ -100,6 +104,7 @@ path = [
   "tests/SelectionTest.cpp",
   "tests/SchematicLayoutTest.cpp",
   "tests/SourceStoreTest.cpp",
+  "tests/TraceTest.cpp",
   "tests/TypesJsonTest.cpp",
 ]
 SPDX-FileCopyrightText = "2026 najaeda contributors"

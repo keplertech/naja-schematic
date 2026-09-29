@@ -6,6 +6,7 @@
 #include "DiagnosisStore.h"
 #include "INetlistProvider.h"
 #include "SelectionStore.h"
+#include "TraceStore.h"
 
 void NetlistTree::createRootNode(
   const std::string& name,
@@ -183,12 +184,16 @@ void NetlistTreeNode::render() {
           path,
           NetlistTree::TermID{getChildID(), isBusBit(), getBusBit()});
       }
-      if (ImGui::MenuItem("Trace to Driver")) {
+      for (bool clearView : {true, false}) {
+        if (!ImGui::MenuItem(clearView ? "Trace to Driver" : "Add Trace to View")) continue;
         NetlistTree::Path path;
         getPath(path);
+        std::string label = getTermBaseName();
+        if (isBusBit()) label += "[" + std::to_string(getBusBit()) + "]";
         getTree()->sendTraceDriver(
           path, getChildID(),
-          isBusBit() ? std::vector<int>{getBusBit()} : std::vector<int>{});
+          isBusBit() ? std::vector<int>{getBusBit()} : std::vector<int>{},
+          traceLabel(getInstancePath(), label), clearView);
       }
       if (ImGui::MenuItem("Show Properties")) {
         json req;
@@ -212,10 +217,12 @@ void NetlistTreeNode::render() {
             NetlistTree::TermID{getChildID(), true, bit});
         }
       }
-      if (ImGui::MenuItem("Trace Bus to Driver")) {
+      for (bool clearView : {true, false}) {
+        if (!ImGui::MenuItem(clearView ? "Trace Bus to Driver" : "Add Bus Trace to View")) continue;
         NetlistTree::Path path;
         getPath(path);
-        getTree()->sendTraceDriver(path, getChildID(), busBits());
+        getTree()->sendTraceDriver(path, getChildID(), busBits(),
+                                   traceLabel(getInstancePath(), getTermBaseName()), clearView);
       }
       if (ImGui::MenuItem("Show Properties")) {
         json req;
@@ -662,15 +669,18 @@ void NetlistTree::sendLoadEquipotential(const NetlistTree::Path& path, const Ter
 }
 
 void NetlistTree::sendTraceDriver(const NetlistTree::Path& path, unsigned termChildID,
-                                  const std::vector<int>& bits) const {
+                                  const std::vector<int>& bits, const std::string& label,
+                                  bool clearView) const {
+  // Clear first: clearing the view also forgets its traces.
+  if (clearView && onEquipotentialRequest_) onEquipotentialRequest_();
   json req;
-  req["request"] = "trace_driver";
-  req["path"]    = path;
-  req["term_id"] = termChildID;
+  req["request"]  = "trace_driver";
+  req["path"]     = path;
+  req["term_id"]  = termChildID;
   // One bit: same shape as load_equipotential. Several: a "bits" list.
   if (bits.size() == 1)      req["bit"]  = bits.front();
   else if (bits.size() > 1)  req["bits"] = bits;
+  req["trace_id"] = TraceStore::begin(label);
   Console::Log("Sending trace driver request: " + req.dump());
-  if (onEquipotentialRequest_) onEquipotentialRequest_();
   ws_->send(req.dump());
 }

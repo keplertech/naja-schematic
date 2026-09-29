@@ -5,6 +5,7 @@
 #include "EquipotentialView.h"
 #include "SchematicView.h"
 #include "SelectionStore.h"
+#include "TraceStore.h"
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
@@ -454,4 +455,85 @@ TEST_F(SchematicClicks, ASelectionMadeElsewhereIsDrawnInTheSchematic) {
   SelectionStore::select(InstancePath{"u1"}, SelectionStore::Origin::Host);
   frame();
   EXPECT_TRUE(shape({"u1"})->selected);
+}
+
+// Two traces overlaid: trace A is u0.Y -> u1.A, u1.Y -> u3.A; trace B is
+// u0.Y -> u2.A, u2.Y -> u3.B. Both go through u0's output net (listed once
+// per trace, each with the receiver it entered through, so the two copies
+// merge into one wire tree) and meet at u3.
+class TraceOverlay : public SchematicClicks {
+ protected:
+  void SetUp() override {
+    SchematicClicks::SetUp();
+    TraceStore::clear();
+    a = TraceStore::begin("u1/A");
+    b = TraceStore::begin("u2/B");
+    auto net = [](const std::string& drv, unsigned drvId, const std::string& rcv, unsigned rcvId,
+                  const std::string& pin, unsigned pinId, int trace) {
+      Equipotential e{true, {}, {}};
+      e.occurrences.push_back(occ(drv, drvId, "Y", 9, Direction::Output, 3));
+      e.occurrences.push_back(occ(rcv, rcvId, pin, pinId, Direction::Input, 3));
+      e.traceIds = {trace};
+      return e;
+    };
+    add(net("u1", 1, "u3", 3, "A", 20, a));
+    add(net("u0", 0, "u1", 1, "A", 20, a));
+    add(net("u2", 2, "u3", 3, "B", 21, b));
+    add(net("u0", 0, "u2", 2, "A", 20, b));
+    frame(3);
+  }
+  void TearDown() override {
+    TraceStore::clear();
+    SchematicClicks::TearDown();
+  }
+
+  // The color of the routed tree driven by `inst`.Y.
+  ImU32 routeColorFrom(const std::string& inst) const {
+    const InstanceShape* s = shape({inst});
+    const Port* y = pin({inst}, "Y");
+    if (!s || !y) return 0;
+    ImVec2 at = portAnchor(*s, *y);
+    for (const auto& r : sv().routes)
+      for (const auto& seg : r.segments)
+        for (ImVec2 p : {seg.a, seg.b})
+          if (std::abs(p.x - at.x) < 0.5f && std::abs(p.y - at.y) < 0.5f) return r.color;
+    ADD_FAILURE() << "no route from " << inst << ".Y";
+    return 0;
+  }
+
+  int a = 0, b = 0;
+};
+
+TEST_F(TraceOverlay, EachTraceIsDrawnInItsColorAndSharedWiresInTheConvergenceColor) {
+  EXPECT_EQ(routeColorFrom("u1"), TraceStore::color(a));
+  EXPECT_EQ(routeColorFrom("u2"), TraceStore::color(b));
+  EXPECT_EQ(routeColorFrom("u0"), TraceStore::convergenceColor());
+}
+
+TEST_F(TraceOverlay, AGateBothTracesReachIsOutlined) {
+  ASSERT_NE(shape({"u3"}), nullptr);
+  EXPECT_EQ(shape({"u3"})->diagOutline, TraceStore::convergenceColor());
+  EXPECT_EQ(shape({"u0"})->diagOutline, TraceStore::convergenceColor());
+  EXPECT_EQ(shape({"u1"})->diagOutline, 0u);
+}
+
+// Hiding a trace keeps its nets in the layout (nothing moves) but faint, and
+// what it shared with the other trace is that trace's alone again.
+TEST_F(TraceOverlay, HidingATraceFadesItWithoutMovingAnything) {
+  const ImVec2 before(shape({"u2"})->x, shape({"u2"})->y);
+  TraceStore::setVisible(b, false);
+  frame(2);
+
+  EXPECT_EQ(shape({"u2"})->x, before.x);
+  EXPECT_EQ(shape({"u2"})->y, before.y);
+  EXPECT_LT(routeColorFrom("u2") >> IM_COL32_A_SHIFT & 0xFF, 255u);
+  EXPECT_EQ(routeColorFrom("u0"), TraceStore::color(a));
+  EXPECT_EQ(shape({"u3"})->diagOutline, 0u);
+}
+
+// A net that isn't on any trace keeps the plain wire color.
+TEST_F(SchematicClicks, ANetShownOnItsOwnIsNotColored) {
+  showFirstNet();
+  ASSERT_EQ(sv().routes.size(), 1u);
+  EXPECT_EQ(sv().routes[0].color, NetWire{}.color);
 }

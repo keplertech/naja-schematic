@@ -308,9 +308,23 @@ requested one and de-duplicated, capped at `kMaxTraceNets` (`MAX_TRACE_NETS` in
 each to `GUIData` in order; the layered placement breaks ordering ties by
 first appearance, so the cone keeps a stable shape as it grows. Reachable from the tree
 (right-click a term/bus-bit row -> "Trace to Driver", bus row -> "Trace Bus
-to Driver"; both clear the view first, like "Show Equipotential") and from the
+to Driver"; both clear the view first, like "Show Equipotential"; "Add Trace
+to View"/"Add Bus Trace to View" overlay the trace instead) and from the
 schematic (right-click a pin -> "Trace to Driver"; this one *adds* to the view
 instead of clearing it).
+
+Traces overlay: the viewer sends an optional `trace_id` (an int) with every
+`trace_driver` request, and both providers echo it back unchanged in the
+`trace_driver_response`. Each net the reply carries is tagged with it
+(`Equipotential::traceIds`; `direct` marks a net also shown on its own), and
+a net the view already shows is not added twice but gets the new trace
+recorded on it (`GUIData::addEquipotential(eq, traceId)`). The schematic draws
+each visible trace in its own `TraceStore` color, and a wire tree or a gate
+two visible traces go through in the convergence color. A diagnosis color
+always wins over a trace color. A hidden trace keeps its nets in the layout,
+drawn faint, so nothing moves. `GUIData::removeTrace()` drops only the nets
+nothing else still shows. A reply with no `trace_id` (an older server) still
+becomes a trace of its own.
 
 Extending the schematic by hand works pin by pin. A box drawn with a dashed
 border shows only the pins on nets already in view; double-clicking its body
@@ -486,6 +500,12 @@ appear as boxes/pins there).
   `root_response`/`root_loaded`.
 - **`PropertiesView`** — renders the current `PropertiesStore` contents as a
   two-column name/value table into the "Properties" bottom-panel tab.
+- **`TraceStore`** — global static store (same pattern) for the driver
+  traces in the schematic: id, label (the start pin), palette color,
+  visibility. A trace is registered when its `trace_driver` request is sent,
+  and forgotten when the view is cleared (`GUIData::clearEquipotentials()`).
+- **`TraceView`** — the "Traces" bottom-panel tab: one row per trace, to
+  show/hide it, change its color or remove it.
 - **`SelectionStore`** — global static store (same pattern) for the one
   selected instance, by `InstancePath` (`{}` = top). It's set from the tree, the
   schematic or a host `focus_instance`, and drawn highlighted in both
