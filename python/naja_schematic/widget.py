@@ -97,6 +97,13 @@ class Schematic(anywidget.AnyWidget):
         """
         self._session.show_instance(target)
 
+    def design_changed(self, diagnosis=None, instance=None):
+        """Refresh this view after the design was replaced or edited in
+        later cells, instead of calling show() again. Kept diagnoses and
+        focus are replaced by `diagnosis` and `instance` (resolved against
+        the new design; None: none), and the selection is cleared."""
+        self._session.design_changed(diagnosis, instance)
+
     @property
     def selected(self):
         """The instance selected in the viewer, as a najaeda netlist.Instance

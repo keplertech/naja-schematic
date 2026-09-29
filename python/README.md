@@ -57,7 +57,8 @@ view.on_select(lambda inst: print("selected", inst))
 ```
 
 `naja_schematic.show(inst)` (or `show(["u_sub", "u_and"])`) starts a new
-view on it.
+view on it. After editing or reloading the design in later cells,
+`view.design_changed()` refreshes an existing view in place.
 
 ## From a shell
 
@@ -87,7 +88,8 @@ server.open_browser()             # or hand server.url to the user
 server.annotate(items)            # diagnosis overlay, kept across reloads
 server.show_instance([3, 7])      # instance ids, names, or a najaeda Instance
 server.on_select(lambda id_path, path: print("selected", path))
-...
+...                               # load or edit the design (holding design_lock)
+server.design_changed()           # every open viewer reloads it
 server.stop()
 ```
 

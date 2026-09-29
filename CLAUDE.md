@@ -195,7 +195,9 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   than its own page and `allowed_origins`, so other web pages can't read
   the design; `token=None` turns the token off. Pushes go to every
   connected viewer (`websockets` `broadcast`); selection callbacks get
-  `(id_path, path)` on the worker thread with no lock held.
+  `(id_path, path)` on the worker thread with no lock held. After the host
+  swaps or edits the design, `design_changed()` makes every viewer reload
+  (see `design_changed` under Wire protocol).
 - `widget.py` — `naja_schematic.show()`: an anywidget for Jupyter/Colab/
   VSCode notebooks. Its ES module is the bundle + `static/widget.js`; the
   viewer's requests come back over the widget comm channel as
@@ -478,6 +480,24 @@ the same `id_path`/`path` pair as diagnosis items:
   najaeda `netlist.Instance`, and `on_select()` gives a callback (it
   observes the ids, so moving between anonymous siblings fires it). The other hosts only log it (`protocol.py`) or ignore it
   (`LocalSNLProvider`).
+
+`design_changed` is a third server push, `{"response":"design_changed"}`:
+the host replaced or edited the design, so every tree node, instance id
+and schematic box the viewer holds may be stale. The viewer runs
+`reloadNetlist()` (`AppLogic.cpp`; also what native File > Open uses: new
+`NetlistTree`, schematic cleared *immediately* with `resetLayout()` rather
+than the next-frame `clearNets()`, which would wipe a focus drawn in the
+same frame) and sends `load_root`. Until the matching `root_response`,
+`ReloadGuard` (`src/ReloadGuard.h`, tested in `tests/ReloadGuardTest.cpp`)
+drops every other message: replies to requests sent before the reset
+arrive first, since transports answer in order, and the host re-sends
+diagnoses/focus after the root anyway. Overlapping pushes keep only the
+last root. Python sends it with `design_changed()` on `ViewerSession`,
+`ViewerServer` and the widget's `Schematic`, which replaces the kept
+diagnoses/focus (they name the old design) with the ones passed, resolved
+against the new design, and clears the selection (`on_select` callbacks
+get `(None, None)`). `LocalSNLProvider` never sends it: native reloads
+come from its own menu.
 
 `get_properties`/`properties_response` is a general name/value inspector for
 whatever object the UI asks about — an instance (including the top design

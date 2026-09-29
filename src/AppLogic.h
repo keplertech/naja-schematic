@@ -4,6 +4,8 @@
 #include <SDL_opengl.h>
 #include <string>
 
+#include "ReloadGuard.h"
+
 class INetlistProvider;
 class GUIData;
 
@@ -25,6 +27,8 @@ struct AppState {
   // "Equipotential" table lists: 1 after a single load_equipotential, every
   // net of the cone after a trace_driver_response.
   size_t            tableEquipotentialCount {1};
+  // Drops replies meant for a design the host replaced (design_changed).
+  ReloadGuard       reloadGuard;
 };
 
 // Wire all provider callbacks (on_open, on_message, on_close, on_error)

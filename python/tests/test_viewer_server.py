@@ -206,3 +206,25 @@ def test_session_ignores_malformed_messages(top):
     assert session.answer("not json") == []
     assert session.answer("[1, 2]") == []
     assert session.answer(json.dumps({"request": "bogus"})) == []
+
+
+def test_design_changed_reaches_every_viewer(server):
+    cleared = []
+    server.on_select(lambda ids, path: cleared.append((ids, path)))
+    server.annotate([{"kind": "instance", "path": ["u_sub"], "severity": "error", "message": "old"}])
+    with connect(ws_url(server)) as a, connect(ws_url(server)) as b:
+        for ws in (a, b):
+            ws.send(LOAD_ROOT)
+            assert [recv(ws)["response"] for _ in range(2)] == ["root_response",
+                                                                "diagnosis_response"]
+        a.send(json.dumps({"request": "instance_selected", "id_path": [0], "path": ["u_sub"]}))
+        a.send(LOAD_ROOT)  # in order after the selection: wait for it
+        assert recv(a)["response"] == "root_response" and recv(a)
+        server.design_changed(instance=["u_sub"])
+        for ws in (a, b):
+            assert recv(ws) == {"response": "design_changed"}
+        # The old diagnoses are gone; the new focus follows the root.
+        b.send(LOAD_ROOT)
+        assert [recv(b)["response"] for _ in range(2)] == ["root_response", "focus_instance"]
+    assert server.selected_id_path is None
+    assert cleared == [([0], ["u_sub"]), (None, None)]
