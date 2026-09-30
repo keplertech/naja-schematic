@@ -593,7 +593,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         auto portIt = g_ctxPortId >= 0 ? g_portEquiByPortId.find(g_ctxPortId)
                                        : g_portEquiByPortId.end();
         if (portIt != g_portEquiByPortId.end()) {
-            if (ImGui::MenuItem("Trace to Driver") && g_provider) {
+            if (ImGui::MenuItem("Trace to Driver (add to view)") && g_provider) {
                 // Adds to the view (like a pin click) instead of clearing
                 // it: the cone is overlaid on what's shown, as its own trace.
                 std::string label;
@@ -1453,7 +1453,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 case PinAction::None:      ImGui::TextDisabled("Net shown"); break;
             }
             if (g_portEquiByPortId.count(port->id))
-                ImGui::TextDisabled("Right-click: Trace to Driver");
+                ImGui::TextDisabled("Right-click: Trace to Driver (add to view)");
             ImGui::EndTooltip();
         }
     }
@@ -1504,7 +1504,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         // Nothing drawn yet: the schematic is only ever filled from a pin's
         // context menu, which a first-time user has no way to guess.
         const char* hint = "Right-click a pin in the Netlist Hierarchy (e.g. top > Terms > a port)\n"
-                           "and choose Show Equipotential or Trace to Driver.";
+                           "and choose Show Equipotential or Trace to Driver.\n"
+                           "Right-click pins on the schematic to add more.";
         ImVec2 ts = ImGui::CalcTextSize(hint);
         dl->AddText(ImVec2(cpos.x + (inner.x - ts.x) * 0.5f, cpos.y + (inner.y - ts.y) * 0.5f),
                     IM_COL32(120, 120, 120, 255), hint);

@@ -203,6 +203,19 @@ TEST(NetlistTree, SendLoadEquipotentialOmitsBitForNonBusBit) {
   EXPECT_EQ(provider.sent[0], R"({"request":"load_equipotential","path":[],"term_id":4})");
 }
 
+// "Show Equipotential (add to view)": the net is added, the view isn't cleared.
+TEST(NetlistTree, SendLoadEquipotentialCanKeepTheView) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  bool callbackFired = false;
+  tree.setOnEquipotentialRequest([&] { callbackFired = true; });
+
+  tree.sendLoadEquipotential({}, NetlistTree::TermID{4, false, 0}, /*clearView=*/false);
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  EXPECT_FALSE(callbackFired);
+}
+
 TEST(NetlistTree, SendTraceDriverFormatsScalarRequestAndFiresCallback) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
@@ -226,7 +239,7 @@ TEST(NetlistTree, SendTraceDriverFormatsScalarRequestAndFiresCallback) {
   TraceStore::clear();
 }
 
-// "Add Trace to View": the trace is overlaid, the view isn't cleared.
+// "Trace to Driver (add to view)": the trace is overlaid, the view isn't cleared.
 TEST(NetlistTree, SendTraceDriverCanKeepTheView) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);

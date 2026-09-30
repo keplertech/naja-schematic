@@ -9,13 +9,53 @@
 #include "TraceStore.h"
 #include "Types.h"
 
+namespace {
+
+// What the picker shows. It can hold a color TraceStore refuses (near the
+// convergence white): the trace then keeps its last accepted color.
+ImVec4 g_pickerColor;
+
+void renderColorPopup(const Trace& t) {
+  if (!ImGui::BeginPopup("##pick")) return;
+  ImGui::TextUnformatted(t.label.c_str());
+  ImGui::Separator();
+
+  // The palette first: one click, and the colors are known to read well.
+  for (int s = 0; s < TraceStore::kStyleCount; ++s) {
+    ImGui::PushID(s);
+    if (s) ImGui::SameLine();
+    ImVec4 c = ImColor(TraceStore::styleColor(s));
+    if (ImGui::ColorButton("##palette", c, ImGuiColorEditFlags_NoTooltip, ImVec2(20, 20))) {
+      TraceStore::setColor(t.id, TraceStore::styleColor(s));
+      g_pickerColor = c;
+    }
+    ImGui::PopID();
+  }
+
+  if (ImGui::ColorPicker3("##picker", &g_pickerColor.x,
+                          ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview))
+    TraceStore::setColor(t.id, ImGui::ColorConvertFloat4ToU32(g_pickerColor));
+  if (TraceStore::tooCloseToConvergence(ImGui::ColorConvertFloat4ToU32(g_pickerColor)))
+    ImGui::TextDisabled("Too close to white, which marks wires two traces share.");
+
+  if (ImGui::Button("Reset")) {
+    TraceStore::resetColor(t.id);
+    g_pickerColor = ImColor(TraceStore::color(t.id));
+  }
+  ImGui::SameLine();
+  if (ImGui::Button("Close")) ImGui::CloseCurrentPopup();
+  ImGui::EndPopup();
+}
+
+}  // namespace
+
 void TraceView::render(GUIData& data) {
   const auto& traces = TraceStore::traces();
   if (traces.empty()) {
     ImGui::TextDisabled("No trace in the schematic.");
     ImGui::TextWrapped(
-      "Right-click a pin in the tree and choose \"Add Trace to View\", or "
-      "right-click a pin on the schematic and choose \"Trace to Driver\": "
+      "Right-click a pin, in the tree or on the schematic, and choose "
+      "\"Trace to Driver (add to view)\": "
       "each trace is drawn in its own color, and wires and gates two traces "
       "share are drawn white.");
     return;
@@ -38,9 +78,12 @@ void TraceView::render(GUIData& data) {
       if (ImGui::Checkbox("##shown", &visible)) TraceStore::setVisible(t.id, visible);
       ImGui::SameLine();
       if (ImGui::ColorButton("##color", ImColor(TraceStore::color(t.id)).Value,
-                             ImGuiColorEditFlags_NoTooltip, ImVec2(16, 16)))
-        TraceStore::cycleStyle(t.id);
-      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click: next color");
+                             ImGuiColorEditFlags_NoTooltip, ImVec2(16, 16))) {
+        g_pickerColor = ImColor(TraceStore::color(t.id));
+        ImGui::OpenPopup("##pick");
+      }
+      if (ImGui::IsItemHovered()) ImGui::SetTooltip("Click: change color");
+      renderColorPopup(t);
 
       ImGui::TableSetColumnIndex(1);
       ImGui::TextUnformatted(t.label.c_str());

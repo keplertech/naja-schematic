@@ -6,17 +6,19 @@
 
 namespace {
 
-InstTermOccurrence occ(std::vector<std::string> path, const std::string& term, Direction dir) {
+// Instance `id` of the top design, named "u<id>".
+InstTermOccurrence occ(unsigned id, const std::string& term, Direction dir) {
   InstTermOccurrence o;
-  o.path = std::move(path);
+  o.path    = {{id, "u" + std::to_string(id)}};
+  o.pathIds = {id};
   o.term = BitTerm{term, 0, dir, std::nullopt};
   return o;
 }
 
-Equipotential net(const std::string& driver, const std::string& receiver) {
+Equipotential net(unsigned driver, unsigned receiver) {
   Equipotential e{true, {}, {}};
-  e.occurrences.push_back(occ({driver}, "Y", Direction::Output));
-  e.occurrences.push_back(occ({receiver}, "A", Direction::Input));
+  e.occurrences.push_back(occ(driver, "Y", Direction::Output));
+  e.occurrences.push_back(occ(receiver, "A", Direction::Input));
   return e;
 }
 
@@ -60,14 +62,28 @@ TEST_F(Traces, VisibilityAndColorCanBeChanged) {
   TraceStore::setVisible(a, false);
   EXPECT_FALSE(TraceStore::isVisible(a));
 
+  ImU32 palette = TraceStore::color(a);
+  EXPECT_TRUE(TraceStore::setColor(a, IM_COL32(200, 40, 40, 128)));
+  // Always opaque: hiding a trace is what fades it.
+  EXPECT_EQ(TraceStore::color(a), IM_COL32(200, 40, 40, 255));
+  TraceStore::resetColor(a);
+  EXPECT_EQ(TraceStore::color(a), palette);
+}
+
+TEST_F(Traces, APickedColorCannotBeTheConvergenceWhite) {
+  int a = TraceStore::begin("a");
   ImU32 before = TraceStore::color(a);
-  TraceStore::cycleStyle(a);
-  EXPECT_NE(TraceStore::color(a), before);
+  EXPECT_FALSE(TraceStore::setColor(a, TraceStore::convergenceColor()));
+  EXPECT_FALSE(TraceStore::setColor(a, IM_COL32(220, 225, 230, 255)));  // near-white grey
+  EXPECT_EQ(TraceStore::color(a), before);
+  EXPECT_TRUE(TraceStore::setColor(a, IM_COL32(255, 240, 120, 255)));   // pale yellow is fine
+  for (int s = 0; s < TraceStore::kStyleCount; ++s)
+    EXPECT_FALSE(TraceStore::tooCloseToConvergence(TraceStore::styleColor(s)));
 }
 
 TEST(TraceLabel, IsThePinTheTraceStartsFrom) {
   EXPECT_EQ(traceLabel({}, "clk"), "clk");
-  EXPECT_EQ(traceLabel({"u1", "u2"}, "A[3]"), "u1/u2/A[3]");
+  EXPECT_EQ(traceLabel(InstancePath{{1, "u1"}, {2, "u2"}}, "A[3]"), "u1/u2/A[3]");
 }
 
 // ---------------------------------------------------------------------------
@@ -77,15 +93,15 @@ TEST(TraceLabel, IsThePinTheTraceStartsFrom) {
 TEST_F(Traces, ANetTwoTracesReachIsShownOnceAndOnBoth) {
   int a = TraceStore::begin("a");
   int b = TraceStore::begin("b");
-  EXPECT_TRUE(data.addEquipotential(new Equipotential(net("u0", "u1")), a));
-  EXPECT_FALSE(data.addEquipotential(new Equipotential(net("u0", "u1")), b));
+  EXPECT_TRUE(data.addEquipotential(new Equipotential(net(0, 1)), a));
+  EXPECT_FALSE(data.addEquipotential(new Equipotential(net(0, 1)), b));
   ASSERT_EQ(data.equipotentials_.size(), 1u);
   EXPECT_EQ(data.equipotentials_[0]->traceIds, (std::vector<int>{a, b}));
   EXPECT_FALSE(data.equipotentials_[0]->direct);
 }
 
 TEST_F(Traces, ANetShownOnItsOwnIsDirect) {
-  data.addEquipotential(new Equipotential(net("u0", "u1")));
+  data.addEquipotential(new Equipotential(net(0, 1)));
   ASSERT_EQ(data.equipotentials_.size(), 1u);
   EXPECT_TRUE(data.equipotentials_[0]->direct);
   EXPECT_TRUE(data.equipotentials_[0]->traceIds.empty());
@@ -94,11 +110,11 @@ TEST_F(Traces, ANetShownOnItsOwnIsDirect) {
 TEST_F(Traces, RemovingATraceKeepsTheNetsSomethingElseShows) {
   int a = TraceStore::begin("a");
   int b = TraceStore::begin("b");
-  data.addEquipotential(new Equipotential(net("u0", "u1")), a);   // a only
-  data.addEquipotential(new Equipotential(net("u1", "u2")), a);   // a and b
-  data.addEquipotential(new Equipotential(net("u1", "u2")), b);
-  data.addEquipotential(new Equipotential(net("u2", "u3")), a);   // a, and shown directly
-  data.addEquipotential(new Equipotential(net("u2", "u3")));
+  data.addEquipotential(new Equipotential(net(0, 1)), a);   // a only
+  data.addEquipotential(new Equipotential(net(1, 2)), a);   // a and b
+  data.addEquipotential(new Equipotential(net(1, 2)), b);
+  data.addEquipotential(new Equipotential(net(2, 3)), a);   // a, and shown directly
+  data.addEquipotential(new Equipotential(net(2, 3)));
 
   data.removeTrace(a);
 
@@ -112,7 +128,7 @@ TEST_F(Traces, RemovingATraceKeepsTheNetsSomethingElseShows) {
 
 TEST_F(Traces, ClearingTheViewForgetsItsTraces) {
   int a = TraceStore::begin("a");
-  data.addEquipotential(new Equipotential(net("u0", "u1")), a);
+  data.addEquipotential(new Equipotential(net(0, 1)), a);
   data.clearEquipotentials();
   EXPECT_TRUE(data.equipotentials_.empty());
   EXPECT_TRUE(TraceStore::traces().empty());

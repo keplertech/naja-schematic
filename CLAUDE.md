@@ -363,11 +363,15 @@ requested one and de-duplicated, capped at `kMaxTraceNets` (`MAX_TRACE_NETS` in
 `protocol.py`, 500) with `truncated: true` when hit. `AppLogic.cpp` adds
 each to `GUIData` in order; the layered placement breaks ordering ties by
 first appearance, so the cone keeps a stable shape as it grows. Reachable from the tree
-(right-click a term/bus-bit row -> "Trace to Driver", bus row -> "Trace Bus
-to Driver"; both clear the view first, like "Show Equipotential"; "Add Trace
-to View"/"Add Bus Trace to View" overlay the trace instead) and from the
-schematic (right-click a pin -> "Trace to Driver"; this one *adds* to the view
-instead of clearing it).
+(right-click a term/bus-bit row -> "Trace to Driver (replace view)", which
+clears the view first, or "Trace to Driver (add to view)", which overlays the
+trace) and from the schematic (right-click a pin -> "Trace to Driver (add to
+view)"; the schematic never clears). The tree's "Show Equipotential" comes
+in the same two variants (`clearView` on
+`NetlistTree::sendLoadEquipotential()`/`sendTraceDriver()`). Both work one
+bit at a time: a bus row offers neither for now (only its bit rows do). A
+whole-bus trace (the `bits` list) is still supported by both providers but
+has no menu entry.
 
 Traces overlay: the viewer sends an optional `trace_id` (an int) with every
 `trace_driver` request, and both providers echo it back unchanged in the
@@ -621,7 +625,11 @@ appear as boxes/pins there).
   visibility. A trace is registered when its `trace_driver` request is sent,
   and forgotten when the view is cleared (`GUIData::clearEquipotentials()`).
 - **`TraceView`** — the "Traces" bottom-panel tab: one row per trace, to
-  show/hide it, change its color or remove it.
+  show/hide it, change its color or remove it. Clicking the color swatch
+  opens a popup (palette swatches, a color picker, Reset); a picked color
+  is stored as `Trace::customColor` over the palette `style`, and
+  `TraceStore::setColor()` refuses a near-white one so shared wires stay
+  unambiguous.
 - **`SelectionStore`** — global static store (same pattern) for the one
   selected instance, by `InstancePath` (`{}` = top). It's set from the tree, the
   schematic or a host `focus_instance`, and drawn highlighted in both

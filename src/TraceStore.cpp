@@ -64,13 +64,32 @@ void TraceStore::setVisible(int id, bool visible) {
   if (Trace* t = findMutable(id)) t->visible = visible;
 }
 
-void TraceStore::cycleStyle(int id) {
-  if (Trace* t = findMutable(id)) t->style = (t->style + 1) % kStyleCount;
+bool TraceStore::setColor(int id, ImU32 color) {
+  color |= IM_COL32_A_MASK;
+  if (tooCloseToConvergence(color)) return false;
+  Trace* t = findMutable(id);
+  if (!t) return false;
+  t->customColor = color;
+  return true;
+}
+
+void TraceStore::resetColor(int id) {
+  if (Trace* t = findMutable(id)) t->customColor.reset();
+}
+
+// Near-white: every channel bright. A pale but clearly tinted color (e.g.
+// a light yellow, with a low blue) is still fine.
+bool TraceStore::tooCloseToConvergence(ImU32 color) {
+  constexpr unsigned kMin = 190;
+  return (color >> IM_COL32_R_SHIFT & 0xFF) >= kMin &&
+         (color >> IM_COL32_G_SHIFT & 0xFF) >= kMin &&
+         (color >> IM_COL32_B_SHIFT & 0xFF) >= kMin;
 }
 
 ImU32 TraceStore::color(int id) {
   const Trace* t = find(id);
-  return t ? styleColor(t->style) : 0;
+  if (!t) return 0;
+  return t->customColor ? *t->customColor : styleColor(t->style);
 }
 
 ImU32 TraceStore::styleColor(int style) {

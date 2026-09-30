@@ -1,5 +1,6 @@
 #pragma once
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,7 +22,8 @@
 struct Trace {
   int         id = 0;
   std::string label;       // the pin the trace started from
-  int         style = 0;   // index into the palette
+  int         style = 0;   // index into the palette: the default color
+  std::optional<ImU32> customColor;  // picked by the user, overrides `style`
   bool        visible = true;
 };
 
@@ -44,8 +46,13 @@ class TraceStore {
     static const Trace* find(int id);
     static bool isVisible(int id);
     static void setVisible(int id, bool visible);
-    // Moves the trace to the next palette color.
-    static void cycleStyle(int id);
+    // Gives the trace a color of the user's choosing (alpha forced opaque:
+    // a hidden trace fades by alpha). Refused, returning false, for a color
+    // too close to the convergence white, which must stay unambiguous.
+    static bool setColor(int id, ImU32 color);
+    // Back to the trace's palette color.
+    static void resetColor(int id);
+    static bool tooCloseToConvergence(ImU32 color);
 
     static ImU32 color(int id);
     static ImU32 styleColor(int style);

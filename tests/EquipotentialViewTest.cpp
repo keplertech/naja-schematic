@@ -649,17 +649,20 @@ class TraceOverlay : public SchematicClicks {
     SchematicClicks::TearDown();
   }
 
-  // The color of the routed tree driven by `inst`.Y.
-  ImU32 routeColorFrom(const std::string& inst) const {
-    const InstanceShape* s = shape({inst});
-    const Port* y = pin({inst}, "Y");
+  // Instance `id` of the top design, named "u<id>".
+  static InstancePath u(unsigned id) { return {{id, "u" + std::to_string(id)}}; }
+
+  // The color of the routed tree driven by u<id>.Y.
+  ImU32 routeColorFrom(unsigned id) const {
+    const InstanceShape* s = shape(u(id));
+    const Port* y = pin(u(id), "Y");
     if (!s || !y) return 0;
     ImVec2 at = portAnchor(*s, *y);
     for (const auto& r : sv().routes)
       for (const auto& seg : r.segments)
         for (ImVec2 p : {seg.a, seg.b})
           if (std::abs(p.x - at.x) < 0.5f && std::abs(p.y - at.y) < 0.5f) return r.color;
-    ADD_FAILURE() << "no route from " << inst << ".Y";
+    ADD_FAILURE() << "no route from u" << id << ".Y";
     return 0;
   }
 
@@ -667,30 +670,30 @@ class TraceOverlay : public SchematicClicks {
 };
 
 TEST_F(TraceOverlay, EachTraceIsDrawnInItsColorAndSharedWiresInTheConvergenceColor) {
-  EXPECT_EQ(routeColorFrom("u1"), TraceStore::color(a));
-  EXPECT_EQ(routeColorFrom("u2"), TraceStore::color(b));
-  EXPECT_EQ(routeColorFrom("u0"), TraceStore::convergenceColor());
+  EXPECT_EQ(routeColorFrom(1), TraceStore::color(a));
+  EXPECT_EQ(routeColorFrom(2), TraceStore::color(b));
+  EXPECT_EQ(routeColorFrom(0), TraceStore::convergenceColor());
 }
 
 TEST_F(TraceOverlay, AGateBothTracesReachIsOutlined) {
-  ASSERT_NE(shape({"u3"}), nullptr);
-  EXPECT_EQ(shape({"u3"})->diagOutline, TraceStore::convergenceColor());
-  EXPECT_EQ(shape({"u0"})->diagOutline, TraceStore::convergenceColor());
-  EXPECT_EQ(shape({"u1"})->diagOutline, 0u);
+  ASSERT_NE(shape(u(3)), nullptr);
+  EXPECT_EQ(shape(u(3))->diagOutline, TraceStore::convergenceColor());
+  EXPECT_EQ(shape(u(0))->diagOutline, TraceStore::convergenceColor());
+  EXPECT_EQ(shape(u(1))->diagOutline, 0u);
 }
 
 // Hiding a trace keeps its nets in the layout (nothing moves) but faint, and
 // what it shared with the other trace is that trace's alone again.
 TEST_F(TraceOverlay, HidingATraceFadesItWithoutMovingAnything) {
-  const ImVec2 before(shape({"u2"})->x, shape({"u2"})->y);
+  const ImVec2 before(shape(u(2))->x, shape(u(2))->y);
   TraceStore::setVisible(b, false);
   frame(2);
 
-  EXPECT_EQ(shape({"u2"})->x, before.x);
-  EXPECT_EQ(shape({"u2"})->y, before.y);
-  EXPECT_LT(routeColorFrom("u2") >> IM_COL32_A_SHIFT & 0xFF, 255u);
-  EXPECT_EQ(routeColorFrom("u0"), TraceStore::color(a));
-  EXPECT_EQ(shape({"u3"})->diagOutline, 0u);
+  EXPECT_EQ(shape(u(2))->x, before.x);
+  EXPECT_EQ(shape(u(2))->y, before.y);
+  EXPECT_LT(routeColorFrom(2) >> IM_COL32_A_SHIFT & 0xFF, 255u);
+  EXPECT_EQ(routeColorFrom(0), TraceStore::color(a));
+  EXPECT_EQ(shape(u(3))->diagOutline, 0u);
 }
 
 // A net that isn't on any trace keeps the plain wire color.
