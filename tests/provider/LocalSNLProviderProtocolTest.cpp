@@ -191,3 +191,34 @@ TEST_F(ProviderProtocol, AnswersEverySharedCaseLikeProtocolPy) {
     }
   }
 }
+
+// termRequest(): a terminal named by a script (headless --trace /
+// --equipotential) turned into the ids a load_equipotential request takes.
+TEST_F(ProviderProtocol, TermRequestResolvesTerminalsByName) {
+  std::string error;
+  auto anon = provider_->termRequest(json{{"id_path", {1, 0}}, {"terminal", "A"}}, error);
+  ASSERT_TRUE(anon) << error;
+  EXPECT_EQ((*anon)["path"], json({1, 0}));
+  EXPECT_EQ((*anon)["term_id"], 0);
+  EXPECT_FALSE(anon->contains("bit"));
+
+  auto named = provider_->termRequest(json{{"path", {"a/b", "u_leaf"}}, {"terminal", "Y"}}, error);
+  ASSERT_TRUE(named) << error;
+  EXPECT_EQ((*named)["path"], json({2, 2}));
+  EXPECT_EQ((*named)["term_id"], 1);
+
+  auto port = provider_->termRequest(json{{"id_path", json::array()}, {"terminal", "x"}}, error);
+  ASSERT_TRUE(port) << error;
+  EXPECT_EQ((*port)["path"], json::array());
+  EXPECT_EQ((*port)["term_id"], 0);
+}
+
+TEST_F(ProviderProtocol, TermRequestRejectsWhatDoesNotResolve) {
+  std::string error;
+  EXPECT_FALSE(provider_->termRequest(json{{"id_path", {3}}, {"terminal", "nope"}}, error));
+  EXPECT_NE(error.find("nope"), std::string::npos);
+  EXPECT_FALSE(provider_->termRequest(json{{"path", {""}}, {"terminal", "i"}}, error));  // anonymous by name
+  EXPECT_FALSE(provider_->termRequest(json{{"id_path", {9}}, {"terminal", "i"}}, error));
+  EXPECT_FALSE(provider_->termRequest(json{{"id_path", {3}}, {"terminal", "i"}, {"bit", 0}}, error));  // scalar
+  EXPECT_FALSE(provider_->termRequest(json{{"id_path", {3}}}, error));  // no terminal
+}

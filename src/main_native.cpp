@@ -11,11 +11,84 @@
 #include <string>
 
 #include "AppLogic.h"
+#include "HeadlessExport.h"
 #include "GUIData.h"
 #include "LocalSNLProvider.h"
 #include "Console.h"
 
 int main(int argc, char* argv[]) {
+  // CLI usage: naja-schematic-standalone [<design>] [--liberty <path>]... [--diagnosis <path>]
+  //                                     [--export <out.svg> [--focus <json>]
+  //                                      [--trace <json>]... [--equipotential <json>]...]
+  // <design> is loaded by extension (.sv/.v/otherwise-assumed-SNL-directory);
+  // --liberty defines the primitive cell library for a .v design (repeatable,
+  // once per file) -- it is not supported for .sv, since loadSystemVerilog()/
+  // SNLSVConstructor has no liberty hook;
+  // --diagnosis pre-loads a diagnosis_response-shaped JSON so an external
+  // caller (a script, or naja-agent's skill, after an edit-check cycle) can
+  // open a fully annotated view in one command instead of requiring a human
+  // to click through File > Open .../Load Diagnosis JSON... by hand.
+  // --export draws the schematic to an SVG file and exits, with no window
+  // (see HeadlessExport.h for what --focus/--trace/--equipotential take).
+  auto* provider = new LocalSNLProvider();
+
+  std::string designPath;
+  std::string diagnosisPath;
+  std::vector<std::string> libertyPaths;
+  HeadlessExportOptions exportOptions;
+  bool exporting = false;
+  for (int i = 1; i < argc; ++i) {
+    std::string arg(argv[i]);
+    std::string error;
+    if (arg == "--export" && i + 1 < argc) {
+      exportOptions.outPath = argv[++i];
+      exporting = true;
+    } else if (arg == "--focus" && i + 1 < argc) {
+      exportOptions.focus = parseFocusArg(argv[++i], error);
+      if (!exportOptions.focus) { std::cerr << error << "\n"; return 1; }
+    } else if ((arg == "--trace" || arg == "--equipotential") && i + 1 < argc) {
+      auto spec = parseTermArg(argv[++i], error);
+      if (!spec) { std::cerr << arg << ": " << error << "\n"; return 1; }
+      (arg == "--trace" ? exportOptions.traces : exportOptions.equipotentials).push_back(*spec);
+    } else if (arg == "--diagnosis" && i + 1 < argc) {
+      diagnosisPath = argv[++i];
+    } else if (arg == "--liberty" && i + 1 < argc) {
+      libertyPaths.push_back(argv[++i]);
+    } else if (designPath.empty()) {
+      designPath = arg;
+    }
+  }
+
+  if (!designPath.empty()) {
+    std::string ext = designPath.size() >= 3 ? designPath.substr(designPath.rfind('.') + 1) : "";
+    if (ext == "sv") {
+      if (!libertyPaths.empty()) {
+        std::cerr << "--liberty is only supported for .v designs, not .sv\n";
+        return 1;
+      }
+      provider->loadSystemVerilog({designPath});
+    } else if (ext == "v") {
+      provider->loadVerilog({designPath}, libertyPaths);
+    } else {
+      provider->loadSNL(designPath); // assume SNL directory
+    }
+  }
+
+  const bool drawRequested = exportOptions.focus || !exportOptions.traces.empty() ||
+                             !exportOptions.equipotentials.empty();
+  if (drawRequested && !exporting) {
+    std::cerr << "--focus/--trace/--equipotential only apply with --export\n";
+    return 1;
+  }
+  if (exporting) {
+    if (designPath.empty()) {
+      std::cerr << "--export needs a design to load\n";
+      return 1;
+    }
+    exportOptions.diagnosisPath = diagnosisPath;
+    return runHeadlessExport(provider, exportOptions);
+  }
+
   SDL_Init(SDL_INIT_VIDEO);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
@@ -44,46 +117,6 @@ int main(int argc, char* argv[]) {
   ImGui_ImplOpenGL3_Init("#version 330 core");
 
   state.guiData  = new GUIData();
-
-  auto* provider = new LocalSNLProvider();
-
-  // CLI usage: naja-schematic-standalone [<design>] [--liberty <path>]... [--diagnosis <path>]
-  // <design> is loaded by extension (.sv/.v/otherwise-assumed-SNL-directory);
-  // --liberty defines the primitive cell library for a .v design (repeatable,
-  // once per file) -- it is not supported for .sv, since loadSystemVerilog()/
-  // SNLSVConstructor has no liberty hook;
-  // --diagnosis pre-loads a diagnosis_response-shaped JSON so an external
-  // caller (a script, or naja-agent's skill, after an edit-check cycle) can
-  // open a fully annotated view in one command instead of requiring a human
-  // to click through File > Open .../Load Diagnosis JSON... by hand.
-  std::string designPath;
-  std::string diagnosisPath;
-  std::vector<std::string> libertyPaths;
-  for (int i = 1; i < argc; ++i) {
-    std::string arg(argv[i]);
-    if (arg == "--diagnosis" && i + 1 < argc) {
-      diagnosisPath = argv[++i];
-    } else if (arg == "--liberty" && i + 1 < argc) {
-      libertyPaths.push_back(argv[++i]);
-    } else if (designPath.empty()) {
-      designPath = arg;
-    }
-  }
-
-  if (!designPath.empty()) {
-    std::string ext = designPath.size() >= 3 ? designPath.substr(designPath.rfind('.') + 1) : "";
-    if (ext == "sv") {
-      if (!libertyPaths.empty()) {
-        std::cerr << "--liberty is only supported for .v designs, not .sv\n";
-        return 1;
-      }
-      provider->loadSystemVerilog({designPath});
-    } else if (ext == "v") {
-      provider->loadVerilog({designPath}, libertyPaths);
-    } else {
-      provider->loadSNL(designPath); // assume SNL directory
-    }
-  }
 
   state.provider = provider;
   setupProvider(state);

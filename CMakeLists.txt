@@ -92,6 +92,7 @@ set(CORE_SOURCES
   src/SchematicLayout.cpp
   src/SchematicInteraction.cpp
   src/SchematicView.cpp
+  src/SvgPainter.cpp
   src/DiagnosisStore.cpp
   src/DiagnosisView.cpp
   src/SourceStore.cpp
@@ -199,6 +200,7 @@ else()
   add_executable(naja-schematic-standalone
     ${CORE_SOURCES}
     src/LocalSNLProvider.cpp
+    src/HeadlessExport.cpp
     ${PLATFORM_FILE_DIALOG_SOURCE}
     src/main_native.cpp
   )
@@ -264,6 +266,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/SchematicInteraction.cpp
       src/EquipotentialView.cpp
       src/SchematicView.cpp
+      src/SvgPainter.cpp
       ${IMGUI_DIR}/imgui.cpp
       ${IMGUI_DIR}/imgui_draw.cpp
       ${IMGUI_DIR}/imgui_tables.cpp

@@ -83,6 +83,26 @@ std::vector<std::string> pickFiles(
   return runZenity(command);
 }
 
+std::string saveFile(const std::string& title, const std::string& defaultName,
+                     const std::string& extension)
+{
+  std::string command =
+      "zenity --file-selection --save --confirm-overwrite --title=" + shellQuote(title) +
+      " --filename=" + shellQuote(defaultName) +
+      " --file-filter=" + shellQuote("*." + extension) + " 2>/dev/null";
+  auto lines = runZenity(command);
+  if (lines.empty()) {
+    return {};
+  }
+  std::string path = lines.front();
+  const std::string suffix = "." + extension;
+  if (path.size() < suffix.size() ||
+      path.compare(path.size() - suffix.size(), suffix.size(), suffix) != 0) {
+    path += suffix;
+  }
+  return path;
+}
+
 } // namespace NativeFileDialog
 
 #endif // __EMSCRIPTEN__

@@ -102,6 +102,32 @@ see `loadDiagnosisFile()` in `AppLogic.cpp`):
 ../naja-schematic-build/native-debug/naja-schematic-standalone design.v --liberty cells.lib
 ```
 
+**Headless SVG export.** `--export <out.svg>` draws the schematic to a
+file and exits, with no window (`HeadlessExport.cpp`, run before any SDL
+init). It uses the same requests and `AppLogic` response handling as the
+GUI, a backend-less ImGui context with the app's font (so names are
+measured the same way), then `SchematicView::exportSvg()`. It needs at least
+one of these:
+- `--focus <json>`: one instance drawn alone with every pin open. Takes a
+  list of ids (`[3,7]`, an `id_path`), a list of names (`["u1","u2"]`), or
+  an object with `id_path`/`path`. It clears the view, so it's applied
+  first.
+- `--trace <json>` (repeatable): a fan-in cone (`trace_driver`).
+- `--equipotential <json>` (repeatable): one net (`load_equipotential`).
+
+A `--trace`/`--equipotential` argument names a terminal,
+`{"id_path"|"path": <containing instance>, "terminal": "A", "bit": 0}`,
+where no path or `[]` means a top-level port. It's resolved to term ids by
+`LocalSNLProvider::termRequest()` (native only, no protocol change). The
+exit code is non-zero, and nothing is written, if the design didn't load,
+anything didn't resolve, or there's nothing to draw. `--diagnosis` is
+accepted, but tints nothing while `kDiagnosisUIHidden` is set.
+
+```bash
+naja-schematic-standalone design.v --liberty cells.lib --export cone.svg \
+  --trace '{"terminal":"y"}' --focus '["u1","u2"]'
+```
+
 ### WASM target (`naja-schematic`)
 
 Requires Emscripten (`emcmake`/`emrun` on `PATH`). Detected automatically in
@@ -664,6 +690,17 @@ appear as boxes/pins there).
   so it never overlaps a box, another name or a wire. The view measures it
   with its font (`instanceNameWidth()`); past `kNameMaxW` it's shortened in
   the middle (`shortenMiddle()`), and layout and drawing use the same text.
+- **`SchematicPainter`** — what `SchematicView` draws with: the subset of
+  `ImDrawList` it uses, same names and argument order.
+  `ImDrawListPainter` paints on screen. `SvgPainter` (`SvgPainter.cpp`)
+  writes the same drawing as SVG, keeping text as `<text>` pinned to the
+  ImGui-measured width (`textLength`). `SchematicView::exportSvg()` draws a
+  copy of the view at 1x over the whole sheet, with `exporting` set to leave
+  out hover, selection, pending pins and the hierarchy toggle. At 1x no
+  label or pin fades out. **File > Export Schematic as SVG...** saves it
+  (native: `NativeFileDialog::saveFile()`; WASM: a Blob download,
+  `najaDownloadText` in `AppLogic.cpp`). New drawing code goes through
+  the painter, never straight to an `ImDrawList`, or it won't reach exports.
 - **`SchematicInteraction`** — the pure side of the schematic's pin
   interactions: `pickPin()` (nearest-pin hit test, radius capped in world
   units so a pin doesn't swallow box-body clicks at low zoom) and

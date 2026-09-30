@@ -400,6 +400,8 @@ static void requestExpansion(const InstancePath& path, const DesignRef& designRe
 void EquipotentialView::zoomIn()    { g_pendingZoomSteps++; }
 void EquipotentialView::zoomOut()   { g_pendingZoomSteps--; }
 void EquipotentialView::fitView()   { g_pendingFit = true; }
+std::string EquipotentialView::exportSvg() { return g_schematic.exportSvg(); }
+bool EquipotentialView::hasSchematic() { return !g_schematic.instances.empty(); }
 void EquipotentialView::clearNets() { g_pendingClear = true; }
 
 void EquipotentialView::resetLayout() {

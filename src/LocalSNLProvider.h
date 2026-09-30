@@ -3,6 +3,7 @@
 
 #include "INetlistProvider.h"
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
 #include <vector>
 #include <filesystem>
@@ -39,6 +40,16 @@ class LocalSNLProvider : public INetlistProvider {
     // slang's "--top") instead of relying on findAndSetTop()'s heuristic.
     void loadSystemVerilog(const std::vector<std::string>& sources,
                            const std::string& topModule = "");
+
+    // A terminal named for a human or a script -- {"id_path"|"path": the
+    // containing instance (root excluded, [] = a top-level port),
+    // "terminal": its base name, "bit": optional bus bit} -- turned into the
+    // {"path": ids, "term_id", "bit"} a load_equipotential/trace_driver
+    // request carries. nullopt (and `error` set) if it doesn't resolve.
+    // Whether a design with a top was loaded.
+    bool hasDesign() const;
+
+    std::optional<nlohmann::json> termRequest(const nlohmann::json& spec, std::string& error) const;
 
     // Serve an already-built DB (e.g. one a test builds with the naja API);
     // its top design is the design shown.

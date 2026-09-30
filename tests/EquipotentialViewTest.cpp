@@ -8,6 +8,8 @@
 #include "TraceStore.h"
 
 #include <imgui.h>
+#include <cmath>
+#include <cstdio>
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
 
@@ -701,4 +703,52 @@ TEST_F(SchematicClicks, ANetShownOnItsOwnIsNotColored) {
   showFirstNet();
   ASSERT_EQ(sv().routes.size(), 1u);
   EXPECT_EQ(sv().routes[0].color, NetWire{}.color);
+}
+
+TEST_F(SchematicClicks, EmptySchematicExportsNothing) {
+  frame();
+  EXPECT_EQ(EquipotentialView::exportSvg(), "");
+}
+
+TEST_F(SchematicClicks, ExportsTheWholeSheetAsSvgWithRealText) {
+  showFirstNet();
+  const std::string svg = EquipotentialView::exportSvg();
+  ASSERT_FALSE(svg.empty());
+  EXPECT_EQ(svg.rfind("<?xml", 0), 0u);
+  EXPECT_NE(svg.find("<svg xmlns=\"http://www.w3.org/2000/svg\""), std::string::npos);
+  EXPECT_EQ(svg.substr(svg.size() - 7), "</svg>\n");
+  // Names are text, pinned to the width the layout measured.
+  EXPECT_NE(svg.find(">u1</text>"), std::string::npos);
+  EXPECT_NE(svg.find(">u2</text>"), std::string::npos);
+  EXPECT_NE(svg.find("textLength=\""), std::string::npos);
+
+  // The sheet is the schematic's bounds plus the margin, whatever the zoom.
+  ImVec2 lo, hi;
+  ASSERT_TRUE(sv().computeWorldBounds(lo, hi));
+  char size[96];
+  std::snprintf(size, sizeof(size), "viewBox=\"0 0 %g %g\"",
+                std::round((hi.x - lo.x + 48.f) * 100.f) / 100.f,
+                std::round((hi.y - lo.y + 48.f) * 100.f) / 100.f);
+  EXPECT_NE(svg.find(size), std::string::npos) << size;
+}
+
+TEST_F(SchematicClicks, ExportLeavesOutInteractionFeedback) {
+  showFirstNet();
+  moveTo(pinScreen({{2, "u2"}}, "A"));           // hovered pin
+  SelectionStore::select(InstancePath{{1, "u1"}}, SelectionStore::Origin::Tree);
+  frame();
+  ASSERT_GE(sv().hoveredPortId, 0);
+  const std::string svg = EquipotentialView::exportSvg();
+  EXPECT_EQ(svg.find("rgb(20,110,235)"), std::string::npos);  // hover / selection blue
+}
+
+TEST_F(SchematicClicks, ExportEscapesNames) {
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("a<b&c", 1, "Q", 10, Direction::Output, 1));
+  e.occurrences.push_back(occ("u2", 2, "A", 20, Direction::Input, 1));
+  add(e);
+  frame(3);
+  const std::string svg = EquipotentialView::exportSvg();
+  EXPECT_NE(svg.find(">a&lt;b&amp;c</text>"), std::string::npos);
+  EXPECT_EQ(svg.find("a<b"), std::string::npos);
 }

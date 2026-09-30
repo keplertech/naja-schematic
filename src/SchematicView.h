@@ -5,6 +5,7 @@
 #include <imgui.h>
 #include "Types.h"   // ensures InstanceShape, Port, NetWire are known
 #include "SchematicLayout.h"
+#include "SchematicPainter.h"
 
 // World width of an instance name drawn with the current ImGui font at
 // SchematicLayout::kNameFontSize: what the layout makes room for.
@@ -67,15 +68,23 @@ public:
     void requestFitRect(const ImVec2& worldMin, const ImVec2& worldMax);
 
     // Draw helpers (const)
-    void drawInstance(ImDrawList* dl, const InstanceShape& inst,
+    void drawInstance(SchematicPainter* dl, const InstanceShape& inst,
                       const ImVec2& canvasPos, const ImVec2& canvasSize) const;
-    void drawNet(ImDrawList* dl, const NetWire& net,
+    void drawNet(SchematicPainter* dl, const NetWire& net,
                  const ImVec2& canvasPos, const ImVec2& canvasSize) const;
-    void drawRoute(ImDrawList* dl, const NetRoute& route,
+    void drawRoute(SchematicPainter* dl, const NetRoute& route,
                    const ImVec2& canvasPos, const ImVec2& canvasSize) const;
 
     // Main render entry (parameters by const reference)
     void render(ImDrawList* dl, const ImVec2& canvasPos, const ImVec2& canvasSize);
+    void render(SchematicPainter& painter, const ImVec2& canvasPos, const ImVec2& canvasSize);
+
+    // The whole schematic as an SVG document, at 1x with `margin` world
+    // units around it, without interaction feedback (hover, selection,
+    // pending pins). "" when there is nothing to draw.
+    std::string exportSvg(float margin = 24.0f) const;
+    // Set on the copy exportSvg() draws: skips interaction feedback.
+    bool exporting = false;
 
     bool computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const;
 

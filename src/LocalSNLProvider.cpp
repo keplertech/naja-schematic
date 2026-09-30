@@ -801,6 +801,36 @@ static SNLOccurrence resolveStartOccurrence(SNLDesign* topDesign,
   return instTerm ? SNLOccurrence(snlPath.getHeadPath(), instTerm) : SNLOccurrence();
 }
 
+bool LocalSNLProvider::hasDesign() const { return db_ && db_->getTopDesign(); }
+
+std::optional<json> LocalSNLProvider::termRequest(const json& spec, std::string& error) const {
+  auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
+  if (!topDesign) { error = "no design loaded"; return std::nullopt; }
+  const std::string terminal = spec.value("terminal", "");
+  if (terminal.empty()) { error = "no \"terminal\" given"; return std::nullopt; }
+  auto resolved = resolveRequestPath(topDesign, spec);
+  if (!resolved.ok || !resolved.design) { error = "no such instance"; return std::nullopt; }
+  auto* term = resolved.design->getTerm(NLName(terminal));
+  if (!term) { error = "no terminal '" + terminal + "'"; return std::nullopt; }
+  json req;
+  req["path"] = json::array();
+  for (auto* inst : resolved.chain) req["path"].push_back(inst->getID());
+  req["term_id"] = term->getID();
+  if (spec.contains("bit")) {
+    auto* bus = dynamic_cast<SNLBusTerm*>(term);
+    if (!bus || !spec["bit"].is_number_integer() ||
+        !bus->getBit(static_cast<NLID::Bit>(spec["bit"].get<int>()))) {
+      error = "no bit " + spec["bit"].dump() + " on '" + terminal + "'";
+      return std::nullopt;
+    }
+    req["bit"] = spec["bit"];
+  } else if (dynamic_cast<SNLBusTerm*>(term)) {
+    error = "'" + terminal + "' is a bus: give a \"bit\"";
+    return std::nullopt;
+  }
+  return req;
+}
+
 std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const {
   static const json empty = {
     {"response",    "equipotential_response"},

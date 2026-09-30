@@ -18,6 +18,14 @@ namespace NativeFileDialog {
     const std::vector<std::string>& extensions = {}
   );
 
+  // Open a save dialog proposing `defaultName`, restricted to `extension`
+  // (e.g. "svg"). Returns the chosen path or "" if cancelled.
+  std::string saveFile(
+    const std::string& title,
+    const std::string& defaultName,
+    const std::string& extension
+  );
+
 } // namespace NativeFileDialog
 
 #endif // __EMSCRIPTEN__

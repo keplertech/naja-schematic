@@ -52,6 +52,26 @@ std::vector<std::string> pickFiles(
   }
 }
 
+std::string saveFile(const std::string& title, const std::string& defaultName,
+                     const std::string& extension)
+{
+  @autoreleasepool {
+    NSSavePanel* panel = [NSSavePanel savePanel];
+    panel.title                = [NSString stringWithUTF8String:title.c_str()];
+    panel.nameFieldStringValue = [NSString stringWithUTF8String:defaultName.c_str()];
+    panel.canCreateDirectories = YES;
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    panel.allowedFileTypes = @[ [NSString stringWithUTF8String:extension.c_str()] ];
+#pragma clang diagnostic pop
+
+    if ([panel runModal] == NSModalResponseOK) {
+      return panel.URL.path.UTF8String;
+    }
+    return {};
+  }
+}
+
 } // namespace NativeFileDialog
 
 #endif // __EMSCRIPTEN__

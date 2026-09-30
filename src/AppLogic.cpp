@@ -33,6 +33,21 @@ using json = nlohmann::json;
 #include <fstream>
 #include "LocalSNLProvider.h"
 #include "NativeFileDialog.h"
+#else
+#include <emscripten.h>
+
+// Hands `text` to the browser as a file download.
+EM_JS(void, najaDownloadText, (const char* name, const char* mime, const char* text), {
+  const blob = new Blob([UTF8ToString(text)], { type: UTF8ToString(mime) });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = UTF8ToString(name);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+});
 #endif
 
 // Base UI font size in pixels. ImGui's built-in fallback (Proggy Clean, ~13px
@@ -63,6 +78,23 @@ static void attachTreeCallbacks(AppState& state) {
 // Throw the loaded design away and ask the provider for the root again:
 // after File > Open (native) and on a host's design_changed push. The
 // root_response clears diagnoses, properties and the selection.
+// File > Export Schematic as SVG: the schematic as drawn, whole sheet.
+static void exportSchematicSvg() {
+  const std::string svg = EquipotentialView::exportSvg();
+  if (svg.empty()) return;
+#ifdef __EMSCRIPTEN__
+  najaDownloadText("schematic.svg", "image/svg+xml", svg.c_str());
+  Console::Log("Schematic exported as schematic.svg");
+#else
+  const std::string path = NativeFileDialog::saveFile("Export Schematic as SVG", "schematic.svg", "svg");
+  if (path.empty()) return;
+  std::ofstream out(path, std::ios::binary);
+  out << svg;
+  if (out) Console::Log("Schematic exported to " + path);
+  else     Console::Error("Could not write " + path);
+#endif
+}
+
 static void reloadNetlist(AppState& state) {
   // Cleared now, not with clearNets()' next-frame clear: a focus_instance
   // re-pushed after the new root can be drawn before that frame, and the
@@ -481,6 +513,10 @@ bool appFrame(AppState& state) {
       // }
       // ImGui::Separator();
 #endif
+      if (ImGui::MenuItem("Export Schematic as SVG...", "", false,
+                          EquipotentialView::hasSchematic()))
+        exportSchematicSvg();
+      ImGui::Separator();
       if (ImGui::MenuItem("About")) aboutOpen = true;
       ImGui::EndMenu();
     }
