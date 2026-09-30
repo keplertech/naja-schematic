@@ -1,6 +1,7 @@
 #include "SchematicLayout.h"
 
 #include <cmath>
+#include <map>
 
 #include <gtest/gtest.h>
 
@@ -11,10 +12,23 @@ namespace {
 constexpr float kBoxW = 60.f, kBoxH = 40.f;
 constexpr float kRowStep = kBoxH + kRowSpacing;
 
+// A path of named instances. Each name gets a fixed id on first use, so the
+// same names always make the same path; tests about anonymous (or
+// same-named) instances spell their ids out instead.
+InstancePath P(const std::vector<std::string>& names) {
+  static std::map<std::string, unsigned> ids;
+  InstancePath path;
+  for (const auto& n : names) {
+    auto it = ids.try_emplace(n, unsigned(ids.size()) + 100).first;
+    path.push_back({it->second, n});
+  }
+  return path;
+}
+
 InstTermOccurrence occ(std::vector<std::string> path, const std::string& term, Direction dir,
                        std::vector<std::string> models = {}) {
   InstTermOccurrence o;
-  o.path       = std::move(path);
+  o.path       = P(path);
   o.pathModels = std::move(models);
   o.term       = BitTerm{term, 0, dir, std::nullopt};
   return o;
@@ -39,7 +53,11 @@ bool overlaps(const InstanceShape& a, const InstanceShape& b) {
   return a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
 }
 
-const InstanceShape& byPath(const std::vector<InstanceShape>& v, const InstancePath& path) {
+const InstanceShape& byRef(const std::vector<InstanceShape>& v, const InstancePath& path);
+const InstanceShape& byPath(const std::vector<InstanceShape>& v, const std::vector<std::string>& names) {
+  return byRef(v, P(names));
+}
+const InstanceShape& byRef(const std::vector<InstanceShape>& v, const InstancePath& path) {
   for (const auto& s : v) if (s.path == path) return s;
   ADD_FAILURE() << "no shape for " << displayPath(path);
   static InstanceShape none;
@@ -48,7 +66,72 @@ const InstanceShape& byPath(const std::vector<InstanceShape>& v, const InstanceP
 
 bool onGrid(float v) { return std::abs(v / kGrid - std::round(v / kGrid)) < 1e-4f; }
 
+// A monospace stand-in for the view's font.
+constexpr float kCharW = 7.f;
+float charWidth(const std::string& s) { return kCharW * float(s.size()); }
+
 } // namespace
+
+// ---------------------------------------------------------------------------
+// Instance names
+// ---------------------------------------------------------------------------
+
+TEST(InstanceNames, ANameThatFitsIsShownWhole) {
+  EXPECT_EQ(shortenMiddle("u_alu", charWidth, 100.f), "u_alu");
+}
+
+TEST(InstanceNames, ALongNameKeepsItsHeadAndTail) {
+  const std::string name = "buffer_1.Queue.value_1$_SDFFE_PP0P_";
+  const float maxW = 20.f * kCharW;
+  const std::string shown = shortenMiddle(name, charWidth, maxW);
+
+  EXPECT_LE(charWidth(shown), maxW);
+  EXPECT_EQ(shown.size(), 20u);   // as many characters as fit
+  EXPECT_EQ(shown, "buffer_1...FFE_PP0P_");
+  EXPECT_EQ(shown.substr(0, 8), name.substr(0, 8));
+  EXPECT_EQ(shown.substr(shown.size() - 9), name.substr(name.size() - 9));
+}
+
+TEST(InstanceNames, NoRoomAtAllGivesNoName) {
+  EXPECT_EQ(shortenMiddle("abcdef", charWidth, 2.f * kCharW), "");
+}
+
+TEST(InstanceNames, ALabelIsShownInsteadOfTheName) {
+  InstanceShape s = box(1, P({"core", "g1"}), 0.f, 0.f);
+  s.label = "g1";
+  EXPECT_EQ(shownName(s, charWidth), "g1");
+}
+
+TEST(InstanceNames, FramesAndTopLevelPortsHaveNone) {
+  InstanceShape frame = box(1, P({"core"}), 0.f, 0.f);
+  frame.isHierGroup = true;
+  InstanceShape port = box(2, {}, 0.f, 0.f, 0.f, 0.f);
+  port.name = "clk"; port.modelName = "port";
+  EXPECT_EQ(shownName(frame, charWidth), "");
+  EXPECT_EQ(shownName(port, charWidth), "");
+  EXPECT_FALSE(nameRect(frame, charWidth));
+  EXPECT_EQ(footprintWidth(frame, charWidth), frame.w);
+}
+
+TEST(InstanceNames, TheFootprintIsTheWiderOfSymbolAndName) {
+  InstanceShape shortName = box(1, P({"u1"}), 0.f, 0.f);
+  InstanceShape longName  = box(2, P({"a_rather_long_instance_name"}), 30.f, 50.f);
+  EXPECT_EQ(footprintWidth(shortName, charWidth), kBoxW);
+  EXPECT_EQ(footprintWidth(longName, charWidth), charWidth(longName.name));
+
+  auto r = nameRect(longName, charWidth);
+  ASSERT_TRUE(r);
+  EXPECT_EQ(r->x0, 30.f);
+  EXPECT_EQ(r->x1, 30.f + charWidth(longName.name));
+  EXPECT_EQ(r->y0, 50.f - kNameH);
+  EXPECT_EQ(r->y1, 50.f);
+}
+
+TEST(InstanceNames, AVeryLongNameIsCappedInTheFootprint) {
+  InstanceShape s = box(1, P({std::string(200, 'x')}), 0.f, 0.f);
+  EXPECT_LE(footprintWidth(s, charWidth), kNameMaxW);
+  EXPECT_GT(footprintWidth(s, charWidth), kNameMaxW - kCharW);
+}
 
 // ---------------------------------------------------------------------------
 // buildItems
@@ -65,10 +148,10 @@ TEST(SchematicLayoutItems, DriversAreTopInputsAndInstanceOutputs) {
   ASSERT_EQ(drivers.size(), 2u);
   EXPECT_TRUE(drivers[0].isTerm);
   EXPECT_EQ(drivers[0].label, "clk");
-  EXPECT_EQ(drivers[1].path, (InstancePath{"u1", "g"}));
+  EXPECT_EQ(drivers[1].path, P({"u1", "g"}));
   ASSERT_EQ(receivers.size(), 2u);
   EXPECT_EQ(receivers[0].label, "out");
-  EXPECT_EQ(receivers[1].path, (InstancePath{"u2"}));
+  EXPECT_EQ(receivers[1].path, P({"u2"}));
 }
 
 // ---------------------------------------------------------------------------
@@ -159,6 +242,13 @@ TEST(LayeredPlacement, AChainRunsLeftToRightOnOneStraightLine) {
   EXPECT_LT(p.pos[1].x + kBoxW, p.pos[2].x);
   EXPECT_EQ(p.pos[0].y, p.pos[1].y);
   EXPECT_EQ(p.pos[1].y, p.pos[2].y);
+}
+
+TEST(LayeredPlacement, AColumnIsAsWideAsItsWidestFootprint) {
+  // Node 0's name makes its footprint 200 wide: node 1 starts after it.
+  std::vector<PlaceNode> nodes{{200.f, kBoxH}, {kBoxW, kBoxH}};
+  auto p = layeredPlacement(nodes, {link(0, {1})});
+  EXPECT_GE(p.pos[1].x, p.pos[0].x + 200.f + kChannelMin);
 }
 
 TEST(LayeredPlacement, ReceiversPinIsLevelWithItsDriversPin) {
@@ -325,6 +415,18 @@ TEST(RouteNets, ASpineDetoursAroundABoxInTheWay) {
   }
 }
 
+TEST(RouteNets, ATrunkStaysRightOfANameInItsChannel) {
+  // A box with a name row reaching 100 past its right edge: the channel
+  // (and so every trunk) starts after the name, not after the box.
+  const RouteRect box{0.f, 40.f, 60.f, 80.f}, name{0.f, 20.f, 160.f, 40.f};
+  const RouteRect rcv{250.f, 0.f, 310.f, 120.f};
+  auto r = routeNets({{{{60.f, 60.f}, true}, {{{250.f, 100.f}, false}}}}, {box, name, rcv});
+  ASSERT_EQ(r.size(), 1u);
+  for (const auto& s : r[0].segments)
+    if (std::abs(s.a.x - s.b.x) < 0.5f && std::abs(s.a.y - s.b.y) > 0.5f)
+      EXPECT_GT(s.a.x, name.x1);
+}
+
 TEST(RouteNets, TwoSpinesDoNotShareAHeight) {
   // Both nets have to detour around the middle box, the same way.
   std::vector<RouteRect> boxes = {{0.f, 0.f, 40.f, 100.f}, {100.f, 0.f, 140.f, 100.f},
@@ -349,7 +451,14 @@ TEST(RouteNets, TwoSpinesDoNotShareAHeight) {
 namespace {
 
 // Leaves at logic level `col` (as layeredPlacement would have placed them).
-struct LeafSpec { InstancePath path; std::vector<std::string> models; int col; float y; };
+struct LeafSpec {
+  InstancePath path; std::vector<std::string> models; int col; float y;
+  LeafSpec(std::vector<std::string> names, std::vector<std::string> models, int col, float y)
+      : path(P(names)), models(std::move(models)), col(col), y(y) {}
+  struct ByRef {};
+  LeafSpec(ByRef, InstancePath path, std::vector<std::string> models, int col, float y)
+      : path(std::move(path)), models(std::move(models)), col(col), y(y) {}
+};
 
 struct HierFixture {
   std::vector<InstanceShape>         shapes;
@@ -366,15 +475,18 @@ struct HierFixture {
     }
   }
   std::vector<HierFrame> run() {
-    return layoutHierarchyGroups(leafHier, shapes, pathToInstId, nextInstId);
+    return layoutHierarchyGroups(leafHier, shapes, pathToInstId, nextInstId, charWidth);
   }
 };
 
-const HierFrame& frame(const std::vector<HierFrame>& frames, const InstancePath& path) {
+const HierFrame& frameAt(const std::vector<HierFrame>& frames, const InstancePath& path) {
   for (const auto& f : frames) if (f.shape.path == path) return f;
   ADD_FAILURE() << "no frame for " << displayPath(path);
   static HierFrame none;
   return none;
+}
+const HierFrame& frame(const std::vector<HierFrame>& frames, const std::vector<std::string>& names) {
+  return frameAt(frames, P(names));
 }
 
 } // namespace
@@ -400,7 +512,7 @@ TEST(HierarchyGroups, OneModuleFrameWrapsItsLeaves) {
 
   ASSERT_EQ(frames.size(), 1u);
   const auto& f = frames[0].shape;
-  EXPECT_EQ(frames[0].shape.path, (InstancePath{"core"}));
+  EXPECT_EQ(frames[0].shape.path, P({"core"}));
   EXPECT_EQ(f.name, "core (Core)");
   EXPECT_TRUE(f.isHierGroup);
   EXPECT_EQ(f.hierDepth, 1);
@@ -441,12 +553,35 @@ TEST(HierarchyGroups, LogicColumnsStayLeftToRightInsideAFrame) {
 }
 
 TEST(HierarchyGroups, SameColumnLeavesKeepTheirVerticalOrder) {
-  // Given in reverse y order on purpose; map order (by key) is also reversed.
-  HierFixture fx({{{"core", "b"}, {}, 0, 0.f},
-                  {{"core", "a"}, {}, 0, 3 * kRowStep}});
+  // Map order (by id) is the reverse of the y order on purpose.
+  const InstancePath a{{1, "core"}, {2, "a"}}, b{{1, "core"}, {3, "b"}};
+  HierFixture fx({{LeafSpec::ByRef{}, b, {}, 0, 0.f}, {LeafSpec::ByRef{}, a, {}, 0, 3 * kRowStep}});
   fx.run();
-  EXPECT_LT(byPath(fx.shapes, {"core", "b"}).y, byPath(fx.shapes, {"core", "a"}).y);
-  EXPECT_FALSE(overlaps(byPath(fx.shapes, {"core", "a"}), byPath(fx.shapes, {"core", "b"})));
+  EXPECT_LT(byRef(fx.shapes, b).y, byRef(fx.shapes, a).y);
+  EXPECT_FALSE(overlaps(byRef(fx.shapes, a), byRef(fx.shapes, b)));
+}
+
+// Anonymous instances all have the name "": two anonymous sibling modules
+// are two frames (keyed by id), not one merged frame.
+TEST(HierarchyGroups, AnonymousSiblingModulesGetTheirOwnFrames) {
+  const InstancePath g0{{0, ""}, {5, "g"}}, g1{{1, ""}, {5, "g"}}, nested{{1, ""}, {0, ""}, {2, ""}};
+  HierFixture fx({{LeafSpec::ByRef{}, g0, {"mid", "INV"}, 0, 0.f},
+                  {LeafSpec::ByRef{}, g1, {"mid", "INV"}, 0, kRowStep},
+                  {LeafSpec::ByRef{}, nested, {"mid", "sub", "BUF"}, 1, kRowStep}});
+  auto frames = fx.run();
+
+  ASSERT_EQ(frames.size(), 3u);
+  const auto& m0  = frameAt(frames, InstancePath{{0, ""}}).shape;
+  const auto& m1  = frameAt(frames, InstancePath{{1, ""}}).shape;
+  const auto& sub = frameAt(frames, InstancePath{{1, ""}, {0, ""}}).shape;
+  EXPECT_EQ(m0.name, "<#0> (mid)");
+  EXPECT_EQ(m1.name, "<#1> (mid)");
+  EXPECT_EQ(sub.name, "<#0> (sub)");
+  EXPECT_FALSE(overlaps(m0, m1));
+  EXPECT_TRUE(contains(m0, byRef(fx.shapes, g0)));
+  EXPECT_TRUE(contains(m1, byRef(fx.shapes, g1)));
+  EXPECT_TRUE(contains(sub, byRef(fx.shapes, nested)));
+  EXPECT_EQ(byRef(fx.shapes, nested).label, "<#2>");
 }
 
 TEST(HierarchyGroups, NestedModulesNestTheirFramesParentFirst) {
@@ -455,8 +590,8 @@ TEST(HierarchyGroups, NestedModulesNestTheirFramesParentFirst) {
   auto frames = fx.run();
 
   ASSERT_EQ(frames.size(), 2u);
-  EXPECT_EQ(frames[0].shape.path, (InstancePath{"top_a"}));  // parent first: drawn underneath
-  EXPECT_EQ(frames[1].shape.path, (InstancePath{"top_a", "sub"}));
+  EXPECT_EQ(frames[0].shape.path, P({"top_a"}));  // parent first: drawn underneath
+  EXPECT_EQ(frames[1].shape.path, P({"top_a", "sub"}));
   EXPECT_EQ(frames[0].shape.hierDepth, 1);
   EXPECT_EQ(frames[1].shape.hierDepth, 2);
   EXPECT_EQ(frames[1].shape.name, "sub (S)");
@@ -479,13 +614,13 @@ TEST(HierarchyGroups, SiblingModulesDoNotOverlap) {
   const auto& m1 = frame(frames, {"m1"}).shape;
   const auto& m2 = frame(frames, {"m2"}).shape;
   EXPECT_FALSE(overlaps(m1, m2));
-  for (const InstancePath& path : {InstancePath{"m1", "a"}, InstancePath{"m1", "b"}}) {
-    EXPECT_TRUE(contains(m1, byPath(fx.shapes, path))) << displayPath(path);
-    EXPECT_FALSE(overlaps(m2, byPath(fx.shapes, path))) << displayPath(path);
+  for (const InstancePath& path : {P({"m1", "a"}), P({"m1", "b"})}) {
+    EXPECT_TRUE(contains(m1, byRef(fx.shapes, path))) << displayPath(path);
+    EXPECT_FALSE(overlaps(m2, byRef(fx.shapes, path))) << displayPath(path);
   }
-  for (const InstancePath& path : {InstancePath{"m2", "c"}, InstancePath{"m2", "d"}}) {
-    EXPECT_TRUE(contains(m2, byPath(fx.shapes, path))) << displayPath(path);
-    EXPECT_FALSE(overlaps(m1, byPath(fx.shapes, path))) << displayPath(path);
+  for (const InstancePath& path : {P({"m2", "c"}), P({"m2", "d"})}) {
+    EXPECT_TRUE(contains(m2, byRef(fx.shapes, path))) << displayPath(path);
+    EXPECT_FALSE(overlaps(m1, byRef(fx.shapes, path))) << displayPath(path);
   }
 }
 
@@ -507,12 +642,24 @@ TEST(HierarchyGroups, TopLevelLeavesStayOutsideFramesAndKeepTheirLabel) {
   EXPECT_LT(core.x + core.w, dst.x);
 }
 
+TEST(HierarchyGroups, ALongLeafNameWidensItsColumn) {
+  HierFixture fx({{{"core", "a_long_register_name_q_reg"}, {}, 0, 0.f},
+                  {{"core", "g"}, {}, 1, 0.f}});
+  fx.run();
+  const auto& reg = byPath(fx.shapes, {"core", "a_long_register_name_q_reg"});
+  const auto& g   = byPath(fx.shapes, {"core", "g"});
+  ASSERT_GT(charWidth(reg.label), reg.w);
+  // The name (the leaf name, as the frame names the module) ends before
+  // the next column, with the usual gap.
+  EXPECT_GE(g.x, reg.x + charWidth(reg.label) + kGroupColGap);
+}
+
 TEST(HierarchyGroups, LeavesWithoutAShapeAreIgnored) {
   HierFixture fx({{{"core", "g"}, {}, 0, 0.f}});
-  fx.leafHier[{"ghost", "x"}] = {{"ghost", "x"}, {}};   // no pathToInstId entry
+  fx.leafHier[P({"ghost", "x"})] = {P({"ghost", "x"}), {}};   // no pathToInstId entry
   auto frames = fx.run();
   ASSERT_EQ(frames.size(), 1u);
-  EXPECT_EQ(frames[0].shape.path, (InstancePath{"core"}));
+  EXPECT_EQ(frames[0].shape.path, P({"core"}));
 }
 
 TEST(HierarchyGroups, LeavesKeepTheHeightsTheirPinsWereAlignedAt) {

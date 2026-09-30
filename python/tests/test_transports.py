@@ -70,7 +70,7 @@ def test_websocket_server_serves_page_and_protocol(top, tmp_path, monkeypatch):
 
     first, second = asyncio.run(scenario())
     assert first["response"] == "root_response"
-    assert second == {"response": "diagnosis_response", "items": DIAGNOSIS}
+    assert second == {"response": "diagnosis_response", "items": DIAGNOSIS, "generation": 0}
 
 
 def test_cli_rejects_liberty_with_systemverilog():

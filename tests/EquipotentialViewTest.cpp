@@ -19,7 +19,7 @@ InstTermOccurrence occ(const std::string& inst, unsigned instId, const std::stri
                        unsigned termId, Direction dir, size_t bitTermCount,
                        std::optional<int> bit = std::nullopt) {
   InstTermOccurrence o;
-  o.path           = {inst};
+  o.path           = {{instId, inst}};
   o.pathIds        = {instId};
   o.pathModels     = {""};
   o.term           = BitTerm{term, termId, dir, bit};
@@ -132,7 +132,7 @@ class SchematicClicks : public ::testing::Test {
     frame(3);
   }
   void expandU2() {
-    EquipotentialView::applyInstanceExpansion(InstancePath{"u2"}, {
+    EquipotentialView::applyInstanceExpansion(InstancePath{{2, "u2"}}, {
         {"A", Direction::Input, 20, std::nullopt},
         {"B", Direction::Input, 21, std::nullopt},
         {"Y", Direction::Output, 22, std::nullopt},
@@ -148,15 +148,15 @@ class SchematicClicks : public ::testing::Test {
 
 TEST_F(SchematicClicks, DoubleClickOnPartialBoxRequestsItsFullInterface) {
   showFirstNet();
-  ASSERT_NE(shape({"u2"}), nullptr);
-  EXPECT_TRUE(shape({"u2"})->partialInterface);
+  ASSERT_NE(shape({{2, "u2"}}), nullptr);
+  EXPECT_TRUE(shape({{2, "u2"}})->partialInterface);
 
-  moveTo(boxCenterScreen({"u2"}));
+  moveTo(boxCenterScreen({{2, "u2"}}));
   doubleClick();
 
   auto reqs = sent("expand_instance_terms");
   ASSERT_EQ(reqs.size(), 1u);
-  EXPECT_EQ(reqs[0]["instance_path"].get<InstancePath>(), InstancePath{"u2"});
+  EXPECT_EQ(readPath(reqs[0], "instance_path", "instance_id_path"), (InstancePath{{2, "u2"}}));
 }
 
 TEST_F(SchematicClicks, PartialGateSymbolLoadsItsFullInterfaceUnasked) {
@@ -171,17 +171,17 @@ TEST_F(SchematicClicks, PartialGateSymbolLoadsItsFullInterfaceUnasked) {
 
   auto reqs = sent("expand_instance_terms");
   ASSERT_EQ(reqs.size(), 1u);  // once, not every frame
-  EXPECT_EQ(reqs[0]["instance_path"].get<InstancePath>(), InstancePath{"u2"});
+  EXPECT_EQ(readPath(reqs[0], "instance_path", "instance_id_path"), (InstancePath{{2, "u2"}}));
 
   expandU2();
-  EXPECT_FALSE(shape({"u2"})->partialInterface);
-  EXPECT_NE(pin({"u2"}, "B"), nullptr);
+  EXPECT_FALSE(shape({{2, "u2"}})->partialInterface);
+  EXPECT_NE(pin({{2, "u2"}}, "B"), nullptr);
   EXPECT_EQ(sent("expand_instance_terms").size(), 1u);
 }
 
 TEST_F(SchematicClicks, DoubleClickOnAPinIsNotABoxDoubleClick) {
   showFirstNet();
-  moveTo(pinScreen({"u2"}, "A"));
+  moveTo(pinScreen({{2, "u2"}}, "A"));
   doubleClick();
   EXPECT_TRUE(sent("expand_instance_terms").empty());
   EXPECT_TRUE(sent("load_equipotential").empty());  // A's net is already shown
@@ -190,34 +190,34 @@ TEST_F(SchematicClicks, DoubleClickOnAPinIsNotABoxDoubleClick) {
 TEST_F(SchematicClicks, ExpandedInterfaceMarksPinsNotInTheViewAsOpen) {
   showFirstNet();
   expandU2();
-  ASSERT_NE(pin({"u2"}, "B"), nullptr);
-  EXPECT_FALSE(shape({"u2"})->partialInterface);
-  EXPECT_FALSE(pin({"u2"}, "A")->open);  // on the net already shown
-  EXPECT_TRUE(pin({"u2"}, "B")->open);
-  EXPECT_TRUE(pin({"u2"}, "Y")->open);
+  ASSERT_NE(pin({{2, "u2"}}, "B"), nullptr);
+  EXPECT_FALSE(shape({{2, "u2"}})->partialInterface);
+  EXPECT_FALSE(pin({{2, "u2"}}, "A")->open);  // on the net already shown
+  EXPECT_TRUE(pin({{2, "u2"}}, "B")->open);
+  EXPECT_TRUE(pin({{2, "u2"}}, "Y")->open);
 }
 
 TEST_F(SchematicClicks, HoveringAPinHighlightsIt) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen({"u2"}, "B"));
-  EXPECT_EQ(sv().hoveredPortId, pin({"u2"}, "B")->id);
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  EXPECT_EQ(sv().hoveredPortId, pin({{2, "u2"}}, "B")->id);
 
-  moveTo(boxCenterScreen({"u2"}));
+  moveTo(boxCenterScreen({{2, "u2"}}));
   EXPECT_EQ(sv().hoveredPortId, -1);
 }
 
 TEST_F(SchematicClicks, SingleClickOnOpenPinLoadsItsNetOnce) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen({"u2"}, "B"));
+  moveTo(pinScreen({{2, "u2"}}, "B"));
   click();
 
   auto reqs = sent("load_equipotential");
   ASSERT_EQ(reqs.size(), 1u);
   EXPECT_EQ(reqs[0]["path"], nlohmann::json::array({2}));
   EXPECT_EQ(reqs[0]["term_id"], 21);
-  EXPECT_TRUE(pin({"u2"}, "B")->pending);
+  EXPECT_TRUE(pin({{2, "u2"}}, "B")->pending);
 
   // Impatient second click (or the second half of a double-click) while
   // the net is loading: nothing more is sent.
@@ -229,38 +229,77 @@ TEST_F(SchematicClicks, SingleClickOnOpenPinLoadsItsNetOnce) {
 TEST_F(SchematicClicks, ClickOnAPinWhoseNetIsShownSendsNothing) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen({"u2"}, "A"));
+  moveTo(pinScreen({{2, "u2"}}, "A"));
   click();
   EXPECT_TRUE(provider.sent.empty());
 }
 
-TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
-  showFirstNet();
-  expandU2();
-  moveTo(pinScreen({"u2"}, "B"));
-  click();
-  const ImVec2 before = boxCenterScreen({"u2"});
-  const float scaleBefore = sv().transform.scale;
-
-  // The reply: u9 (inside module "core", so hierarchy frames re-lay out the
-  // whole drawing) drives u2.B.
+namespace {
+// The reply to a click on u2.B: u9 (inside module "core", so hierarchy
+// frames re-lay out the whole drawing) drives it.
+Equipotential u9DrivesU2B() {
   Equipotential e{true, {}, {}};
   InstTermOccurrence drv;
-  drv.path = {"core", "u9"}; drv.pathIds = {5, 9}; drv.pathModels = {"Core", ""};
+  drv.path = {{5, "core"}, {9, "u9"}}; drv.pathIds = {5, 9}; drv.pathModels = {"Core", ""};
   drv.term = BitTerm{"Z", 90, Direction::Output, std::nullopt};
   drv.bit_term_count = 1;
   e.occurrences.push_back(drv);
   e.occurrences.push_back(occ("u2", 2, "B", 21, Direction::Input, 3));
-  add(e);
+  return e;
+}
+} // namespace
+
+TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
+  showFirstNet();
+  expandU2();
+  // Zoomed out (about u2) far enough that what the net adds is on screen
+  // anyway.
+  moveTo(boxCenterScreen({{2, "u2"}}));
+  for (int i = 0; i < 14; ++i) {
+    ImGui::GetIO().AddMouseWheelEvent(0.f, -1.f);
+    frame();
+  }
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  const ImVec2 before = boxCenterScreen({{2, "u2"}});
+  const float scaleBefore = sv().transform.scale;
+
+  add(u9DrivesU2B());
   frame(2);
 
-  ASSERT_NE(shape({"core", "u9"}), nullptr);
-  EXPECT_FALSE(pin({"u2"}, "B")->open);
-  EXPECT_FALSE(pin({"u2"}, "B")->pending);
-  const ImVec2 after = boxCenterScreen({"u2"});
+  ASSERT_NE(shape({{5, "core"}, {9, "u9"}}), nullptr);
+  EXPECT_FALSE(pin({{2, "u2"}}, "B")->open);
+  EXPECT_FALSE(pin({{2, "u2"}}, "B")->pending);
+  const ImVec2 after = boxCenterScreen({{2, "u2"}});
   EXPECT_NEAR(after.x, before.x, 0.5f);
   EXPECT_NEAR(after.y, before.y, 0.5f);
   EXPECT_EQ(sv().transform.scale, scaleBefore);  // no re-fit zoom either
+}
+
+// At the fitted zoom of two boxes, u9 would land off the canvas: the view
+// pans/zooms out just enough to show it next to the clicked box.
+TEST_F(SchematicClicks, WhatAPinClickAddsOffScreenIsBroughtIntoView) {
+  showFirstNet();
+  expandU2();
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  const float scaleBefore = sv().transform.scale;
+
+  add(u9DrivesU2B());
+  frame(2);
+
+  const ImVec2 lo = EquipotentialView::canvasOriginForTesting();
+  const ImVec2 hi(lo.x + ImGui::GetIO().DisplaySize.x, lo.y + ImGui::GetIO().DisplaySize.y);
+  for (const InstancePath& path : {InstancePath{{5, "core"}, {9, "u9"}}, InstancePath{{2, "u2"}}}) {
+    const InstanceShape* s = shape(path);
+    ASSERT_NE(s, nullptr);
+    const ImVec2 a = toScreen(ImVec2(s->x, s->y)), b = toScreen(ImVec2(s->x + s->w, s->y + s->h));
+    EXPECT_GE(a.x, lo.x) << displayPath(path);
+    EXPECT_GE(a.y, lo.y) << displayPath(path);
+    EXPECT_LE(b.x, hi.x) << displayPath(path);
+    EXPECT_LE(b.y, hi.y) << displayPath(path);
+  }
+  EXPECT_LE(sv().transform.scale, scaleBefore);  // zoomed out at most, never in
 }
 
 TEST_F(SchematicClicks, ClickOnMergedBusPinShowsItsBits) {
@@ -271,15 +310,15 @@ TEST_F(SchematicClicks, ClickOnMergedBusPinShowsItsBits) {
     add(e);
   }
   frame(3);
-  ASSERT_NE(pin({"u2"}, "D[1:0]"), nullptr);
-  EXPECT_TRUE(pin({"u2"}, "D[1:0]")->isBus);
+  ASSERT_NE(pin({{2, "u2"}}, "D[1:0]"), nullptr);
+  EXPECT_TRUE(pin({{2, "u2"}}, "D[1:0]")->isBus);
 
-  moveTo(pinScreen({"u2"}, "D[1:0]"));
+  moveTo(pinScreen({{2, "u2"}}, "D[1:0]"));
   click();
   frame();
-  EXPECT_EQ(pin({"u2"}, "D[1:0]"), nullptr);
-  EXPECT_NE(pin({"u2"}, "D[0]"), nullptr);
-  EXPECT_NE(pin({"u2"}, "D[1]"), nullptr);
+  EXPECT_EQ(pin({{2, "u2"}}, "D[1:0]"), nullptr);
+  EXPECT_NE(pin({{2, "u2"}}, "D[0]"), nullptr);
+  EXPECT_NE(pin({{2, "u2"}}, "D[1]"), nullptr);
   EXPECT_TRUE(provider.sent.empty());  // all bits were already loaded
 }
 
@@ -307,15 +346,15 @@ TEST_F(SchematicClicks, DoubleClickOnHierarchyGlyphTogglesItOnce) {
   e.occurrences.push_back(sub);
   add(e);
   frame(3);
-  ASSERT_NE(shape({"u2"}), nullptr);
-  ASSERT_TRUE(canShowHierToggle(*shape({"u2"})));
+  ASSERT_NE(shape({{2, "u2"}}), nullptr);
+  ASSERT_TRUE(canShowHierToggle(*shape({{2, "u2"}})));
 
   float x0, y0, x1, y1;
-  hierToggleGlyphRect(*shape({"u2"}), x0, y0, x1, y1);
+  hierToggleGlyphRect(*shape({{2, "u2"}}), x0, y0, x1, y1);
   moveTo(toScreen(ImVec2((x0 + x1) * 0.5f, (y0 + y1) * 0.5f)));
   doubleClick();
 
-  EXPECT_TRUE(shape({"u2"})->hierExpanded);
+  EXPECT_TRUE(shape({{2, "u2"}})->hierExpanded);
   EXPECT_EQ(sent("load_instance_internals").size(), 1u);
 }
 
@@ -346,7 +385,8 @@ nlohmann::json resolvedU7() {
 TEST(StartInstance, ParsedFromAnInstanceResolvedReply) {
   auto start = EquipotentialView::startInstanceFromResolved(resolvedU7());
   ASSERT_TRUE(start.has_value());
-  EXPECT_EQ(start->path, (std::vector<std::string>{"core", "u7"}));
+  EXPECT_EQ(start->path, (InstancePath{{5, "core"}, {7, "u7"}}));
+  EXPECT_EQ(pathNames(start->path), (std::vector<std::string>{"core", "u7"}));
   EXPECT_EQ(start->pathIds, (std::vector<unsigned>{5, 7}));
   EXPECT_EQ(start->pathModels, (std::vector<std::string>{"Core", "AND2"}));
   EXPECT_EQ(start->designRef.design_id, 3u);
@@ -365,13 +405,13 @@ TEST_F(SchematicClicks, StartInstanceIsDrawnAloneWithAllPinsOpen) {
   EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
   frame(3);
 
-  const InstanceShape* u7 = shape({"core", "u7"});
+  const InstanceShape* u7 = shape({{5, "core"}, {7, "u7"}});
   ASSERT_NE(u7, nullptr);
   EXPECT_FALSE(u7->partialInterface);  // its whole interface is shown
   EXPECT_EQ(u7->primitiveType, PrimitiveType::And);  // drawn as an AND gate
   for (auto name : {"A", "B", "Y"}) {
-    ASSERT_NE(pin({"core", "u7"}, name), nullptr) << name;
-    EXPECT_TRUE(pin({"core", "u7"}, name)->open) << name;
+    ASSERT_NE(pin({{5, "core"}, {7, "u7"}}, name), nullptr) << name;
+    EXPECT_TRUE(pin({{5, "core"}, {7, "u7"}}, name)->open) << name;
   }
   // Drawn inside its module's frame, like any traced leaf.
   bool framed = false;
@@ -382,7 +422,7 @@ TEST_F(SchematicClicks, StartInstanceIsDrawnAloneWithAllPinsOpen) {
 TEST_F(SchematicClicks, ClickingAStartInstancePinLoadsItsNetWithTheInstancePath) {
   EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
   frame(3);
-  moveTo(pinScreen({"core", "u7"}, "Y"));
+  moveTo(pinScreen({{5, "core"}, {7, "u7"}}, "Y"));
   click();
 
   auto reqs = sent("load_equipotential");
@@ -394,10 +434,10 @@ TEST_F(SchematicClicks, ClickingAStartInstancePinLoadsItsNetWithTheInstancePath)
 TEST_F(SchematicClicks, ResetLayoutDropsTheStartInstance) {
   EquipotentialView::showInstance(*EquipotentialView::startInstanceFromResolved(resolvedU7()));
   frame(2);
-  ASSERT_NE(shape({"core", "u7"}), nullptr);
+  ASSERT_NE(shape({{5, "core"}, {7, "u7"}}), nullptr);
   EquipotentialView::resetLayout();
   frame(2);
-  EXPECT_EQ(shape({"core", "u7"}), nullptr);
+  EXPECT_EQ(shape({{5, "core"}, {7, "u7"}}), nullptr);
 }
 
 // An escaped instance name can contain '/': the top-level instance "a/b" and
@@ -406,55 +446,177 @@ TEST_F(SchematicClicks, NamesContainingSlashesStayOneLevel) {
   Equipotential e{true, {}, {}};
   InstTermOccurrence drv = occ("a/b", 1, "Q", 10, Direction::Output, 1);
   InstTermOccurrence rcv = occ("a", 2, "A", 20, Direction::Input, 3);
-  rcv.path       = {"a", "b"};
+  rcv.path       = {{2, "a"}, {3, "b"}};
   rcv.pathIds    = {2, 3};
   rcv.pathModels = {"", ""};
   e.occurrences  = {drv, rcv};
   add(e);
   frame(3);
 
-  const InstanceShape* flat   = shape({"a/b"});
-  const InstanceShape* nested = shape({"a", "b"});
+  const InstanceShape* flat   = shape({{1, "a/b"}});
+  const InstanceShape* nested = shape({{2, "a"}, {3, "b"}});
   ASSERT_NE(flat, nullptr);
   ASSERT_NE(nested, nullptr);
   EXPECT_NE(flat->id, nested->id);
 
-  moveTo(boxCenterScreen(InstancePath{"a/b"}));
+  moveTo(boxCenterScreen(InstancePath{{1, "a/b"}}));
   click();
-  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{"a/b"}));
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{1, "a/b"}}));
 
   moveTo(toScreen(ImVec2(nested->x + nested->w * 0.5f, nested->y + nested->h * 0.5f)));
   doubleClick();
   auto reqs = sent("expand_instance_terms");
   ASSERT_EQ(reqs.size(), 1u);
-  EXPECT_EQ(reqs[0]["instance_path"].get<InstancePath>(), (InstancePath{"a", "b"}));
-  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{"a", "b"}));
+  EXPECT_EQ(readPath(reqs[0], "instance_path", "instance_id_path"), (InstancePath{{2, "a"}, {3, "b"}}));
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{2, "a"}, {3, "b"}}));
+}
+
+// Anonymous instances all have the name "": two anonymous siblings are two
+// boxes, each click selects its own, and requests about one carry its ids.
+TEST_F(SchematicClicks, AnonymousSiblingsAreSeparateBoxes) {
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("", 4, "Q", 10, Direction::Output, 1));
+  e.occurrences.push_back(occ("", 5, "A", 20, Direction::Input, 3));
+  add(e);
+  frame(3);
+
+  const InstanceShape* a4 = shape({{4, ""}});
+  const InstanceShape* a5 = shape({{5, ""}});
+  ASSERT_NE(a4, nullptr);
+  ASSERT_NE(a5, nullptr);
+  EXPECT_NE(a4->id, a5->id);
+  EXPECT_EQ(a5->name, "<#5>");
+
+  moveTo(boxCenterScreen({{5, ""}}));
+  click();
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{5, ""}}));
+  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{4, ""}}));
+
+  doubleClick();  // a5 shows 1 of its 3 pins
+  auto reqs = sent("expand_instance_terms");
+  ASSERT_EQ(reqs.size(), 1u);
+  EXPECT_EQ(reqs[0]["instance_id_path"], nlohmann::json::array({5}));
+  EXPECT_EQ(reqs[0]["instance_path"], nlohmann::json::array({""}));
+
+  // The reply, tagged with the echoed ids, expands a5 and not a4.
+  EquipotentialView::applyInstanceExpansion(
+      *readPath(reqs[0], "instance_path", "instance_id_path"),
+      {{"A", Direction::Input, 20, std::nullopt},
+       {"B", Direction::Input, 21, std::nullopt},
+       {"Y", Direction::Output, 22, std::nullopt}});
+  frame(2);
+  EXPECT_NE(pin({{5, ""}}, "B"), nullptr);
+  EXPECT_EQ(pin({{4, ""}}, "B"), nullptr);
 }
 
 TEST_F(SchematicClicks, ClickingABoxSelectsItAndDrawsItSelected) {
   showFirstNet();
-  moveTo(boxCenterScreen({"u2"}));
+  moveTo(boxCenterScreen({{2, "u2"}}));
   click();
-  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{"u2"}));
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{2, "u2"}}));
   EXPECT_EQ(SelectionStore::origin(), SelectionStore::Origin::Schematic);
   frame();
-  EXPECT_TRUE(shape({"u2"})->selected);
-  EXPECT_FALSE(shape({"u1"})->selected);
+  EXPECT_TRUE(shape({{2, "u2"}})->selected);
+  EXPECT_FALSE(shape({{1, "u1"}})->selected);
 }
 
 TEST_F(SchematicClicks, ClickingAPinDoesNotChangeTheSelection) {
   showFirstNet();
   expandU2();
-  moveTo(pinScreen({"u2"}, "B"));
+  moveTo(pinScreen({{2, "u2"}}, "B"));
   click();
   EXPECT_FALSE(SelectionStore::hasSelection());
 }
 
 TEST_F(SchematicClicks, ASelectionMadeElsewhereIsDrawnInTheSchematic) {
   showFirstNet();
-  SelectionStore::select(InstancePath{"u1"}, SelectionStore::Origin::Host);
+  SelectionStore::select(InstancePath{{1, "u1"}}, SelectionStore::Origin::Host);
   frame();
-  EXPECT_TRUE(shape({"u1"})->selected);
+  EXPECT_TRUE(shape({{1, "u1"}})->selected);
+}
+
+// Instance names are part of the layout: the long register names of a
+// synthesized design never run into a neighbor's box, its name or a wire.
+namespace {
+
+bool overlapRect(const SchematicLayout::RouteRect& a, const SchematicLayout::RouteRect& b) {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+}
+
+void expectNamesClear(const SchematicView& sv) {
+  using SchematicLayout::RouteRect;
+  std::vector<std::pair<const InstanceShape*, RouteRect>> names, boxes;
+  for (const auto& s : sv.instances) {
+    if (s.isHierGroup || s.w <= 0.f || s.h <= 0.f) continue;
+    boxes.push_back({&s, RouteRect{s.x, s.y, s.x + s.w, s.y + s.h}});
+    if (auto r = SchematicLayout::nameRect(s, instanceNameWidth)) names.push_back({&s, *r});
+  }
+  ASSERT_FALSE(names.empty());
+  for (const auto& [owner, name] : names) {
+    for (const auto& [s, box] : boxes)
+      EXPECT_FALSE(overlapRect(name, box)) << owner->name << "'s name over " << s->name;
+    for (const auto& [s, other] : names)
+      if (s != owner) EXPECT_FALSE(overlapRect(name, other)) << owner->name << " / " << s->name;
+    for (const auto& route : sv.routes)
+      for (const auto& seg : route.segments) {
+        const RouteRect r{std::min(seg.a.x, seg.b.x) + 0.5f, std::min(seg.a.y, seg.b.y) - 0.5f,
+                          std::max(seg.a.x, seg.b.x) - 0.5f, std::max(seg.a.y, seg.b.y) + 0.5f};
+        EXPECT_FALSE(overlapRect(name, r)) << "a wire through " << owner->name << "'s name";
+      }
+  }
+}
+
+// The fan-in cone of the README demo: three flops with long names in one
+// column, each feeding a gate with a short one.
+void addFlopCone(std::vector<Equipotential>& out, const std::vector<std::string>& prefix) {
+  auto at = [&](const std::string& name, unsigned id, const std::string& term, unsigned termId,
+                Direction dir) {
+    InstTermOccurrence o = occ(name, id, term, termId, dir, 3);
+    unsigned pid = 900;
+    InstancePath path;
+    for (const auto& p : prefix) path.push_back({pid++, p});
+    path.push_back({id, name});
+    o.path = path;
+    o.pathIds.clear();
+    for (const auto& ref : path) o.pathIds.push_back(ref.id);
+    o.pathModels.assign(path.size(), "");
+    return o;
+  };
+  auto net = [&](std::vector<InstTermOccurrence> occs) {
+    Equipotential e{true, {}, {}};
+    e.occurrences = std::move(occs);
+    out.push_back(std::move(e));
+  };
+  net({at("buffer_1.Queue._T_1$_SDFFE_PP0P_", 1, "Q", 10, Direction::Output),
+       at("_2678_", 2, "A", 20, Direction::Input)});
+  net({at("buffer_1.Queue.value$_SDFFE_PP0P_", 3, "Q", 30, Direction::Output),
+       at("_2178_", 4, "A", 40, Direction::Input)});
+  net({at("buffer_1.Queue.value_1$_SDFFE_PP0P_", 5, "Q", 50, Direction::Output),
+       at("_2177_", 6, "A", 60, Direction::Input)});
+  net({at("_2177_", 6, "Z", 61, Direction::Output), at("_2178_", 4, "B", 41, Direction::Input)});
+  net({at("_2678_", 2, "ZN", 21, Direction::Output), at("_2679_", 7, "A1", 70, Direction::Input)});
+  net({at("_2178_", 4, "Z", 42, Direction::Output), at("_2679_", 7, "A2", 71, Direction::Input)});
+}
+
+} // namespace
+
+TEST_F(SchematicClicks, LongInstanceNamesNeverOverlapAnything) {
+  std::vector<Equipotential> cone;
+  addFlopCone(cone, {});
+  for (auto& e : cone) add(std::move(e));
+  frame(3);
+  expectNamesClear(sv());
+}
+
+TEST_F(SchematicClicks, LongLeafNamesInsideAModuleFrameNeverOverlapAnything) {
+  std::vector<Equipotential> cone;
+  addFlopCone(cone, {"core"});
+  for (auto& e : cone) add(std::move(e));
+  frame(3);
+  bool framed = false;
+  for (const auto& s : sv().instances) framed |= s.isHierGroup;
+  ASSERT_TRUE(framed);
+  expectNamesClear(sv());
 }
 
 // Two traces overlaid: trace A is u0.Y -> u1.A, u1.Y -> u3.A; trace B is

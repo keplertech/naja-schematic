@@ -57,4 +57,35 @@ void PendingRequests::resolve(const PinRequestKey& key) { started_.erase(key); }
 
 void PendingRequests::clear() { started_.clear(); }
 
+View revealRect(View view, ImVec2 rMin, ImVec2 rMax, ImVec2 canvas, float margin,
+                float minScale) {
+    const ImVec2 size(rMax.x - rMin.x, rMax.y - rMin.y);
+    const ImVec2 room(canvas.x - 2.0f * margin, canvas.y - 2.0f * margin);
+    if (room.x <= 0.0f || room.y <= 0.0f) return view;
+
+    // Zoom out only as far as needed, about the canvas center.
+    float scale = view.scale;
+    if (size.x > 0.0f) scale = std::min(scale, room.x / size.x);
+    if (size.y > 0.0f) scale = std::min(scale, room.y / size.y);
+    scale = std::max(scale, std::min(minScale, view.scale));
+    if (scale != view.scale) {
+        const ImVec2 center(view.offset.x + 0.5f * canvas.x / view.scale,
+                            view.offset.y + 0.5f * canvas.y / view.scale);
+        view.offset = ImVec2(center.x - 0.5f * canvas.x / scale, center.y - 0.5f * canvas.y / scale);
+        view.scale  = scale;
+    }
+
+    // Then the smallest pan that brings each side in.
+    auto pan = [&](float& offset, float lo, float hi, float canvasLen) {
+        const float m = margin / view.scale;
+        const float visLo = offset + m, visHi = offset + canvasLen / view.scale - m;
+        if (hi - lo > visHi - visLo) offset = lo - m;        // too big: its start
+        else if (lo < visLo)         offset -= visLo - lo;
+        else if (hi > visHi)         offset += hi - visHi;
+    };
+    pan(view.offset.x, rMin.x, rMax.x, canvas.x);
+    pan(view.offset.y, rMin.y, rMax.y, canvas.y);
+    return view;
+}
+
 } // namespace SchematicInteraction

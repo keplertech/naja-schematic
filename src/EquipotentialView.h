@@ -50,8 +50,8 @@ class EquipotentialView {
     // One instance to draw on its own, with its full interface and no net
     // yet -- a starting point to extend pin by pin (see showInstance()).
     struct StartInstance {
-      std::vector<std::string> path;        // instance names, top excluded
-      std::vector<unsigned>    pathIds;     // matching child_ids
+      InstancePath             path;        // top excluded
+      std::vector<unsigned>    pathIds;     // pathIds(path)
       std::vector<std::string> pathModels;  // matching model names
       DesignRef                designRef{}; // the instance's model
       PrimitiveType            primitiveType = PrimitiveType::Unknown;

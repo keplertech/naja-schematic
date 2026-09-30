@@ -64,8 +64,68 @@ static std::string designName(const SNLDesign* d) {
   return d->getString();
 }
 
+// The instance's own name, "" for an anonymous one -- what protocol.py
+// sends too (najaeda's getName()). Not getString(): that makes up a
+// "<inst:id>"-style placeholder, which no request could name the instance
+// by. The viewer shows anonymous instances by id (displayName() in Types.h)
+// and addresses them by id_path.
 static std::string instanceName(const SNLInstance* i) {
-  return i->getString();
+  return i->isUnnamed() ? std::string() : i->getName().getString();
+}
+
+// The instance a request names, root excluded: by "id_path" (instance ids,
+// preferred: the only way to name an anonymous instance) or else by "path"
+// (instance names). `chain` lists the instances from the top down;
+// `design` is the design owning any terminal/net lookup there (the top
+// design for an empty path, else the last instance's model). Mirrors
+// protocol.py's resolve_request_path().
+struct ResolvedInstancePath {
+  bool                      ok = false;
+  SNLDesign*                design = nullptr;
+  std::vector<SNLInstance*> chain;
+  SNLInstance* instance() const { return chain.empty() ? nullptr : chain.back(); }
+};
+
+static bool isInstanceIdJson(const json& v) {
+  return v.is_number_integer() && v.get<long long>() >= 0;
+}
+
+static ResolvedInstancePath resolveRequestPath(SNLDesign* top, const json& req) {
+  ResolvedInstancePath r;
+  r.design = top;
+  if (req.contains("id_path") && req["id_path"].is_array()) {
+    for (const auto& seg : req["id_path"]) {
+      if (!isInstanceIdJson(seg)) return {};
+      auto* inst = r.design ? r.design->getInstance(static_cast<NLID::DesignObjectID>(seg.get<long long>()))
+                            : nullptr;
+      if (!inst) return {};
+      r.chain.push_back(inst);
+      r.design = inst->getModel();
+    }
+  } else if (req.contains("path") && req["path"].is_array()) {
+    for (const auto& seg : req["path"]) {
+      // "" never names an instance: anonymous ones need id_path.
+      if (!seg.is_string() || seg.get<std::string>().empty()) return {};
+      auto* inst = r.design ? r.design->getInstance(NLName(seg.get<std::string>())) : nullptr;
+      if (!inst) return {};
+      r.chain.push_back(inst);
+      r.design = inst->getModel();
+    }
+  }
+  r.ok = true;
+  return r;
+}
+
+// "u1/<#3>/u2": the path for a human to read (the properties heading), same
+// as displayPath() in Types.h and display_path() in protocol.py.
+static std::string displayChain(const std::vector<SNLInstance*>& chain) {
+  std::string out;
+  for (size_t i = 0; i < chain.size(); ++i) {
+    if (i) out += '/';
+    auto name = instanceName(chain[i]);
+    out += name.empty() ? "<#" + std::to_string(chain[i]->getID()) + ">" : name;
+  }
+  return out;
 }
 
 // Gate/cell function classification, from naja's own modeling of the cell
@@ -670,12 +730,12 @@ static json equipotentialJson(const SNLEquipotential& equi,
     // driver trace (see EquipotentialView's hierarchy grouping).
     json pathArr = json::array();
     for (auto* inst : occ.getPath().getInstances())
-      pathArr.push_back(json::array({inst->getString(),
+      pathArr.push_back(json::array({instanceName(inst),
                                      static_cast<unsigned>(inst->getID()),
                                      designName(inst->getModel())}));
     // The occurrence path is to the parent design; append the instance itself
     auto* theInst = it->getInstance();
-    pathArr.push_back(json::array({theInst->getString(),
+    pathArr.push_back(json::array({instanceName(theInst),
                                    static_cast<unsigned>(theInst->getID()),
                                    designName(theInst->getModel())}));
     auto entry = bitTermJson(bt);
@@ -852,8 +912,9 @@ std::string LocalSNLProvider::buildTraceDriverResponse(const json& req) const {
 }
 
 std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) const {
-  // The requesting box's instance path, echoed back as is.
-  json instancePath = req.value("instance_path", json::array());
+  // The requesting box's instance path (names and ids), echoed back as is.
+  json instancePath   = req.value("instance_path", json::array());
+  json instanceIdPath = req.value("instance_id_path", json::array());
   unsigned dbId = 0, libId = 0, designId = 0;
   if (req.contains("design_ref")) {
     dbId     = req["design_ref"].value("db_id",      0u);
@@ -865,41 +926,46 @@ std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) 
   return json{
     {"response", "expanded_instance_terms"},
     {"instance_path", instancePath},
+    {"instance_id_path", instanceIdPath},
     {"terms",    design ? allBitTermsJson(design) : json::array()}
   }.dump();
 }
 
-// Everything the viewer needs to show one instance given only its
-// instance-name path (same convention as get_properties): each path level's
-// [name, child_id, model_name], and the instance's model and full pin list,
-// to reveal it in the tree and draw it alone in the schematic. Mirrors
+// Everything the viewer needs to show one instance given only its path --
+// "id_path" (preferred) or "path" (names), see resolveRequestPath(): each
+// path level's [name, child_id, model_name], and the instance's model and
+// full pin list, to reveal it in the tree and draw it alone in the
+// schematic. The reply's "path"/"id_path" are the resolved instance's
+// (names and ids) when found, the request's as given otherwise. Mirrors
 // protocol.py's _handle_resolve_instance.
 std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) const {
-  std::vector<std::string> path;
-  if (req.contains("path") && req["path"].is_array())
-    for (auto& seg : req["path"]) path.push_back(seg.get<std::string>());
-
-  json reply = {{"response", "instance_resolved"}, {"path", path}, {"found", false}};
+  json reply = {{"response", "instance_resolved"},
+                {"path", req.contains("path") && req["path"].is_array() ? req["path"] : json::array()},
+                {"found", false}};
+  if (req.contains("id_path") && req["id_path"].is_array()) reply["id_path"] = req["id_path"];
   auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
   if (!topDesign) return reply.dump();
 
-  SNLDesign*   design   = topDesign;
-  SNLInstance* instance = nullptr;
-  json levels = json::array();
-  for (const auto& name : path) {
-    instance = design ? design->getInstance(NLName(name)) : nullptr;
-    if (!instance) {
-      Console::Error("resolve_instance: could not resolve instance path");
-      return reply.dump();
-    }
-    design = instance->getModel();
-    levels.push_back(json::array({instance->getString(),
-                                  static_cast<unsigned>(instance->getID()),
-                                  designName(design)}));
+  auto resolved = resolveRequestPath(topDesign, req);
+  if (!resolved.ok) {
+    Console::Error("resolve_instance: could not resolve instance path");
+    return reply.dump();
   }
-  reply["found"] = true;
+  json names = json::array(), ids = json::array(), levels = json::array();
+  for (auto* inst : resolved.chain) {
+    names.push_back(instanceName(inst));
+    ids.push_back(static_cast<unsigned>(inst->getID()));
+    levels.push_back(json::array({instanceName(inst),
+                                  static_cast<unsigned>(inst->getID()),
+                                  designName(inst->getModel())}));
+  }
+  reply["path"]    = std::move(names);
+  reply["id_path"] = std::move(ids);
+  reply["found"]   = true;
+  auto* instance = resolved.instance();
   if (!instance) return reply.dump();  // the top design itself
 
+  SNLDesign* design = resolved.design;
   reply["instance"] = {
     {"path",       std::move(levels)},
     {"design_ref", {
@@ -922,8 +988,9 @@ std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) cons
 // wiring them together (and, for a net that also reaches one of the model's
 // own boundary ports, that pass-through connection too).
 std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) const {
-  // The requesting box's instance path, echoed back as is.
-  json instancePath = req.value("instance_path", json::array());
+  // The requesting box's instance path (names and ids), echoed back as is.
+  json instancePath   = req.value("instance_path", json::array());
+  json instanceIdPath = req.value("instance_id_path", json::array());
   unsigned dbId = 0, libId = 0, designId = 0;
   if (req.contains("design_ref")) {
     dbId     = req["design_ref"].value("db_id",      0u);
@@ -1014,6 +1081,7 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
   return json{
     {"response",  "instance_internals_response"},
     {"instance_path", instancePath},
+    {"instance_id_path", instanceIdPath},
     {"children",  children},
     {"nets",      nets}
   }.dump();
@@ -1047,12 +1115,12 @@ std::string LocalSNLProvider::buildSourceResponse(const json& req) const {
 }
 
 // General name/value property inspector for whatever object the UI asks
-// about (an instance or a term/pin). The object is identified the same way
-// DiagnosisItem identifies things -- a list of instance names, root
-// excluded -- rather than provider-specific numeric child_ids, so it's
-// resolved here by walking instance names down from the top design (see
-// CLAUDE.md's "Path matching convention"). Unknown/unresolvable objects yield an empty
-// properties list rather than an error, matching "no properties" semantics.
+// about (an instance, a term/pin or a net). The instance (or the one
+// containing the term/net) is named the same way DiagnosisItem names
+// things -- "id_path" (instance ids, preferred) or "path" (instance names),
+// root excluded -- see resolveRequestPath() and CLAUDE.md's "Path matching
+// convention". Unknown/unresolvable objects yield an empty properties list
+// rather than an error, matching "no properties" semantics.
 std::string LocalSNLProvider::buildPropertiesResponse(const json& req) const {
   json properties = json::array();
   std::string subject;
@@ -1063,30 +1131,17 @@ std::string LocalSNLProvider::buildPropertiesResponse(const json& req) const {
 
   auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
   if (topDesign) {
-    std::vector<std::string> path;
-    if (req.contains("path") && req["path"].is_array())
-      for (auto& seg : req["path"]) path.push_back(seg.get<std::string>());
     std::string kind = req.value("kind", std::string("instance"));
+    auto resolved = resolveRequestPath(topDesign, req);
+    SNLDesign*   design   = resolved.design;
+    SNLInstance* instance = resolved.instance();
+    const std::string at  = displayChain(resolved.chain);
 
-    // Walk the instance-name path from the top design. `design` ends up as
-    // the design that owns any terminal lookup (top design if path is
-    // empty, otherwise the model of the last instance); `instance` is that
-    // last instance itself (nullptr if path is empty).
-    SNLDesign*   design   = topDesign;
-    SNLInstance* instance = nullptr;
-    bool resolved = true;
-    for (const auto& name : path) {
-      instance = design ? design->getInstance(NLName(name)) : nullptr;
-      if (!instance) { resolved = false; break; }
-      design = instance->getModel();
-    }
-
-    if (!resolved) {
+    if (!resolved.ok) {
       Console::Error("get_properties: could not resolve instance path");
     } else if (kind == "term") {
       std::string terminal = req.value("terminal", std::string(""));
-      for (const auto& seg : path) subject += seg + "/";
-      subject += terminal;
+      subject = at.empty() ? terminal : at + "/" + terminal;
       if (design && !terminal.empty()) {
         if (auto* term = design->getTerm(NLName(terminal))) {
           if (req.contains("bit") && !req["bit"].is_null()) {
@@ -1109,8 +1164,7 @@ std::string LocalSNLProvider::buildPropertiesResponse(const json& req) const {
       }
     } else if (kind == "net") {
       std::string netName = req.value("net", std::string(""));
-      for (const auto& seg : path) subject += seg + "/";
-      subject += netName;
+      subject = at.empty() ? netName : at + "/" + netName;
       if (design && !netName.empty()) {
         if (auto* net = design->getNet(NLName(netName))) {
           if (req.contains("bit") && !req["bit"].is_null()) {
@@ -1130,14 +1184,15 @@ std::string LocalSNLProvider::buildPropertiesResponse(const json& req) const {
         }
       }
     } else { // "instance"
-      if (path.empty()) {
+      if (!instance) {
         subject = designName(topDesign);
         emit("Name", subject);
         emit("Type", "Top Design");
-      } else if (instance) {
-        subject = instanceName(instance);
+      } else {
+        subject = displayChain({instance});
         auto* model = instance->getModel();
-        emit("Name",  subject);
+        emit("Name",  instanceName(instance));  // "" when anonymous
+        emit("ID",    std::to_string(instance->getID()));
         emit("Model", model ? designName(model) : "");
         emit("Type",  model && model->isPrimitive() ? "Primitive" : "Hierarchical");
       }

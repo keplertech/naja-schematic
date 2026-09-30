@@ -5,6 +5,24 @@
 #include "DiagnosisStore.h"
 #include "Types.h"
 
+// "u1/u2" for the item's instance: its names, with the id standing in for an
+// anonymous level ("<#3>", as displayName()) when the item gives id_path.
+static std::string itemDisplayPath(const DiagnosisItem& item) {
+  const size_t n = item.idPath ? item.idPath->size() : item.path.size();
+  InstancePath path(n);
+  for (size_t i = 0; i < n; ++i) {
+    if (item.idPath) path[i].id = (*item.idPath)[i];
+    if (i < item.path.size()) path[i].name = item.path[i];
+  }
+  if (!item.idPath) {
+    // No ids to show: print the names as given.
+    std::string out;
+    for (size_t i = 0; i < n; ++i) out += (i ? "/" : "") + item.path[i];
+    return out;
+  }
+  return displayPath(path);
+}
+
 void DiagnosisView::render() {
   ImGui::Text("Diagnostics");
   ImGui::Separator();
@@ -27,9 +45,10 @@ void DiagnosisView::render() {
     ImGui::TextUnformatted(toString(item.severity));
     ImGui::PopStyleColor();
 
+    const std::string at = itemDisplayPath(item);
     std::string where = item.kind == DiagnosisKind::Instance
-      ? (item.path.empty() ? std::string("<top>") : displayPath(item.path))
-      : (item.path.empty() ? item.terminal : displayPath(item.path) + "/" + item.terminal);
+      ? (at.empty() ? std::string("<top>") : at)
+      : (at.empty() ? item.terminal : at + "/" + item.terminal);
     ImGui::SameLine();
     ImGui::TextDisabled("%s", where.c_str());
 

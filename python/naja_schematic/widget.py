@@ -6,17 +6,12 @@ protocol.handle_request() against the live NLUniverse -- so a view shows
 the netlist as the notebook has built or edited it so far.
 """
 import functools
-import json
-import logging
 
 import anywidget
 import traitlets
-from najaeda import naja
 
-from . import protocol
 from ._bundle import STATIC_DIR, bundle_path
-
-log = logging.getLogger("naja_schematic")
+from .session import ViewerSession, instance_path, instance_paths, selected_instance  # noqa: F401
 
 
 @functools.cache
@@ -33,58 +28,19 @@ def _widget_esm():
     return bundle.read_text() + "\n" + (STATIC_DIR / "widget.js").read_text()
 
 
-def _names_to_ids(names):
-    # Instance-name path (top excluded) -> najaeda child-id path, walking
-    # down from the top design; None if a name doesn't resolve.
-    universe = naja.NLUniverse.get()
-    design = universe.getTopDesign() if universe else None
-    ids = []
-    for name in names:
-        inst = design.getInstance(name) if design else None
-        if inst is None:
-            return None
-        ids.append(inst.getID())
-        design = inst.getModel()
-    return ids
-
-
-def _ids_to_names(ids):
-    universe = naja.NLUniverse.get()
-    design = universe.getTopDesign() if universe else None
-    names = []
-    for inst_id in ids:
-        inst = design.getInstanceByID(inst_id) if design else None
-        if inst is None:
-            raise ValueError(f"instance id path {list(ids)} does not resolve in the loaded design")
-        names.append(inst.getName())
-        design = inst.getModel()
-    return names
-
-
-def instance_path(target):
-    """Normalize what show_instance() accepts to a list of instance names
-    (top excluded): a najaeda netlist.Instance, a list/tuple of names, or a
-    single name for a child of the top design. A string is one name, never
-    split on "/": escaped names can contain it. The top design is []."""
-    if hasattr(target, "pathIDs"):  # najaeda.netlist.Instance
-        return _ids_to_names(target.pathIDs)
-    if isinstance(target, str):
-        return [target]
-    if isinstance(target, (list, tuple)):
-        return [str(name) for name in target]
-    raise TypeError(f"expected a najaeda Instance, a list of names or a name, "
-                    f"got {type(target).__name__}")
-
-
 class Schematic(anywidget.AnyWidget):
     """An interactive naja-schematic view of the design in NLUniverse."""
 
     height = traitlets.Int(600).tag(sync=True)
-    # Instance-name path (top excluded) of the instance selected in the
-    # viewer -- clicked in its tree or schematic, or set by show_instance().
-    # None until something is selected. Kernel-side only (not synced): the
-    # viewer reports changes as instance_selected messages. Observe it with
-    # on_select(), or traitlets' observe(..., names="selected_path").
+    # The instance selected in the viewer -- clicked in its tree or
+    # schematic, or set by show_instance() -- as its id path (top excluded,
+    # najaeda's Instance.pathIDs) and its name path ("" for an anonymous
+    # level). None until something is selected. Kernel-side only (not
+    # synced): the viewer reports changes as instance_selected messages.
+    # Observe them with on_select(), or traitlets' observe(..., names=
+    # "selected_id_path") -- not "selected_path": anonymous siblings share
+    # a name path, so moving between them wouldn't change it.
+    selected_id_path = traitlets.List(default_value=None, allow_none=True)
     selected_path = traitlets.List(default_value=None, allow_none=True)
 
     def __init__(self, **kwargs):
@@ -93,8 +49,10 @@ class Schematic(anywidget.AnyWidget):
         # and fail the import when no bundle is installed.
         self._esm = _widget_esm()
         super().__init__(**kwargs)
-        self._diagnosis_push = None
-        self._focus_push = None
+        # Requests are answered on the kernel thread, like the cells that
+        # edit the design, so the session's default runner is enough.
+        self._session = ViewerSession(push=self._send_json)
+        self._session.on_select(self._on_viewer_selection)
         self.on_msg(self._on_viewer_message)
 
     def _send_json(self, message):
@@ -104,72 +62,64 @@ class Schematic(anywidget.AnyWidget):
         message = content.get("json") if isinstance(content, dict) else None
         if not isinstance(message, str):
             return
-        try:
-            request = json.loads(message)
-        except json.JSONDecodeError as e:
-            log.error("Ignoring malformed viewer request %r: %s", message, e)
-            return
-        if request.get("request") == "instance_selected":
-            path = request.get("path")
-            self.selected_path = list(path) if isinstance(path, list) else None
-            return
-        for reply in protocol.handle_request(request):
-            self._send_json(json.dumps(reply))
-            # The viewer clears its diagnoses and selection on every
-            # root_response, so re-apply them after the root is (re)loaded.
-            if reply.get("response") == "root_response":
-                if self._diagnosis_push:
-                    self._send_json(self._diagnosis_push)
-                if self._focus_push:
-                    self._send_json(self._focus_push)
+        for reply in self._session.answer(message):
+            self._send_json(reply)
+
+    def _on_viewer_selection(self, ids, path):
+        # Names first: on_select() observes the ids, and its callback may
+        # read both.
+        self.selected_path = path
+        self.selected_id_path = ids
 
     def annotate(self, items):
         """Overlay diagnosis items on the view (and keep them across reloads).
 
-        `items`: a list of diagnosis dicts -- kind ("instance"|"net"), path
-        (instance names, root excluded), terminal (nets only), severity
+        `items`: a list of diagnosis dicts -- kind ("instance"|"net"),
+        id_path (instance ids, root excluded; preferred) and/or path
+        (instance names, root excluded; or a najaeda netlist.Instance,
+        turned into both), terminal (nets only), severity
         ("info"|"warning"|"error"), message, source -- or a
         {"items": [...]} document, as File > Load Diagnosis JSON... reads.
-        Pass [] to clear.
+        Anonymous instances can only be flagged by id_path (or an
+        Instance). Pass [] to clear.
         """
-        self._diagnosis_push = json.dumps(protocol.diagnosis_response(items))
-        self._send_json(self._diagnosis_push)
+        self._session.annotate(items)
 
     def show_instance(self, target):
         """Bring one hierarchical instance into view.
 
-        `target`: a najaeda netlist.Instance, a list of instance names (top
-        excluded; [] = the top design), or one name for a child of the top.
-        The viewer opens the tree down to it, selects it, shows its
+        `target`: a najaeda netlist.Instance, a list of instance ids or of
+        instance names (top excluded; [] = the top design), or one name for
+        a child of the top. Anonymous instances are reached by Instance or
+        ids. The viewer opens the tree down to it, selects it, shows its
         properties, and draws it alone in the schematic with all its pins,
         ready to be extended pin by pin. Kept across view reloads.
         """
-        path = instance_path(target)
-        if _names_to_ids(path) is None:
-            raise ValueError(f"no instance {path!r} in the loaded design")
-        self._focus_push = json.dumps(protocol.focus_instance(path))
-        self._send_json(self._focus_push)
+        self._session.show_instance(target)
+
+    def design_changed(self, diagnosis=None, instance=None):
+        """Refresh this view after the design was replaced or edited in
+        later cells, instead of calling show() again. Kept diagnoses and
+        focus are replaced by `diagnosis` and `instance` (resolved against
+        the new design; None: none), and the selection is cleared. What
+        the view asked about or selected in the previous design is ignored,
+        even if it arrives later. Returns the new design generation."""
+        return self._session.design_changed(diagnosis, instance)
 
     @property
     def selected(self):
         """The instance selected in the viewer, as a najaeda netlist.Instance
         (the top design for a selected root), or None if nothing is selected
         or it no longer exists in the netlist."""
-        if self.selected_path is None:
-            return None
-        ids = _names_to_ids(self.selected_path)
-        if ids is None:
-            return None
-        from najaeda import netlist
-        return netlist.Instance(ids)
+        return selected_instance(self.selected_id_path, self.selected_path)
 
     def on_select(self, callback):
         """Call `callback(instance)` each time the viewer's selection changes
         (`instance` as returned by `selected`). Returns the traitlets handler,
-        for `unobserve(handler, names="selected_path")`."""
+        for `unobserve(handler, names="selected_id_path")`."""
         def handler(_change):
             callback(self.selected)
-        self.observe(handler, names="selected_path")
+        self.observe(handler, names="selected_id_path")
         return handler
 
 
@@ -179,8 +129,8 @@ def show(instance=None, *, height=600, diagnosis=None):
     Evaluate it as the last expression of a cell (or pass it to
     IPython.display.display). Requests are answered from the live netlist,
     so run show() again after editing the design to get a fresh view.
-    `instance` starts the view on one instance, e.g. show(inst) or
-    show(["u1", "u2"]) (see Schematic.show_instance).
+    `instance` starts the view on one instance, e.g. show(inst),
+    show(["u1", "u2"]) or show([3, 0]) (see Schematic.show_instance).
     """
     # (anywidget itself turns on Colab's custom widget manager.)
     view = Schematic(height=height)

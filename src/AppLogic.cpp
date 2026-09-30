@@ -60,6 +60,21 @@ static void attachTreeCallbacks(AppState& state) {
   });
 }
 
+// Throw the loaded design away and ask the provider for the root again:
+// after File > Open (native) and on a host's design_changed push. The
+// root_response clears diagnoses, properties and the selection.
+static void reloadNetlist(AppState& state) {
+  // Cleared now, not with clearNets()' next-frame clear: a focus_instance
+  // re-pushed after the new root can be drawn before that frame, and the
+  // deferred clear would wipe it.
+  state.guiData->clearEquipotentials();
+  EquipotentialView::resetLayout();
+  delete state.guiData->netlist_;
+  state.guiData->netlist_ = new NetlistTree(state.provider);
+  attachTreeCallbacks(state);
+  state.provider->send(R"({"request":"load_root"})");
+}
+
 void setupProvider(AppState& state) {
   state.guiData->netlist_ = new NetlistTree(state.provider);
   EquipotentialView::setProvider(state.provider);
@@ -71,12 +86,12 @@ void setupProvider(AppState& state) {
   SelectionStore::setListener([&state](const InstancePath& path) {
     json note;
     note["request"] = "instance_selected";
-    note["path"]    = path;
+    writePath(note, path);
     state.provider->send(note.dump());
     json props;
     props["request"] = "get_properties";
     props["kind"]    = "instance";
-    props["path"]    = path;
+    writePath(props, path);
     state.provider->send(props.dump());
   });
 
@@ -111,7 +126,24 @@ void setupProvider(AppState& state) {
       return;
     }
 
+    if (resp == "design_changed") {
+      // Host push: the design behind the provider was replaced (or edited
+      // in place), so every node and id the viewer holds may be stale.
+      // GenerationProvider has already switched to the new generation, so
+      // replies for the old one no longer get here, and the load_root
+      // below goes out stamped with the new one.
+      Console::Log("Design changed by the host: reloading");
+      reloadNetlist(state);
+      return;
+    }
+
     if (resp == "root_response" || resp == "root_loaded") {
+      if (state.guiData->netlist_->getRoot()) {
+        // A design_changed that overtook the very first load_root: both
+        // that load_root and the reload's are answered for the new design.
+        Console::Log("Ignoring a second root for the same design");
+        return;
+      }
       Console::Log("Root node data received");
       DiagnosisStore::clear();  // stale diagnoses reference the old design
       PropertiesStore::clear(); // stale properties reference the old design
@@ -235,7 +267,11 @@ void setupProvider(AppState& state) {
                    std::to_string(added) + " new" +
                    (j.value("truncated", false) ? " (truncated)" : ""));
     } else if (resp == "expanded_instance_terms") {
-      InstancePath path = j.value("instance_path", InstancePath());
+      auto path = readPath(j, "instance_path", "instance_id_path");
+      if (!path) {
+        Console::Error("expanded_instance_terms without a valid instance_id_path");
+        return;
+      }
       std::vector<EquipotentialView::ExpandedPort> ports;
       if (j.contains("terms") && j["terms"].is_array()) {
         for (const auto& t : j["terms"]) {
@@ -252,9 +288,13 @@ void setupProvider(AppState& state) {
           ports.push_back(std::move(ep));
         }
       }
-      EquipotentialView::applyInstanceExpansion(path, ports);
+      EquipotentialView::applyInstanceExpansion(*path, ports);
     } else if (resp == "instance_internals_response") {
-      InstancePath path = j.value("instance_path", InstancePath());
+      auto path = readPath(j, "instance_path", "instance_id_path");
+      if (!path) {
+        Console::Error("instance_internals_response without a valid instance_id_path");
+        return;
+      }
       EquipotentialView::InstanceInternals data;
       if (j.contains("children") && j["children"].is_array()) {
         for (const auto& c : j["children"]) {
@@ -290,7 +330,7 @@ void setupProvider(AppState& state) {
           data.nets.push_back(std::move(in));
         }
       }
-      EquipotentialView::applyInstanceInternals(path, data);
+      EquipotentialView::applyInstanceInternals(*path, data);
     } else if (resp == "source_response") {
       std::string file = j.value("file", std::string(""));
       bool found = j.value("found", false);
@@ -319,17 +359,26 @@ void setupProvider(AppState& state) {
       state.focusDiagnosisTab = true;
     } else if (resp == "focus_instance") {
       // Host push (notebook show_instance()): resolve the path, then
-      // instance_resolved below reveals and draws it.
+      // instance_resolved below reveals and draws it. The host names the
+      // instance by id_path (preferred: it reaches anonymous instances)
+      // and/or by names; both are passed on for the provider to pick.
       json req;
       req["request"] = "resolve_instance";
-      req["path"]    = j.contains("path") && j["path"].is_array() ? j["path"] : json::array();
+      for (const char* key : {"path", "id_path"})
+        if (j.contains(key) && j[key].is_array()) req[key] = j[key];
+      if (!req.contains("path") && !req.contains("id_path")) req["path"] = json::array();
       state.provider->send(req.dump());
     } else if (resp == "instance_resolved") {
-      InstancePath path;
-      if (j.contains("path") && j["path"].is_array())
-        for (const auto& seg : j["path"]) path.push_back(seg.get<std::string>());
-      if (!j.value("found", false)) {
-        Console::Error("No instance '" + displayPath(path) + "' in the design");
+      auto path = j.value("found", false) ? readPath(j) : std::nullopt;
+      if (!path) {
+        std::string what = j.contains("id_path") ? j["id_path"].dump() : "";
+        if (j.contains("path") && j["path"].is_array()) {
+          std::string names;
+          for (const auto& seg : j["path"])
+            if (seg.is_string()) names += (names.empty() ? "" : "/") + seg.get<std::string>();
+          what = what.empty() ? names : names + " " + what;
+        }
+        Console::Error("No instance '" + what + "' in the design");
         return;
       }
       // Start a fresh schematic from the instance alone, all pins open.
@@ -338,7 +387,7 @@ void setupProvider(AppState& state) {
         EquipotentialView::resetLayout();
         EquipotentialView::showInstance(*start);
       }
-      SelectionStore::select(path, SelectionStore::Origin::Host);
+      SelectionStore::select(*path, SelectionStore::Origin::Host);
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
     }
@@ -451,16 +500,6 @@ bool appFrame(AppState& state) {
   }
 
 #ifndef __EMSCRIPTEN__
-  // Helper: reset the netlist tree and re-request root after loading
-  auto reloadNetlist = [&]() {
-    state.guiData->clearEquipotentials();
-    EquipotentialView::clearNets();
-    delete state.guiData->netlist_;
-    state.guiData->netlist_ = new NetlistTree(state.provider);
-    attachTreeCallbacks(state);
-    state.provider->send(R"({"request":"load_root"})");
-  };
-
   // Helper: split a text buffer into non-empty trimmed lines
   auto splitLines = [](const char* buf) {
     std::vector<std::string> out;
@@ -507,7 +546,7 @@ bool appFrame(AppState& state) {
                                ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::Spacing();
     if ((ImGui::Button("Open", ImVec2(120,0)) || ok) && snlPathBuf[0]) {
-      if (localProvider) { localProvider->loadSNL(snlPathBuf); reloadNetlist(); }
+      if (localProvider) { localProvider->loadSNL(snlPathBuf); reloadNetlist(state); }
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
@@ -538,7 +577,7 @@ bool appFrame(AppState& state) {
     if (ImGui::Button("Open", ImVec2(120,0)) && vrlFilesBuf[0]) {
       if (localProvider) {
         localProvider->loadVerilog(splitLines(vrlFilesBuf), splitLines(vrlLibertyBuf));
-        reloadNetlist();
+        reloadNetlist(state);
       }
       ImGui::CloseCurrentPopup();
     }
@@ -571,7 +610,7 @@ bool appFrame(AppState& state) {
     if (ImGui::Button("Open", ImVec2(120,0)) && svFilesBuf[0]) {
       if (localProvider) {
         localProvider->loadSystemVerilog(splitLines(svFilesBuf), svTopBuf);
-        reloadNetlist();
+        reloadNetlist(state);
       }
       ImGui::CloseCurrentPopup();
     }

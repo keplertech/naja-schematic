@@ -1,5 +1,6 @@
 #pragma once
 
+#include <compare>
 #include <string>
 #include <optional>
 #include <vector>
@@ -136,11 +137,79 @@ struct BitTerm {
   }
 };
 
-using Path = std::vector<std::string>;
+//
+// --- Instance paths ---
+// An instance is identified by the instances from the top design (excluded)
+// down to it: {} is the top design itself. Each segment carries naja's
+// instance ID (SNLInstance::getID(), unique among the instances of the
+// parent design) and the instance name. The ID is the identity -- segments
+// compare by it alone -- because a name doesn't always identify: anonymous
+// instances all have the empty name, so sibling anonymous instances would
+// collide. The name is kept for display and to match inputs that only name
+// instances (legacy name paths, hand-written diagnosis files).
+//
+// A path stays a list everywhere -- on the wire, as map/set keys, in stores
+// -- and is never joined into a string that gets parsed back: escaped
+// Verilog names can contain '/' (or any other separator). Composite keys
+// are std::tuples. On the wire it travels as two parallel lists, the names
+// ("path") and the IDs ("id_path"); see writePath()/readPath().
+//
+
+struct InstanceRef {
+  unsigned    id = 0;
+  std::string name;   // "" for an anonymous instance
+
+  friend bool operator==(const InstanceRef& a, const InstanceRef& b) { return a.id == b.id; }
+  friend auto operator<=>(const InstanceRef& a, const InstanceRef& b) { return a.id <=> b.id; }
+};
+
+using InstancePath = std::vector<InstanceRef>;
+
+inline std::vector<std::string> pathNames(const InstancePath& path) {
+  std::vector<std::string> names;
+  names.reserve(path.size());
+  for (const auto& seg : path) names.push_back(seg.name);
+  return names;
+}
+
+inline std::vector<unsigned> pathIds(const InstancePath& path) {
+  std::vector<unsigned> ids;
+  ids.reserve(path.size());
+  for (const auto& seg : path) ids.push_back(seg.id);
+  return ids;
+}
+
+// An instance's name for a human to read: its name, or "<#id>" for an
+// anonymous instance. Display only -- never a key, never parsed back.
+inline std::string displayName(const InstanceRef& ref) {
+  return ref.name.empty() ? "<#" + std::to_string(ref.id) + ">" : ref.name;
+}
+
+// "u1/u2" for a human to read (labels, tooltips, log lines). Never parse it
+// or use it as a key.
+inline std::string displayPath(const InstancePath& path) {
+  std::string out;
+  for (size_t i = 0; i < path.size(); ++i) {
+    if (i) out += '/';
+    out += displayName(path[i]);
+  }
+  return out;
+}
+
+// Writes `path` into a request/message as its name list (`namesKey`) and
+// its ID list (`idsKey`) -- "path"/"id_path" in most messages,
+// "instance_path"/"instance_id_path" for the echoed tags.
+void writePath(json& j, const InstancePath& path,
+               const char* namesKey = "path", const char* idsKey = "id_path");
+// Reads back what writePath() wrote. nullopt when the ID list is missing or
+// malformed, or the two lists differ in length (names may be absent: they
+// are only for display).
+std::optional<InstancePath> readPath(const json& j,
+                                     const char* namesKey = "path", const char* idsKey = "id_path");
 
 struct InstTermOccurrence {
-  Path path;                       // instance names (display)
-  std::vector<unsigned> pathIds;   // instance child_ids (used to send load_equipotential)
+  InstancePath path;               // instance ids + names, leaf last
+  std::vector<unsigned> pathIds;   // pathIds(path) (used to send load_equipotential)
   std::vector<std::string> pathModels; // model name per path entry ("" when the provider omits it)
   BitTerm term;
   DesignRef designRef;             // model of the tail instance — used to fetch its full interface
@@ -235,31 +304,14 @@ inline const char* toString(DiagnosisSeverity s) {
   }
 }
 
-//
-// --- Instance paths ---
-// An instance is identified by its instance names from the top design
-// (excluded) down to it: {} is the top design itself. It stays a list
-// everywhere -- on the wire, as map/set keys, in stores -- and is never
-// joined into a string that gets parsed back: escaped Verilog names can
-// contain '/' (or any other separator). Composite keys are std::tuples.
-//
-
-using InstancePath = std::vector<std::string>;
-
-// "u1/u2" for a human to read (labels, tooltips, log lines). Never parse it
-// or use it as a key.
-inline std::string displayPath(const InstancePath& path) {
-  std::string out;
-  for (size_t i = 0; i < path.size(); ++i) {
-    if (i) out += '/';
-    out += path[i];
-  }
-  return out;
-}
-
 struct DiagnosisItem {
   DiagnosisKind             kind     = DiagnosisKind::Instance;
-  InstancePath              path;              // instance-name path, root excluded; empty = top level
+  // The flagged instance (Kind::Instance) or the instance containing the
+  // flagged terminal (Kind::Net), root excluded; empty = top level. Given
+  // by IDs (`idPath`, preferred: the only way to name an anonymous
+  // instance) and/or by names (`path`, used when `idPath` is absent).
+  std::vector<std::string>             path;
+  std::optional<std::vector<unsigned>> idPath;
   std::string               terminal;          // pin/port base name (no bus-bit suffix); Kind::Net only
   DiagnosisSeverity          severity = DiagnosisSeverity::Info;
   std::string               message;

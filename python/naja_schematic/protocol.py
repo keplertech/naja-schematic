@@ -154,24 +154,54 @@ def direction_to_string(direction):
     return ["Input", "Output", "Inout"][direction_to_int(direction)]
 
 
-def resolve_instance_path(top, path):
-    # Walk an instance-name path (root excluded) down from the top design,
-    # the same convention DiagnosisItem/get_properties use elsewhere (see
-    # CLAUDE.md's "Path matching convention") rather than provider-specific
-    # numeric ids. Returns (design, instance): the design that owns any
-    # terminal lookup at this point (top if path is empty, else the last
-    # instance's model), and that last instance itself (None if path is
-    # empty). Returns (None, None) if any segment doesn't resolve.
+def _is_instance_id(value):
+    # bool is an int subclass: True must not pass for instance 1.
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def resolve_request_path(top, request):
+    """The instance a request names, root excluded: by "id_path" (instance
+    ids, preferred: the only way to name an anonymous instance) or else by
+    "path" (instance names) -- see CLAUDE.md's "Path matching convention".
+
+    Returns (design, chain): `chain` lists the instances from the top down,
+    `design` owns any terminal/net lookup there (top for an empty path, else
+    the last instance's model). (None, None) if the path doesn't resolve.
+    Mirrors LocalSNLProvider.cpp's resolveRequestPath().
+    """
     design = top
-    instance = None
-    for name in path:
-        if design is None:
+    chain = []
+    id_path = request.get("id_path")
+    if isinstance(id_path, list):
+        for inst_id in id_path:
+            if not _is_instance_id(inst_id):
+                return None, None
+            instance = design.getInstanceByID(inst_id) if design else None
+            if instance is None:
+                return None, None
+            chain.append(instance)
+            design = instance.getModel()
+        return design, chain
+    for name in request.get("path") or []:
+        # "" never names an instance: anonymous ones need id_path.
+        if not isinstance(name, str) or not name:
             return None, None
-        instance = design.getInstance(name)
-        if not instance:
+        instance = design.getInstance(name) if design else None
+        if instance is None:
             return None, None
+        chain.append(instance)
         design = instance.getModel()
-    return design, instance
+    return design, chain
+
+
+def display_name(instance):
+    # An instance's name for a human to read, "<#id>" when it's anonymous;
+    # same as displayName() in Types.h. Display only, never parsed back.
+    return instance.getName() or f"<#{instance.getID()}>"
+
+
+def display_path(chain):
+    return "/".join(display_name(inst) for inst in chain)
 
 
 # Upper bound on nets returned by one trace_driver request (mirrors
@@ -519,7 +549,9 @@ def bit_terms_json(design):
 
 
 def _handle_expand_instance_terms(u, request):
+    # The requesting box's instance path (names and ids), echoed back as is.
     instance_path = request.get("instance_path", [])
+    instance_id_path = request.get("instance_id_path", [])
     design_ref = get_design_ref(request.get("design_ref"))
     log.debug("expand_instance_terms for instance_path=%r design_ref=%s", instance_path, design_ref)
     design = u.getSNLDesign(design_ref) if design_ref else None
@@ -528,33 +560,37 @@ def _handle_expand_instance_terms(u, request):
     return [{
         "response": "expanded_instance_terms",
         "instance_path": instance_path,
+        "instance_id_path": instance_id_path,
         "terms": bit_terms_json(design) if design else []
     }]
 
 
 def _handle_resolve_instance(u, request):
-    # Everything the viewer needs to show one instance, given only its
-    # instance-name path (the same convention as get_properties and
-    # diagnosis items): the child_id/model of each path level, to reveal it
+    # Everything the viewer needs to show one instance, given only its path
+    # -- "id_path" (preferred) or "path" (names), as get_properties and
+    # diagnosis items: the child_id/model of each path level, to reveal it
     # in the tree and address its pins, plus its full pin list, to draw it
-    # alone in the schematic as a starting point.
-    path = [str(name) for name in request.get("path", [])]
+    # alone in the schematic as a starting point. The reply's path/id_path
+    # are the resolved instance's when found, the request's otherwise.
     top = u.getTopDesign()
-    design, instance = resolve_instance_path(top, path) if top else (None, None)
-    reply = {"response": "instance_resolved", "path": path,
-             "found": top is not None and (instance is not None or not path)}
-    if instance is None:
-        if top is not None and path:
-            log.warning("resolve_instance: could not resolve instance path %s", path)
+    reply = {"response": "instance_resolved",
+             "path": list(request.get("path") or []), "found": False}
+    if isinstance(request.get("id_path"), list):
+        reply["id_path"] = list(request["id_path"])
+    if top is None:
         return [reply]
-    levels = []
-    current = top
-    for name in path:
-        inst = current.getInstance(name)
-        levels.append([inst.getName(), inst.getID(), inst.getModel().getName()])
-        current = inst.getModel()
+    design, chain = resolve_request_path(top, request)
+    if design is None:
+        log.warning("resolve_instance: could not resolve instance path %s",
+                    request.get("id_path", request.get("path")))
+        return [reply]
+    reply["path"] = [inst.getName() for inst in chain]
+    reply["id_path"] = [inst.getID() for inst in chain]
+    reply["found"] = True
+    if not chain:
+        return [reply]  # the top design itself
     reply["instance"] = {
-        "path": levels,
+        "path": [[inst.getName(), inst.getID(), inst.getModel().getName()] for inst in chain],
         "primitive_type": get_primitive_type(design),
         "design_ref": {
             "db_id": design.getDB().getID(),
@@ -563,7 +599,7 @@ def _handle_resolve_instance(u, request):
         },
         "has_instances": (design.hasNonPrimitiveInstances() or
                           has_visible_primitive_instances(design)),
-        "source_loc": get_source_loc(instance),
+        "source_loc": get_source_loc(chain[-1]),
         "terms": bit_terms_json(design),
     }
     return [reply]
@@ -571,14 +607,19 @@ def _handle_resolve_instance(u, request):
 
 def _handle_instance_selected(u, request):
     # A notification, not a request: the viewer reports the instance the
-    # user selected. The notebook widget intercepts it (Schematic.selected);
-    # elsewhere it's only logged.
-    log.info("Viewer selected instance: %s", "/".join(request.get("path") or []) or "<top>")
+    # user selected, by "path" (names) and "id_path". The notebook widget
+    # intercepts it (Schematic.selected); elsewhere it's only logged.
+    top = u.getTopDesign()
+    _, chain = resolve_request_path(top, request) if top else (None, None)
+    log.info("Viewer selected instance: %s",
+             (display_path(chain) or "<top>") if chain is not None
+             else request.get("id_path", request.get("path")))
     return []
 
 
 def _handle_load_instance_internals(u, request):
     instance_path = request.get("instance_path", [])
+    instance_id_path = request.get("instance_id_path", [])
     design_ref = get_design_ref(request.get("design_ref"))
     model = u.getSNLDesign(design_ref) if design_ref else None
     children = []
@@ -637,6 +678,7 @@ def _handle_load_instance_internals(u, request):
     return [{
         "response": "instance_internals_response",
         "instance_path": instance_path,
+        "instance_id_path": instance_id_path,
         "children": children,
         "nets": nets
     }]
@@ -664,7 +706,6 @@ def _handle_load_source(u, request):
 
 def _handle_get_properties(u, request):
     kind = request.get("kind", "instance")
-    path = request.get("path", [])
     properties = []
     subject = ""
 
@@ -672,12 +713,14 @@ def _handle_get_properties(u, request):
     if top is None:
         log.warning("get_properties: no design loaded")
     else:
-        design, instance = resolve_instance_path(top, path)
-        if path and design is None:
-            log.warning("get_properties: could not resolve instance path %s", path)
+        design, chain = resolve_request_path(top, request)
+        at = display_path(chain) if chain else ""
+        if design is None:
+            log.warning("get_properties: could not resolve instance path %s",
+                        request.get("id_path", request.get("path")))
         elif kind == "term":
             terminal = request.get("terminal", "")
-            subject = "/".join(path + [terminal]) if path else terminal
+            subject = f"{at}/{terminal}" if at else terminal
             if design is not None and terminal:
                 term = design.getTerm(terminal)
                 if term is not None:
@@ -701,7 +744,7 @@ def _handle_get_properties(u, request):
                             properties.append({"name": "LSB", "value": str(term.getLSB())})
         elif kind == "net":
             net_name = request.get("net", "")
-            subject = "/".join(path + [net_name]) if path else net_name
+            subject = f"{at}/{net_name}" if at else net_name
             if design is not None and net_name:
                 net = design.getNet(net_name)
                 if net is not None:
@@ -722,17 +765,19 @@ def _handle_get_properties(u, request):
                             properties.append({"name": "MSB", "value": str(net.getMSB())})
                             properties.append({"name": "LSB", "value": str(net.getLSB())})
         else:  # "instance"
-            if not path:
+            if not chain:
                 subject = top.getName()
                 properties = [
                     {"name": "Name", "value": subject},
                     {"name": "Type", "value": "Top Design"},
                 ]
-            elif instance is not None:
-                subject = instance.getName()
+            else:
+                instance = chain[-1]
+                subject = display_name(instance)
                 model = instance.getModel()
                 properties = [
-                    {"name": "Name", "value": subject},
+                    {"name": "Name", "value": instance.getName()},  # "" when anonymous
+                    {"name": "ID", "value": str(instance.getID())},
                     {"name": "Model", "value": model.getName() if model else ""},
                     {"name": "Type", "value": "Primitive" if model and model.isPrimitive() else "Hierarchical"},
                 ]
@@ -791,17 +836,64 @@ def handle_message(message):
     return [json.dumps(r) for r in handle_request(json.loads(message))]
 
 
+def _instance_id_path(instance):
+    # A najaeda netlist.Instance's id path (top excluded); None for anything else.
+    ids = getattr(instance, "pathIDs", None)
+    return list(ids) if ids is not None else None
+
+
+def _instance_name_path(ids):
+    # Instance names down an id path, "" for anonymous levels.
+    universe = naja.NLUniverse.get()
+    design = universe.getTopDesign() if universe else None
+    names = []
+    for inst_id in ids:
+        inst = design.getInstanceByID(inst_id) if design else None
+        if inst is None:
+            raise ValueError(f"instance id path {ids} does not resolve in the loaded design")
+        names.append(inst.getName())
+        design = inst.getModel()
+    return names
+
+
+def _diagnosis_item(item):
+    # An item whose "path" is a najaeda netlist.Instance gets its id_path
+    # (what the viewer matches first) and the matching name path.
+    ids = _instance_id_path(item.get("path"))
+    if ids is None:
+        return item
+    return {**item, "path": _instance_name_path(ids), "id_path": ids}
+
+
 def diagnosis_response(items):
     """Build a diagnosis_response push message from a list of diagnosis
-    items (dicts with kind/path/terminal/severity/message/source), or from a
-    {"items": [...]} document as File > Load Diagnosis JSON... accepts."""
+    items (dicts with kind/path/id_path/terminal/severity/message/source),
+    or from a {"items": [...]} document as File > Load Diagnosis JSON...
+    accepts. An item names its instance by "id_path" (instance ids,
+    preferred) and/or "path" (instance names); "path" may also be a najaeda
+    netlist.Instance, turned into both here."""
     if isinstance(items, dict):
         items = items.get("items", [])
-    return {"response": "diagnosis_response", "items": list(items)}
+    return {"response": "diagnosis_response", "items": [_diagnosis_item(i) for i in items]}
 
 
-def focus_instance(path):
-    """Build a focus_instance push message: the viewer resolves `path` (a
-    list of instance names, top excluded; [] = the top design), reveals and
+def focus_instance(path=None, id_path=None):
+    """Build a focus_instance push message: the viewer resolves the instance
+    -- by `id_path` (a list of instance ids, top excluded) when given, else
+    by `path` (a list of instance names); [] = the top design -- reveals and
     selects it in the tree, and draws it alone in the schematic."""
-    return {"response": "focus_instance", "path": [str(name) for name in path]}
+    message = {"response": "focus_instance",
+               "path": [str(name) for name in (path or [])]}
+    if id_path is not None:
+        message["id_path"] = [int(i) for i in id_path]
+    return message
+
+
+def design_changed():
+    """Build a design_changed push message: the design behind the viewer was
+    replaced or edited, so the viewer drops its tree, schematic, diagnoses
+    and selection and loads the root again. The sender stamps it with the
+    new design generation (see session.ViewerSession): the viewer then
+    ignores messages for any other generation, and stamps its own requests
+    with it."""
+    return {"response": "design_changed"}

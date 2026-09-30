@@ -14,6 +14,8 @@ viewer/schematic browser for the [naja](https://github.com/najaeda/naja) SNL
 netlist data model. It builds to two targets from the same core sources: a
 native desktop app and a WASM app that runs in a browser or a VSCode webview.
 
+![naja-schematic demo: tracing an output port back to its drivers, then extending the schematic pin by pin](docs/demo.gif)
+
 ## Features
 
 - Interactive hierarchical schematic and equipotential (net fan-out) views

@@ -175,3 +175,41 @@ TEST(PendingRequests, ClearDropsEverything) {
   EXPECT_FALSE(pending.isPending(kA, 0.0));
   EXPECT_FALSE(pending.isPending(kB, 0.0));
 }
+
+// A 1000x600 canvas at scale 2 showing world [0,500] x [0,300], 20px margin
+// (10 world units at that scale).
+constexpr ImVec2 kCanvas{1000.f, 600.f};
+constexpr float  kMargin = 20.f;
+const View       kView{ImVec2(0.f, 0.f), 2.f};
+
+TEST(RevealRect, AlreadyVisibleLeavesTheViewAlone) {
+  View v = revealRect(kView, ImVec2(100.f, 100.f), ImVec2(200.f, 150.f), kCanvas, kMargin, 0.1f);
+  EXPECT_EQ(v.offset.x, 0.f);
+  EXPECT_EQ(v.offset.y, 0.f);
+  EXPECT_EQ(v.scale, 2.f);
+}
+
+TEST(RevealRect, PansTheSmallestAmountToBringASideIn) {
+  // Sticks out 50 left of the view (plus the margin): pan left by 60 only.
+  View v = revealRect(kView, ImVec2(-50.f, 100.f), ImVec2(100.f, 150.f), kCanvas, kMargin, 0.1f);
+  EXPECT_FLOAT_EQ(v.offset.x, -60.f);
+  EXPECT_EQ(v.offset.y, 0.f);
+  EXPECT_EQ(v.scale, 2.f);
+  // Below the bottom edge: pan down.
+  v = revealRect(kView, ImVec2(100.f, 250.f), ImVec2(150.f, 350.f), kCanvas, kMargin, 0.1f);
+  EXPECT_FLOAT_EQ(v.offset.y, 60.f);
+}
+
+TEST(RevealRect, ZoomsOutOnlyWhenTheRectCannotFit) {
+  // 960 world wide: fits the 1000-20*2 px canvas at scale 1, not 2.
+  View v = revealRect(kView, ImVec2(0.f, 0.f), ImVec2(960.f, 100.f), kCanvas, kMargin, 0.1f);
+  EXPECT_FLOAT_EQ(v.scale, 1.f);
+  EXPECT_LE(v.offset.x + kMargin / v.scale, 0.f + 1e-3f);
+  EXPECT_GE(v.offset.x + (kCanvas.x - kMargin) / v.scale, 960.f - 1e-3f);
+}
+
+TEST(RevealRect, NeverZoomsOutPastMinScaleAndThenShowsTheTopLeft) {
+  View v = revealRect(kView, ImVec2(0.f, 0.f), ImVec2(1e5f, 100.f), kCanvas, kMargin, 0.5f);
+  EXPECT_EQ(v.scale, 0.5f);
+  EXPECT_FLOAT_EQ(v.offset.x, -kMargin / 0.5f);
+}

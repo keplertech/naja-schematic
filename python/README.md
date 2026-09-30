@@ -5,6 +5,8 @@ netlists: the [naja-schematic](https://github.com/najaeda/naja-schematic)
 WASM viewer, packaged with the Python backend that answers it from a live
 najaeda netlist.
 
+![naja-schematic demo: tracing an output port back to its drivers, then extending the schematic pin by pin](https://raw.githubusercontent.com/najaeda/naja-schematic/main/docs/demo.gif)
+
 ```bash
 pip install naja-schematic
 ```
@@ -37,9 +39,10 @@ view
 ```
 
 The view and your najaeda code can point each other at instances.
-`show_instance()` takes a najaeda `Instance` or a list of instance names
-(a plain string is one name, never split on `/`, since escaped names can
-contain it). The viewer opens its tree down to that instance, selects it, and
+`show_instance()` takes a najaeda `Instance`, a list of instance ids (as
+`Instance.pathIDs`) or a list of instance names (a plain string is one
+name, never split on `/`, since escaped names can contain it). Anonymous
+instances have no name to go by: reach them with an `Instance` or ids. The viewer opens its tree down to that instance, selects it, and
 draws it alone in the schematic. Each pin there is open, so you can click
 one to add its net and grow the schematic from the instance. In the other
 direction, the instance selected in the viewer (click it in the tree or the
@@ -56,7 +59,8 @@ view.on_select(lambda inst: print("selected", inst))
 ```
 
 `naja_schematic.show(inst)` (or `show(["u_sub", "u_and"])`) starts a new
-view on it.
+view on it. After editing or reloading the design in later cells,
+`view.design_changed()` refreshes an existing view in place.
 
 ## From a shell
 
@@ -69,6 +73,34 @@ serves the viewer page and its WebSocket on `http://localhost:8081/` and
 opens it in a browser. `--stdio` speaks the same protocol as JSON lines on
 stdin/stdout instead, for a host (e.g. an editor extension) that relays
 messages itself. `naja-schematic --help` lists every option.
+
+## From an application that already holds the design
+
+A tool that loads and edits the design itself (with najaeda or the raw
+`naja` bindings) can serve the viewer on it without loading anything:
+
+```python
+import threading, naja_schematic
+
+design_lock = threading.RLock()   # held by the host while it edits the design
+server = naja_schematic.ViewerServer(lock=design_lock)   # port 0: any free port
+server.start()
+server.open_browser()             # or hand server.url to the user
+
+server.annotate(items)            # diagnosis overlay, kept across reloads
+server.show_instance([3, 7])      # instance ids, names, or a najaeda Instance
+server.on_select(lambda id_path, path: print("selected", path))
+with server.replacing_design():   # holds design_lock, then viewers reload
+    netlist.load_verilog("other.v")
+server.stop()
+```
+
+Viewer requests are answered on a background thread while `lock` is held
+(or pass `run=` to answer them on a thread of your choosing). The page's
+URL carries a random access token, and other web pages can't connect to
+the WebSocket. Once the design is replaced, anything a viewer asked about
+or selected in the old one is ignored, even if it arrives late or names
+instance ids the new design reuses.
 
 ## Development
 
