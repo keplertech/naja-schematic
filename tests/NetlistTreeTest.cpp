@@ -1,4 +1,5 @@
 #include "NetlistTree.h"
+#include "TraceStore.h"
 #include <nlohmann/json.hpp>
 
 #include <gtest/gtest.h>
@@ -202,13 +203,26 @@ TEST(NetlistTree, SendLoadEquipotentialOmitsBitForNonBusBit) {
   EXPECT_EQ(provider.sent[0], R"({"request":"load_equipotential","path":[],"term_id":4})");
 }
 
+// "Show Equipotential (add to view)": the net is added, the view isn't cleared.
+TEST(NetlistTree, SendLoadEquipotentialCanKeepTheView) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  bool callbackFired = false;
+  tree.setOnEquipotentialRequest([&] { callbackFired = true; });
+
+  tree.sendLoadEquipotential({}, NetlistTree::TermID{4, false, 0}, /*clearView=*/false);
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  EXPECT_FALSE(callbackFired);
+}
+
 TEST(NetlistTree, SendTraceDriverFormatsScalarRequestAndFiresCallback) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
   bool callbackFired = false;
   tree.setOnEquipotentialRequest([&] { callbackFired = true; });
 
-  tree.sendTraceDriver({1, 2}, 9);
+  tree.sendTraceDriver({1, 2}, 9, {}, "u1/A");
 
   ASSERT_EQ(provider.sent.size(), 1u);
   auto req = nlohmann::json::parse(provider.sent[0]);
@@ -218,13 +232,32 @@ TEST(NetlistTree, SendTraceDriverFormatsScalarRequestAndFiresCallback) {
   EXPECT_FALSE(req.contains("bit"));
   EXPECT_FALSE(req.contains("bits"));
   EXPECT_TRUE(callbackFired);
+  // Registered as a trace, whose id the response will carry back.
+  const Trace* trace = TraceStore::find(req["trace_id"].get<int>());
+  ASSERT_NE(trace, nullptr);
+  EXPECT_EQ(trace->label, "u1/A");
+  TraceStore::clear();
+}
+
+// "Trace to Driver (add to view)": the trace is overlaid, the view isn't cleared.
+TEST(NetlistTree, SendTraceDriverCanKeepTheView) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  bool callbackFired = false;
+  tree.setOnEquipotentialRequest([&] { callbackFired = true; });
+
+  tree.sendTraceDriver({}, 4, {}, "d", /*clearView=*/false);
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  EXPECT_FALSE(callbackFired);
+  TraceStore::clear();
 }
 
 TEST(NetlistTree, SendTraceDriverSingleBitUsesBitKey) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
 
-  tree.sendTraceDriver({}, 4, {3});
+  tree.sendTraceDriver({}, 4, {3}, "d[3]");
 
   ASSERT_EQ(provider.sent.size(), 1u);
   auto req = nlohmann::json::parse(provider.sent[0]);
@@ -236,7 +269,7 @@ TEST(NetlistTree, SendTraceDriverBusSendsOneRequestWithAllBits) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
 
-  tree.sendTraceDriver({}, 4, {0, 1, 2});
+  tree.sendTraceDriver({}, 4, {0, 1, 2}, "d");
 
   ASSERT_EQ(provider.sent.size(), 1u);
   auto req = nlohmann::json::parse(provider.sent[0]);

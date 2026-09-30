@@ -36,11 +36,18 @@ class NetlistTree {
 
     NetlistTreeNode* getNode(unsigned id) const;
     NetlistTreeNode* getRoot() const { return root_; }
-    void sendLoadEquipotential(const Path& path, const TermID& termID) const;
+    // `clearView` resets the schematic first; otherwise the net is added to
+    // what's shown.
+    void sendLoadEquipotential(const Path& path, const TermID& termID,
+                               bool clearView = true) const;
     // Requests the full combinational fan-in cone of the term's net, back to
     // the drivers (see "trace_driver" in CLAUDE.md). For a bus, pass every bit.
+    // Registers the trace in TraceStore under `label` and tags the request
+    // with its trace_id. `clearView` resets the schematic first (like Show
+    // Equipotential); otherwise the trace is overlaid on what's shown.
     void sendTraceDriver(const Path& path, unsigned termChildID,
-                         const std::vector<int>& bits = {}) const;
+                         const std::vector<int>& bits, const std::string& label,
+                         bool clearView = true) const;
     INetlistProvider* getProvider() const { return ws_; }
 
     // Called before every tree-initiated equipotential request.
@@ -153,8 +160,8 @@ class NetlistTreeNode {
     virtual std::string getNetBaseName() const {
       return std::string();
     }
-    // True for a whole-bus term node (msb/lsb both set) — offers a
-    // "Show Bus Equipotential" action instead of the single-bit one.
+    // True for a whole-bus term node (msb/lsb both set) — its menu has only
+    // Show Properties; equipotentials and traces are per bit.
     virtual bool isBus() const {
       return false;
     }

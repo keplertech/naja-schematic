@@ -75,6 +75,12 @@ def test_equipotential_and_trace(top):
     assert trace["response"] == "trace_driver_response"
     # q is driven by a flop: the cone stops right there.
     assert len(trace["equipotentials"]) == 1 and not trace["truncated"]
+    assert "trace_id" not in trace
+
+    # The viewer's trace_id comes back, so it knows which trace this is.
+    (trace,) = handle_request({"request": "trace_driver", "path": [], "term_id": q["child_id"],
+                               "trace_id": 7})
+    assert trace["trace_id"] == 7
 
 
 def test_get_properties(top):

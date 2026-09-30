@@ -16,6 +16,7 @@
 #include "SchematicLayout.h"
 #include "SchematicInteraction.h"
 #include "SelectionStore.h"
+#include "TraceStore.h"
 
 // Net/instance placement and hierarchy frames live in SchematicLayout
 // (pure geometry, unit-tested); this file turns them into drawn shapes.
@@ -511,6 +512,24 @@ ImColor occTermColor(Direction d) {
         default:                return ImColor(255, 255,   0);
     }
 }
+
+// Faint gray for a net that only hidden traces keep in the view.
+constexpr ImU32 kFaintWireColor = IM_COL32(150, 150, 150, 55);
+
+void mergeTraceIds(std::vector<int>& into, const std::vector<int>& ids) {
+    for (int id : ids)
+        if (std::find(into.begin(), into.end(), id) == into.end()) into.push_back(id);
+}
+
+// The drawn color of a wire (or routed tree): a diagnosis color already in
+// `color` wins; else one visible trace gives its color, two or more the
+// convergence color; else faint if only hidden traces show it.
+ImU32 traceWireColor(ImU32 color, const std::vector<int>& traceIds, bool faint) {
+    if (color != NetWire{}.color) return color;
+    if (traceIds.size() >= 2) return TraceStore::convergenceColor();
+    if (traceIds.size() == 1) return TraceStore::color(traceIds.front());
+    return faint ? kFaintWireColor : color;
+}
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -574,14 +593,22 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         auto portIt = g_ctxPortId >= 0 ? g_portEquiByPortId.find(g_ctxPortId)
                                        : g_portEquiByPortId.end();
         if (portIt != g_portEquiByPortId.end()) {
-            if (ImGui::MenuItem("Trace to Driver") && g_provider) {
-                // Adds to the view (like a pin double-click) instead of
-                // clearing it, so the cone extends what's already shown.
+            if (ImGui::MenuItem("Trace to Driver (add to view)") && g_provider) {
+                // Adds to the view (like a pin click) instead of clearing
+                // it: the cone is overlaid on what's shown, as its own trace.
+                std::string label;
+                for (auto& inst : g_schematic.instances) {
+                    const Port* p = g_schematic.findPortById(inst, g_ctxPortId);
+                    if (!p) continue;
+                    label = inst.modelName == "port" ? p->name : traceLabel(inst.path, p->name);
+                    break;
+                }
                 json req;
-                req["request"] = "trace_driver";
-                req["path"]    = portIt->second.pathIds;
-                req["term_id"] = portIt->second.termId;
+                req["request"]  = "trace_driver";
+                req["path"]     = portIt->second.pathIds;
+                req["term_id"]  = portIt->second.termId;
                 if (portIt->second.bit.has_value()) req["bit"] = portIt->second.bit.value();
+                req["trace_id"] = TraceStore::begin(label);
                 g_provider->send(req.dump());
             }
             auto busIt = g_expandedBusGroupByPortId.find(g_ctxPortId);
@@ -747,10 +774,19 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // closest thing this view has to a net name (nets aren't otherwise
     // identified in the equipotential wire format).
     std::vector<std::string> netLabelByEi(equipotentials.size());
+    // The visible traces each net is on, and whether only hidden traces keep
+    // it in the view; per instance, the visible traces reaching it -- two or
+    // more make it a convergence point.
+    std::vector<std::vector<int>> traceIdsByEi(equipotentials.size());
+    std::vector<bool> faintByEi(equipotentials.size(), false);
+    std::map<InstancePath, std::vector<int>> traceIdsByInstance;
 
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
         if (!eq || (eq->terms.empty() && eq->occurrences.empty())) continue;
+        for (int id : eq->traceIds)
+            if (TraceStore::isVisible(id)) traceIdsByEi[ei].push_back(id);
+        faintByEi[ei] = !eq->direct && !eq->traceIds.empty() && traceIdsByEi[ei].empty();
 
         std::vector<Item> drivers, receivers;
         buildItems(eq, drivers, receivers);
@@ -800,6 +836,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     g_pendingPinNets.resolve(pinRequestKey(g_portEquiByPortId[pid]));
                 }
                 equiEnds[ei].push_back({ false, item.path, "", pid, -1, pass == 0 });
+                mergeTraceIds(traceIdsByInstance[item.path], traceIdsByEi[ei]);
             }
         }
     }
@@ -840,6 +877,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.name      = displayPath(key);
         inst.primitiveType = mi.primitiveType;
         inst.diagOutline = DiagnosisStore::instanceColor(key);
+        // A gate two visible traces go through: where they converge.
+        if (inst.diagOutline == 0 && traceIdsByInstance[key].size() >= 2)
+            inst.diagOutline = TraceStore::convergenceColor();
         inst.selected    = SelectionStore::isSelected(key);
         g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.sourceLoc };
         pathToInstId[key] = inst.id;
@@ -1212,6 +1252,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             n.dstInstance = wrs[i].instId;
             n.dstPortId   = wrs[i].portId;
             n.netName     = netLabelByEi[ei];
+            n.traceIds    = traceIdsByEi[ei];
+            n.faint       = faintByEi[ei];
 
             // A flagged endpoint pin colors the whole wire so a diagnosed
             // net stands out even when the flagged pin is off-screen.
@@ -1243,8 +1285,15 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (it == firstOf.end()) {
                 firstOf[k] = merged.size();
                 merged.push_back(n);
-            } else if (portIsBus(n.srcInstance, n.srcPortId) || portIsBus(n.dstInstance, n.dstPortId)) {
-                merged[it->second].isBus = true;
+                continue;
+            }
+            NetWire& m = merged[it->second];
+            // The same wire from two nets (e.g. a trace's partial net and the
+            // full one): it's on every trace either is on.
+            mergeTraceIds(m.traceIds, n.traceIds);
+            m.faint = m.faint && n.faint;
+            if (portIsBus(n.srcInstance, n.srcPortId) || portIsBus(n.dstInstance, n.dstPortId)) {
+                m.isBus = true;
             }
             // else: the same net drawn twice (e.g. overlapping trace nets) --
             // just one wire, not a bus.
@@ -1268,6 +1317,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         }
         std::map<std::pair<int, int>, size_t> routeOfSource;
         std::vector<RouteNet> routeNetsIn;
+        struct RouteTraces { std::vector<int> ids; bool faint = true; };
+        std::vector<RouteTraces> routeTraces;
         g_schematic.routes.clear();
         auto pinOf = [](const InstanceShape& inst, const Port& p) {
             return RoutePin{ portAnchor(inst, p), p.lx >= 0.f };
@@ -1288,7 +1339,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 r.color   = n.color;
                 r.netName = n.netName;
                 g_schematic.routes.push_back(std::move(r));
+                routeTraces.emplace_back();
             }
+            mergeTraceIds(routeTraces[it->second].ids, n.traceIds);
+            routeTraces[it->second].faint = routeTraces[it->second].faint && n.faint;
             routeNetsIn[it->second].receivers.push_back(pinOf(*dstInst, *dstPort));
             auto& r = g_schematic.routes[it->second];
             // A flagged wire colors the whole tree it belongs to.
@@ -1296,6 +1350,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             r.isBus = r.isBus || n.isBus;
             n.routed = true;
         }
+        for (size_t i = 0; i < g_schematic.routes.size(); ++i) {
+            auto& r = g_schematic.routes[i];
+            r.color = traceWireColor(r.color, routeTraces[i].ids, routeTraces[i].faint);
+        }
+        // Wiring nested in an expanded instance isn't routed: color it here.
+        for (auto& n : g_schematic.nets)
+            if (!n.routed) n.color = traceWireColor(n.color, n.traceIds, n.faint);
         auto routed = routeNets(routeNetsIn, obstacles, keepOut);
         for (size_t i = 0; i < routed.size(); ++i) {
             g_schematic.routes[i].segments  = std::move(routed[i].segments);
@@ -1392,7 +1453,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 case PinAction::None:      ImGui::TextDisabled("Net shown"); break;
             }
             if (g_portEquiByPortId.count(port->id))
-                ImGui::TextDisabled("Right-click: Trace to Driver");
+                ImGui::TextDisabled("Right-click: Trace to Driver (add to view)");
             ImGui::EndTooltip();
         }
     }
@@ -1414,12 +1475,19 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (inst.id != g_hintShapeId) { g_hintShapeId = inst.id; g_hintSince = ImGui::GetTime(); }
             const bool showHint = inst.partialInterface && ImGui::GetTime() - g_hintSince > 0.6;
             auto diagnostics = DiagnosisStore::instanceDiagnostics(it->second.path);
-            if (!diagnostics.empty() || showHint) {
+            const auto& traceIds = traceIdsByInstance[it->second.path];
+            if (!diagnostics.empty() || showHint || traceIds.size() >= 2) {
                 ImGui::BeginTooltip();
                 for (const auto* d : diagnostics) {
                     ImGui::TextColored(ImColor(DiagnosisStore::colorForSeverity(d->severity)).Value,
                                        "[%s] %s", toString(d->severity), d->message.c_str());
                     if (!d->source.empty()) ImGui::TextDisabled("source: %s", d->source.c_str());
+                }
+                if (traceIds.size() >= 2) {
+                    ImGui::TextUnformatted("On traces:");
+                    for (int id : traceIds)
+                        if (const Trace* t = TraceStore::find(id))
+                            ImGui::TextColored(ImColor(TraceStore::color(id)).Value, "  %s", t->label.c_str());
                 }
                 if (showHint) ImGui::TextDisabled("Double-click: show all pins");
                 ImGui::EndTooltip();
@@ -1436,7 +1504,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         // Nothing drawn yet: the schematic is only ever filled from a pin's
         // context menu, which a first-time user has no way to guess.
         const char* hint = "Right-click a pin in the Netlist Hierarchy (e.g. top > Terms > a port)\n"
-                           "and choose Show Equipotential or Trace to Driver.";
+                           "and choose Show Equipotential or Trace to Driver.\n"
+                           "Right-click pins on the schematic to add more.";
         ImVec2 ts = ImGui::CalcTextSize(hint);
         dl->AddText(ImVec2(cpos.x + (inner.x - ts.x) * 0.5f, cpos.y + (inner.y - ts.y) * 0.5f),
                     IM_COL32(120, 120, 120, 255), hint);

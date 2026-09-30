@@ -512,11 +512,15 @@ def _handle_trace_driver(u, request):
     cone, truncated = trace_driver_cone(starts)
     if truncated:
         log.warning("trace_driver: cone truncated at %d nets", MAX_TRACE_NETS)
-    return [{
+    reply = {
         "response": "trace_driver_response",
         "equipotentials": [equipotential_to_json(e, sinks) for e, sinks in cone],
         "truncated": truncated
-    }]
+    }
+    # Echoed so the viewer knows which of its traces the nets are for.
+    if "trace_id" in request:
+        reply["trace_id"] = request["trace_id"]
+    return [reply]
 
 
 def bit_terms_json(design):
