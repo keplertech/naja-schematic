@@ -426,11 +426,12 @@ occurrence's enclosing modules.
 Instance entries (`instances_response`/`primitives_response` children,
 equipotential occurrences, `instance_resolved`'s `instance`) carry a
 `primitive_type` (`"and"`, `"nand"`, `"or"`, `"nor"`, `"xor"`, `"xnor"`,
-`"inv"`, `"buf"`, `"dff"`, `"assign"`, `"unknown"`) that picks the gate
+`"inv"`, `"buf"`, `"dff"`, `"assign"`, `"tie0"`, `"tie1"`, `"unknown"`) that picks the gate
 symbol `SchematicView::drawInstance()` draws, and term entries carry
 `"clock": true` on a sequential cell's clock pin (the DFF clock notch).
 Both come from naja's modeling of the cell -- `SNLDesignModeling`'s
-truth-table checks (`isAnd`, ...), `isSequential` and `isClock` -- and
+truth-table checks (`isAnd`, ..., `isConst0`/`isConst1` for tie cells, whose
+Liberty `function` is `"0"`/`"1"`), `isSequential` and `isClock` -- and
 **never from a cell or pin name**: a cell naja has no model for (e.g.
 gate-level Verilog without Liberty) is `"unknown"` and draws as a box.
 

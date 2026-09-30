@@ -412,7 +412,7 @@ static void drawGenericInstance(ImDrawList* dl, const InstanceShape& inst,
 // Standard shapes library
 //
 // Traditional (non-IEC) gate symbols for PrimitiveType::{And,Nand,Or,Nor,
-// Xor,Xnor,Inv,Buf,Assign}. Each body fills its instance's box exactly --
+// Xor,Xnor,Inv,Buf,Assign,Tie0,Tie1}. Each body fills its instance's box exactly --
 // flat back on the left edge where the input pins attach, output tip (or
 // negation bubble) on the right edge where the output pin attaches -- so the
 // pin ticks drawn by drawPorts() always touch the body. Box size and pin
@@ -528,6 +528,38 @@ static void drawBufLikeInstance(ImDrawList* dl, const InstanceShape& inst,
         }
     }
     finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
+}
+
+// TIE1 / TIE0 (constant cells: Liberty function "1" / "0") -- the supply
+// symbol their output is tied to: a stem rising to a bar (VDD) or dropping
+// to the three-line ground symbol (GND), with a lead from the stem to the
+// output pin on the right edge. No body to fill: the symbol is the lines.
+static void drawTieInstance(ImDrawList* dl, const InstanceShape& inst,
+                            const SchematicView& sv,
+                            const ImVec2& canvasPos, const ImVec2& canvasSize,
+                            bool high) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    const float w  = rmax.x - rmin.x, h = rmax.y - rmin.y;
+    const float cy = (rmin.y + rmax.y) * 0.5f;
+    const float xs = rmin.x + w * 0.4f;                         // stem
+    const float ye = high ? rmin.y + h * 0.2f : rmax.y - h * 0.35f; // stem end
+
+    auto stroke = [&](ImU32 color, float thickness) {
+        dl->AddLine(ImVec2(rmax.x, cy), ImVec2(xs, cy), color, thickness);
+        dl->AddLine(ImVec2(xs, cy), ImVec2(xs, ye), color, thickness);
+        if (high) {
+            dl->AddLine(ImVec2(xs - w * 0.3f, ye), ImVec2(xs + w * 0.3f, ye), color, thickness);
+        } else {
+            for (int i = 0; i < 3; ++i) {
+                float half = w * 0.3f * (1.0f - i / 3.0f), y = ye + i * h * 0.1f;
+                dl->AddLine(ImVec2(xs - half, y), ImVec2(xs + half, y), color, thickness);
+            }
+        }
+    };
+    if (inst.diagOutline != 0) stroke(inst.diagOutline, 3.0f);
+    stroke(kInstanceLineColor, std::max(1.25f, 1.5f * sv.transform.scale));
+    finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, /*negated=*/false);
 }
 
 // DFF (and other clocked sequential cells) — the generic box, plus the
@@ -699,6 +731,12 @@ void SchematicView::drawInstance(ImDrawList* dl, const InstanceShape& inst,
             break;
         case PrimitiveType::Inv:
             drawBufLikeInstance(dl, inst, *this, canvasPos, canvasSize, /*negated=*/true);
+            break;
+        case PrimitiveType::Tie0:
+            drawTieInstance(dl, inst, *this, canvasPos, canvasSize, /*high=*/false);
+            break;
+        case PrimitiveType::Tie1:
+            drawTieInstance(dl, inst, *this, canvasPos, canvasSize, /*high=*/true);
             break;
         case PrimitiveType::Dff:
             drawDffInstance(dl, inst, *this, canvasPos, canvasSize);

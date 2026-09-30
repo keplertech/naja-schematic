@@ -189,6 +189,16 @@ TEST(Symbols, BufferIsASmallSquare) {
   EXPECT_EQ(g.leftY, g.rightY);
 }
 
+TEST(Symbols, TieCellIsASmallSquareWithItsOutputCentered) {
+  for (auto type : {PrimitiveType::Tie0, PrimitiveType::Tie1}) {
+    EXPECT_TRUE(isGateSymbol(type));
+    auto g = symbolGeometry(type, {}, {"Z"});
+    EXPECT_EQ(g.w, g.h);
+    EXPECT_TRUE(g.leftY.empty());
+    EXPECT_EQ(g.rightY, (std::vector<float>{0.5f * g.h}));
+  }
+}
+
 TEST(Symbols, BoxPinsRunDownFromTheTopAndItsWidthFitsTheirNames) {
   auto narrow = symbolGeometry(PrimitiveType::Unknown, {"A", "B", "C"}, {"Y"});
   EXPECT_EQ(narrow.leftY, (std::vector<float>{20.f, 40.f, 60.f}));

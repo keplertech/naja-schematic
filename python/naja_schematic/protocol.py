@@ -62,6 +62,8 @@ def has_visible_primitive_instances(design):
 # getPrimitiveType() mirrors this, same as the rest of the wire protocol.
 _PRIMITIVE_TYPE_CHECKS = (
     ("isSequential", "dff"),
+    ("isConst0", "tie0"),
+    ("isConst1", "tie1"),
     ("isInv", "inv"),
     ("isBuf", "buf"),
     ("isAnd", "and"),

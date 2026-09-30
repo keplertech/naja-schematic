@@ -161,7 +161,7 @@ def test_focus_instance_message():
 
 def test_get_primitive_type_uses_naja_modeling_not_names():
     checks = ("isAssign", "isSequential", "isInv", "isBuf", "isAnd", "isNand",
-              "isOr", "isNor", "isXor", "isXnor")
+              "isOr", "isNor", "isXor", "isXnor", "isConst0", "isConst1")
 
     def model(name, *true_checks):
         return SimpleNamespace(getName=lambda: name,
@@ -171,5 +171,7 @@ def test_get_primitive_type_uses_naja_modeling_not_names():
     assert protocol.get_primitive_type(model("x", "isSequential")) == "dff"
     assert protocol.get_primitive_type(model("ND2", "isNand")) == "nand"
     assert protocol.get_primitive_type(model("OAI", "isXnor")) == "xnor"
+    assert protocol.get_primitive_type(model("TIEL", "isConst0")) == "tie0"
+    assert protocol.get_primitive_type(model("TIEH", "isConst1")) == "tie1"
     # The name never matters: an unmodelled "AND2" is just a box.
     assert protocol.get_primitive_type(model("AND2_X1")) == "unknown"

@@ -138,6 +138,8 @@ static PrimitiveType getPrimitiveType(const SNLDesign* model) {
   if (!model) return PrimitiveType::Unknown;
   if (NLDB0::isAssign(model)) return PrimitiveType::Assign;
   if (SNLDesignModeling::isSequential(model)) return PrimitiveType::Dff;
+  if (SNLDesignModeling::isConst0(model)) return PrimitiveType::Tie0;
+  if (SNLDesignModeling::isConst1(model)) return PrimitiveType::Tie1;
   if (SNLDesignModeling::isInv(model))  return PrimitiveType::Inv;
   if (SNLDesignModeling::isBuf(model))  return PrimitiveType::Buf;
   if (SNLDesignModeling::isAnd(model))  return PrimitiveType::And;

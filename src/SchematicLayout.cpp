@@ -102,6 +102,7 @@ bool isGateSymbol(PrimitiveType type) {
         case PrimitiveType::Xor:  case PrimitiveType::Xnor:
         case PrimitiveType::Inv:  case PrimitiveType::Buf:
         case PrimitiveType::Assign:
+        case PrimitiveType::Tie0: case PrimitiveType::Tie1:
             return true;
         default:
             return false;
@@ -121,7 +122,8 @@ SymbolGeometry symbolGeometry(PrimitiveType type,
             g.leftY.push_back(0.5f * g.h + kPinPitch * (float(i) - 0.5f * float(nL - 1)));
         if (nR) g.rightY.push_back(0.5f * g.h);
         const bool single = type == PrimitiveType::Inv || type == PrimitiveType::Buf ||
-                            type == PrimitiveType::Assign;
+                            type == PrimitiveType::Assign || type == PrimitiveType::Tie0 ||
+                            type == PrimitiveType::Tie1;
         const bool xorLike = type == PrimitiveType::Xor || type == PrimitiveType::Xnor;
         g.w = single ? 2.f * kPinPitch : snapUp(g.h + kGrid + (xorLike ? kGrid : 0.f), kGrid);
         return g;

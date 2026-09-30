@@ -32,7 +32,7 @@ struct SourceLoc {
 // Coarse gate/cell function classification for an instance, used to pick a
 // standard schematic symbol instead of a generic box (see
 // SchematicView::drawInstance()). It comes from naja's modeling of the cell
-// -- SNLDesignModeling's truth-table checks (isAnd, isNor, ...) and
+// -- SNLDesignModeling's truth-table checks (isAnd, isNor, isConst0, ...) and
 // isSequential -- never from its name: both LocalSNLProvider
 // (getPrimitiveType()) and python/naja_schematic/protocol.py
 // (get_primitive_type()) compute it the same way. Unknown is the default for
@@ -53,6 +53,8 @@ enum class PrimitiveType {
   Buf,
   Dff,
   Assign,
+  Tie0,    // constant-0 cell (Liberty function "0", e.g. TIEL)
+  Tie1,    // constant-1 cell (Liberty function "1", e.g. TIEH)
 };
 
 inline const char* toString(PrimitiveType t) {
@@ -67,6 +69,8 @@ inline const char* toString(PrimitiveType t) {
     case PrimitiveType::Buf:    return "buf";
     case PrimitiveType::Dff:    return "dff";
     case PrimitiveType::Assign: return "assign";
+    case PrimitiveType::Tie0:   return "tie0";
+    case PrimitiveType::Tie1:   return "tie1";
     default:                    return "unknown";
   }
 }
@@ -82,6 +86,8 @@ inline PrimitiveType primitiveTypeFromString(const std::string& s) {
   if (s == "buf")    return PrimitiveType::Buf;
   if (s == "dff")    return PrimitiveType::Dff;
   if (s == "assign") return PrimitiveType::Assign;
+  if (s == "tie0")   return PrimitiveType::Tie0;
+  if (s == "tie1")   return PrimitiveType::Tie1;
   return PrimitiveType::Unknown;
 }
 

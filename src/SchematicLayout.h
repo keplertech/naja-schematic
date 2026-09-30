@@ -68,7 +68,7 @@ std::string shownName(const InstanceShape& s, const NameWidthFn& width);
 float footprintWidth(const InstanceShape& s, const NameWidthFn& width);
 
 // ---------------------------------------------------------------------------
-// Symbols. A gate (AND/OR/XOR families, INV/BUF, assign) is drawn as its
+// Symbols. A gate (AND/OR/XOR families, INV/BUF, assign, tie cells) is drawn as its
 // standard symbol, sized by its input count; anything else is a box sized to
 // fit its pin names, which are drawn inside it. Pins sit on the kPinPitch
 // grid: a gate's inputs are centered on its single output, a box's pins run
