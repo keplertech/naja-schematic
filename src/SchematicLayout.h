@@ -92,8 +92,10 @@ SymbolGeometry symbolGeometry(PrimitiveType type,
 // ---------------------------------------------------------------------------
 // Layered placement (Sugiyama-style):
 //   1. cycles are broken (DFS back edges are ignored for layering);
-//   2. each instance gets a logic level: longest path from the sources, then
-//      each source is pulled right next to its nearest receiver;
+//   2. each instance gets a logic level: longest path from the sources; an
+//      instance driving a top-level output and no other instance goes to
+//      the last column, next to the output ports; then each source is pulled
+//      right next to its nearest receiver;
 //   3. instances are ordered within each level by barycenter sweeps to cut
 //      wire crossings (first-seen order breaks ties, so adding a net mostly
 //      appends to the drawing);
@@ -106,6 +108,7 @@ SymbolGeometry symbolGeometry(PrimitiveType type,
 // ---------------------------------------------------------------------------
 struct PlaceNode {
     float w = 0.f, h = 0.f;
+    bool  drivesOutput = false;  // drives a net that reaches a top-level output
 };
 struct PlacePin {
     int   node = 0;

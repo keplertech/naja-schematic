@@ -231,7 +231,18 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
             if (--indeg[v] == 0) topo.push_back(v);
         }
     }
-    // ...then pull every node with no forward in-edge right up against its
+    // ...then send every node that only feeds top-level outputs (e.g. a tie
+    // cell on an output) to the last column, beside the output ports, rather
+    // than leave it at its own depth with a wire across the whole sheet...
+    int lastLevel = 0;
+    for (int v = 0; v < n; ++v) lastLevel = std::max(lastLevel, out.level[v]);
+    for (int v = 0; v < n; ++v) {
+        if (!nodes[v].drivesOutput) continue;
+        bool hasSucc = false;
+        for (int e : outEdges[v]) if (!isBack[e]) hasSucc = true;
+        if (!hasSucc) out.level[v] = lastLevel;
+    }
+    // ...and pull every node with no forward in-edge right up against its
     // nearest receiver, so a cone's inputs sit next to what they feed rather
     // than all stacked in column 0.
     for (auto it = topo.rbegin(); it != topo.rend(); ++it) {

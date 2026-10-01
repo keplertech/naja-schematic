@@ -1093,6 +1093,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     std::vector<PlaceNet> placeNets;
     for (const auto& ends : equiEnds) {
         PlaceNet pn;
+        // A top-level term receiving the net is an output port.
+        const bool toOutput = std::any_of(ends.begin(), ends.end(),
+                                          [](const WireEnd& we) { return we.isTerm && !we.drives; });
         for (const auto& we : ends) {
             if (we.isTerm) continue;
             auto kit = pathToInstId.find(we.path);
@@ -1102,6 +1105,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (!p) continue;
             PlacePin pin{ nodeOfShape[s->id], (p->ly + 0.5f) * s->h };
             (we.drives ? pn.drivers : pn.receivers).push_back(pin);
+            if (we.drives && toOutput) placeNodes[pin.node].drivesOutput = true;
         }
         if (!pn.drivers.empty() && !pn.receivers.empty()) placeNets.push_back(std::move(pn));
     }

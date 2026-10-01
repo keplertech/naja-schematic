@@ -286,6 +286,20 @@ TEST(LayeredPlacement, ASourceSitsNextToTheNodeItFeeds) {
   EXPECT_EQ(p.level[4], 2);
 }
 
+TEST(LayeredPlacement, ANodeOnlyFeedingOutputsSitsInTheLastColumn) {
+  // Chain 0 -> 1 -> 2 -> 3 (3 drives an output). A tie cell 4 on an output,
+  // a gate 5 fed by 0 on an output, and 1 feeding both 2 and an output.
+  std::vector<PlaceNode> nodes(6, {kBoxW, kBoxH});
+  nodes[1].drivesOutput = nodes[3].drivesOutput = true;
+  nodes[4].drivesOutput = nodes[5].drivesOutput = true;
+  auto p = layeredPlacement(nodes, {link(0, {1, 5}), link(1, {2}), link(2, {3})});
+  EXPECT_EQ(p.level[3], 3);
+  EXPECT_EQ(p.level[4], 3);  // not column 0, a sheet's width from its port
+  EXPECT_EQ(p.level[5], 3);
+  EXPECT_EQ(p.level[1], 1);  // also feeds 2: stays in its cone
+  expectNoOverlap(nodes, p);
+}
+
 TEST(LayeredPlacement, AFeedbackLoopStillFlowsLeftToRight) {
   // A flop and a gate feeding each other.
   std::vector<PlaceNode> nodes(2, {kBoxW, kBoxH});
