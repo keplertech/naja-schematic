@@ -91,7 +91,8 @@ constexpr ImU32 kBoundaryPortLineColor = IM_COL32(28, 110, 60, 255);
 constexpr ImU32 kPinHoverColor   = IM_COL32(20, 110, 235, 255);
 constexpr ImU32 kPinPendingColor = IM_COL32(150, 90, 220, 255);
 // The selected instance (SelectionStore) gets an outline just outside its
-// box, in the same interaction blue as a hovered pin.
+// box, the selected net a halo around its wires, in the same interaction
+// blue as a hovered pin.
 constexpr ImU32 kSelectionColor = IM_COL32(20, 110, 235, 255);
 void addSelectionOutline(SchematicPainter* dl, ImVec2 rmin, ImVec2 rmax) {
     dl->AddRect(ImVec2(rmin.x - 4.0f, rmin.y - 4.0f), ImVec2(rmax.x + 4.0f, rmax.y + 4.0f),
@@ -379,7 +380,7 @@ static void drawGenericInstance(SchematicPainter* dl, const InstanceShape& inst,
         // the partialInterface dashed border above.
         if (inst.diagOutline != 0)
             dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, 3.5f);
-        if (inst.selected && !sv.exporting) addSelectionOutline(dl, rmin, rmax);
+        if (inst.selected) addSelectionOutline(dl, rmin, rmax);
 
         drawInstanceName(dl, inst, sv, rmin);
 
@@ -442,7 +443,7 @@ static void finishGate(SchematicPainter* dl, const InstanceShape& inst, const Sc
         drawNegationBubble(dl, ImVec2(bodyRight(rmax, true, sv.transform.scale), (rmin.y + rmax.y) * 0.5f),
                            r, kInstanceFillColor);
     }
-    if (inst.selected && !sv.exporting) addSelectionOutline(dl, rmin, rmax);
+    if (inst.selected) addSelectionOutline(dl, rmin, rmax);
     drawInstanceName(dl, inst, sv, rmin);
     drawPorts(dl, inst, sv, canvasPos, canvasSize, /*namesInside=*/false);
 }
@@ -674,7 +675,7 @@ static void drawHierGroupInstance(SchematicPainter* dl, const InstanceShape& ins
     dl->AddRect(rmin, rmax, IM_COL32(70, 80, 115, 220), 0.0f, 0, 1.25f);
     if (inst.diagOutline != 0)
         dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, 3.5f);
-    if (inst.selected && !sv.exporting) addSelectionOutline(dl, rmin, rmax);
+    if (inst.selected) addSelectionOutline(dl, rmin, rmax);
 
     float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
     if (!inst.name.empty() && fontSize > 0.0f) {
@@ -841,6 +842,17 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
     float thickness = zoomedSizeOrHidden(kWireBaseThickness, transform.scale, kMinWireThickness);
     if (thickness <= 0.0f) return;
     if (route.isBus) thickness *= 2.0f;
+    // The selected net: a halo in the selection color under its wires and
+    // junction dots, so its own (trace, diagnosis) colors still show.
+    if (route.selected) {
+        const float halo = thickness + 5.0f;
+        for (const auto& seg : route.segments)
+            dl->AddLine(worldToScreen(seg.a, canvasPos, canvasSize),
+                        worldToScreen(seg.b, canvasPos, canvasSize), kSelectionColor, halo);
+        for (const auto& seg : route.segments)
+            for (ImVec2 w : { seg.a, seg.b })  // square corners and ends
+                dl->AddCircleFilled(worldToScreen(w, canvasPos, canvasSize), halo * 0.5f, kSelectionColor);
+    }
     const bool striped = route.stripeColors.size() >= 2 &&
                          kStripeWorldLen * transform.scale >= kMinStripePx;
     // The stripe color at world coordinate `t` along a segment's axis.
@@ -1126,7 +1138,8 @@ std::string SchematicView::exportSvg(float margin) const {
     ImVec2 lo, hi;
     if (!computeWorldBounds(lo, hi)) return "";
     // The whole sheet at 1x: nothing is small enough to fade out (see the
-    // label legibility helpers above), and no interaction feedback.
+    // label legibility helpers above), and no hover or pending feedback --
+    // but the selection is kept, so an export can point at something.
     SchematicView sheet = *this;
     sheet.exporting = true;
     sheet.hoveredPortId = -1;

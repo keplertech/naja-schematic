@@ -41,6 +41,10 @@ public:
         std::vector<ImU32> stripeColors;
         bool        isBus = false;
         std::string netName;
+        // The net this tree draws, and whether it's the selected one
+        // (SelectionStore): drawn over a selection-colored halo.
+        SchematicNetRef ref;
+        bool        selected = false;
     };
     std::vector<NetRoute> routes;
     Transform transform;
@@ -85,10 +89,10 @@ public:
     void render(SchematicPainter& painter, const ImVec2& canvasPos, const ImVec2& canvasSize);
 
     // The whole schematic as an SVG document, at 1x with `margin` world
-    // units around it, without interaction feedback (hover, selection,
-    // pending pins). "" when there is nothing to draw.
+    // units around it, without transient interaction feedback (hover,
+    // pending pins); the selection is kept. "" when there is nothing to draw.
     std::string exportSvg(float margin = 24.0f) const;
-    // Set on the copy exportSvg() draws: skips interaction feedback.
+    // Set on the copy exportSvg() draws: skips transient interaction feedback.
     bool exporting = false;
 
     bool computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const;

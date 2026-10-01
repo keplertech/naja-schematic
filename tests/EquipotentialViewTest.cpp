@@ -530,6 +530,85 @@ TEST_F(SchematicClicks, ClickingAPinDoesNotChangeTheSelection) {
   EXPECT_FALSE(SelectionStore::hasSelection());
 }
 
+// The middle of the route's longest segment, on screen: a point on its wires
+// away from the pins.
+static ImVec2 wireScreen(const SchematicView& sv, const SchematicView::NetRoute& r) {
+  const SchematicLayout::RouteSegment* best = nullptr;
+  auto len = [](const SchematicLayout::RouteSegment& s) {
+    return std::abs(s.b.x - s.a.x) + std::abs(s.b.y - s.a.y);
+  };
+  for (const auto& s : r.segments)
+    if (!best || len(s) > len(*best)) best = &s;
+  EXPECT_NE(best, nullptr);
+  if (!best) return ImVec2();
+  ImVec2 mid((best->a.x + best->b.x) * 0.5f, (best->a.y + best->b.y) * 0.5f);
+  return sv.worldToScreen(mid, EquipotentialView::canvasOriginForTesting(), ImVec2());
+}
+
+TEST_F(SchematicClicks, ClickingAWireSelectsItsNetAndDrawsItSelected) {
+  showFirstNet();
+  ASSERT_EQ(sv().routes.size(), 1u);
+  const SchematicNetRef net{{{1, "u1"}}, "Q", false};
+  EXPECT_EQ(sv().routes[0].ref, net);
+  moveTo(wireScreen(sv(), sv().routes[0]));
+  click();
+  EXPECT_TRUE(SelectionStore::isNetSelected(net));
+  EXPECT_FALSE(SelectionStore::hasSelection());
+  frame();
+  EXPECT_TRUE(sv().routes[0].selected);
+  // Nothing is asked of the provider: a net selection stays in the view.
+  EXPECT_TRUE(sent("load_equipotential").empty());
+}
+
+TEST_F(SchematicClicks, SelectingAnInstanceDropsTheNetSelectionAndBack) {
+  showFirstNet();
+  moveTo(wireScreen(sv(), sv().routes[0]));
+  click();
+  ASSERT_TRUE(SelectionStore::hasNetSelection());
+
+  moveTo(boxCenterScreen({{2, "u2"}}));
+  click();
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{2, "u2"}}));
+  EXPECT_FALSE(SelectionStore::hasNetSelection());
+  frame();
+  EXPECT_FALSE(sv().routes[0].selected);
+
+  moveTo(wireScreen(sv(), sv().routes[0]));
+  click();
+  EXPECT_TRUE(SelectionStore::hasNetSelection());
+  EXPECT_FALSE(SelectionStore::hasSelection());
+  frame();
+  EXPECT_FALSE(shape({{2, "u2"}})->selected);
+}
+
+TEST_F(SchematicClicks, ANetFromATopLevelPortIsNamedByThePort) {
+  Equipotential e{true, {}, {}};
+  e.terms.push_back(BitTerm{"a", 0, Direction::Input, std::nullopt});
+  e.occurrences.push_back(occ("u1", 1, "A", 10, Direction::Input, 1));
+  add(e);
+  frame(3);
+  ASSERT_EQ(sv().routes.size(), 1u);
+  EXPECT_EQ(sv().routes[0].ref, (SchematicNetRef{{}, "a", true}));
+}
+
+TEST_F(SchematicClicks, ClickingAPinStillRunsItsActionNotANetSelection) {
+  showFirstNet();
+  expandU2();
+  moveTo(pinScreen({{2, "u2"}}, "A"));  // the wire ends on it
+  click();
+  EXPECT_FALSE(SelectionStore::hasNetSelection());
+}
+
+TEST_F(SchematicClicks, ExportKeepsTheNetSelection) {
+  showFirstNet();
+  SelectionStore::selectNet(sv().routes[0].ref);
+  moveTo(ImVec2(5.f, 5.f));  // nothing hovered
+  frame();
+  ASSERT_TRUE(sv().routes[0].selected);
+  const std::string svg = EquipotentialView::exportSvg();
+  EXPECT_NE(svg.find("rgb(20,110,235)"), std::string::npos);  // the halo
+}
+
 TEST_F(SchematicClicks, ASelectionMadeElsewhereIsDrawnInTheSchematic) {
   showFirstNet();
   SelectionStore::select(InstancePath{{1, "u1"}}, SelectionStore::Origin::Host);
@@ -776,14 +855,23 @@ TEST_F(SchematicClicks, ExportsTheWholeSheetAsSvgWithRealText) {
   EXPECT_NE(svg.find(size), std::string::npos) << size;
 }
 
-TEST_F(SchematicClicks, ExportLeavesOutInteractionFeedback) {
+TEST_F(SchematicClicks, ExportLeavesOutHoverFeedback) {
   showFirstNet();
   moveTo(pinScreen({{2, "u2"}}, "A"));           // hovered pin
-  SelectionStore::select(InstancePath{{1, "u1"}}, SelectionStore::Origin::Tree);
   frame();
   ASSERT_GE(sv().hoveredPortId, 0);
   const std::string svg = EquipotentialView::exportSvg();
-  EXPECT_EQ(svg.find("rgb(20,110,235)"), std::string::npos);  // hover / selection blue
+  EXPECT_EQ(svg.find("rgb(20,110,235)"), std::string::npos);  // hover blue
+}
+
+TEST_F(SchematicClicks, ExportKeepsTheInstanceSelection) {
+  showFirstNet();
+  moveTo(ImVec2(5.f, 5.f));  // nothing hovered
+  SelectionStore::select(InstancePath{{1, "u1"}}, SelectionStore::Origin::Tree);
+  frame();
+  ASSERT_TRUE(shape({{1, "u1"}})->selected);
+  const std::string svg = EquipotentialView::exportSvg();
+  EXPECT_NE(svg.find("rgb(20,110,235)"), std::string::npos);  // the outline
 }
 
 TEST_F(SchematicClicks, ExportEscapesNames) {

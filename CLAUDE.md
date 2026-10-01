@@ -674,10 +674,17 @@ appear as boxes/pins there).
   color, so shared gates stay unambiguous) and a near-white one (invisible
   on the white canvas).
 - **`SelectionStore`** — global static store (same pattern) for the one
-  selected instance, by `InstancePath` (`{}` = top). It's set from the tree, the
-  schematic or a host `focus_instance`, and drawn highlighted in both
-  views. Its listener (installed in `AppLogic.cpp`) reports each change to
-  the host. `NetlistTree` reveals selections made outside it by comparing
+  selection: an instance, by `InstancePath` (`{}` = top), or a schematic
+  net, by `SchematicNetRef` (the pin its wire tree starts from: instance
+  path + pin name, or a top-level port name) -- selecting one drops the
+  other. An instance is set from the tree, the schematic or a host
+  `focus_instance`, and drawn highlighted in both views. A net is set by
+  clicking its wires in the schematic (`SchematicInteraction::pickWire`,
+  tried after pins and before box bodies) and drawn with a halo
+  (`NetRoute::selected`); it's view-only, not reported to the host. Only
+  routed (top-level) wires are selectable, not wiring nested in an
+  expanded instance. Its listener (installed in `AppLogic.cpp`) reports
+  each instance change to the host. `NetlistTree` reveals selections made outside it by comparing
   `revision()`. Cleared on every fresh `root_response`/`root_loaded`.
 - **`SchematicLayout`** — the schematic's pure geometry, split out of
   `EquipotentialView` so it's unit-testable without ImGui frames or a
@@ -712,7 +719,8 @@ appear as boxes/pins there).
   writes the same drawing as SVG, keeping text as `<text>` pinned to the
   ImGui-measured width (`textLength`). `SchematicView::exportSvg()` draws a
   copy of the view at 1x over the whole sheet, with `exporting` set to leave
-  out hover, selection, pending pins and the hierarchy toggle. At 1x no
+  out hover, pending pins and the hierarchy toggle; the selected instance or
+  net is kept (same outline/halo as on screen). At 1x no
   label or pin fades out. **File > Export Schematic as SVG...** saves it
   (native: `NativeFileDialog::saveFile()`; WASM: a Blob download,
   `najaDownloadText` in `AppLogic.cpp`). New drawing code goes through

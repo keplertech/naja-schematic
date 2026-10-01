@@ -442,6 +442,20 @@ struct InstanceShape {
     bool selected = false;
 };
 
+// A net in the schematic (one routed wire tree), named by the pin its wires
+// start from -- the driver when it has one: an instance pin, or a top-level
+// port (`port` set, `path` {}). `pin` is the pin as drawn (a collapsed bus's
+// base name). Rebuilt from the shapes each frame, so it stays the same when
+// the layout moves; it names what's drawn, not a netlist object.
+struct SchematicNetRef {
+    InstancePath path;
+    std::string  pin;
+    bool         port = false;
+
+    friend bool operator==(const SchematicNetRef&, const SchematicNetRef&) = default;
+    friend auto operator<=>(const SchematicNetRef&, const SchematicNetRef&) = default;
+};
+
 struct NetWire {
     int id = 0;
     int srcInstance = 0;

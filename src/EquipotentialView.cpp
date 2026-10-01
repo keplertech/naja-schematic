@@ -219,6 +219,15 @@ static void requestPinNet(const InstanceShape& inst, const Port& port) {
 // Runs the click action of the pin under `wp`, if any. Returns true when a
 // pin was hit (even one with no action), so the click isn't also treated as
 // a click on the box body underneath.
+// The routed wire tree under world point `wp`, as an index in
+// g_schematic.routes.
+static std::optional<size_t> pickRoute(const ImVec2& wp) {
+    std::vector<const std::vector<SchematicLayout::RouteSegment>*> wires;
+    wires.reserve(g_schematic.routes.size());
+    for (const auto& r : g_schematic.routes) wires.push_back(&r.segments);
+    return SchematicInteraction::pickWire(wires, wp, g_schematic.transform.scale);
+}
+
 static bool clickPin(const ImVec2& wp) {
     auto hit = SchematicInteraction::pickPin(g_schematic.instances, wp, g_schematic.transform.scale);
     if (!hit) return false;
@@ -650,7 +659,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
 
     // Single click: an instance's hierarchy glyph expands/collapses its
     // sub-instances nested inside its box; otherwise a pin runs its click
-    // action (see clickPin). The glyph is checked first since it's a small,
+    // action (see clickPin), a wire selects its net and a box body its
+    // instance. The glyph is checked first since it's a small,
     // distinct hotspot (top-center of the box) that never overlaps a pin.
     // Only the first click of a double-click counts, so a double-click
     // doesn't act twice (e.g. expand a bus, then load the bit that lands
@@ -683,7 +693,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
             break;
         }
-        if (!glyphHit && !clickPin(wp)) {
+        if (glyphHit || clickPin(wp)) {
+            // handled
+        } else if (auto wire = pickRoute(wp)) {
+            // On a wire (routes avoid boxes, but cross module frames): select
+            // its net.
+            SelectionStore::selectNet(g_schematic.routes[*wire].ref);
+        } else {
             // On a box body: select that instance (or module frame). Reverse
             // scan so the innermost box under the cursor wins.
             for (auto rit = g_schematic.instances.rbegin(); rit != g_schematic.instances.rend(); ++rit) {
@@ -1350,6 +1366,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 SchematicView::NetRoute r;
                 r.color   = n.color;
                 r.netName = n.netName;
+                r.ref     = srcInst->modelName == "port"
+                    ? SchematicNetRef{ {}, srcPort->name, true }
+                    : SchematicNetRef{ srcInst->path, srcPort->name, false };
+                r.selected = SelectionStore::isNetSelected(r.ref);
                 g_schematic.routes.push_back(std::move(r));
                 routeTraces.emplace_back();
             }
@@ -1475,7 +1495,21 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             ImGui::EndTooltip();
         }
     }
+    bool wireHovered = false;
     if (canvasHovered && !pinHovered) {
+        ImVec2 wp = mouseWorldPos(g_schematic, cpos);
+        if (auto wire = pickRoute(wp)) {
+            wireHovered = true;
+            const auto& r = g_schematic.routes[*wire];
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+            ImGui::BeginTooltip();
+            if (r.ref.port) ImGui::Text("Net of %s  (top-level port)", r.ref.pin.c_str());
+            else            ImGui::Text("Net of %s / %s", displayPath(r.ref.path).c_str(), r.ref.pin.c_str());
+            if (!r.selected) ImGui::TextDisabled("Click: select this net");
+            ImGui::EndTooltip();
+        }
+    }
+    if (canvasHovered && !pinHovered && !wireHovered) {
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
         bool overBox = false;
         // Reverse scan: a nested child's rect sits inside its parent's, so

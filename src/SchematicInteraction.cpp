@@ -37,6 +37,26 @@ std::optional<PinHit> pickPin(const std::vector<InstanceShape>& instances,
     return hit;
 }
 
+float wireHitRadius(float scale) {
+    return std::min(kWireHitRadiusPx / std::max(0.01f, scale), kWireHitMaxWorld);
+}
+
+std::optional<size_t> pickWire(
+    const std::vector<const std::vector<SchematicLayout::RouteSegment>*>& wires,
+    ImVec2 world, float scale) {
+    const float r = wireHitRadius(scale);
+    float best = r * r;
+    std::optional<size_t> hit;
+    for (size_t i = 0; i < wires.size(); ++i) {
+        if (!wires[i]) continue;
+        for (const auto& seg : *wires[i]) {
+            float d = distSqToSegment(world, seg.a, seg.b);
+            if (d <= best) { best = d; hit = i; }
+        }
+    }
+    return hit;
+}
+
 PinRequestKey pinRequestKey(const std::vector<unsigned>& pathIds, unsigned termId,
                             std::optional<int> bit) {
     return {pathIds, termId, bit};

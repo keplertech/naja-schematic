@@ -12,6 +12,7 @@
 #include <imgui.h>
 
 #include "Types.h"
+#include "SchematicLayout.h"
 
 namespace SchematicInteraction {
 
@@ -40,6 +41,22 @@ float pinHitRadius(float scale);
 // Hierarchy frames have no pins and are skipped.
 std::optional<PinHit> pickPin(const std::vector<InstanceShape>& instances,
                               ImVec2 world, float scale);
+
+// Wire hit area: kWireHitRadiusPx on screen around each segment, capped at
+// kWireHitMaxWorld world units -- narrower than a pin's, since wires run
+// close to each other and to boxes. Pins are tested first (pickPin), so a
+// wire never takes a click from the pin it ends on.
+inline constexpr float kWireHitRadiusPx = 6.0f;
+inline constexpr float kWireHitMaxWorld = 8.0f;
+
+// World-space radius of a wire's hit area at the given zoom scale.
+float wireHitRadius(float scale);
+
+// The index in `wires` (each one routed wire tree, as its segments) of the
+// tree with a segment nearest `world` within the hit radius; nullopt if none.
+std::optional<size_t> pickWire(
+    const std::vector<const std::vector<SchematicLayout::RouteSegment>*>& wires,
+    ImVec2 world, float scale);
 
 // Identity of a load_equipotential request for one pin, so a pin whose net
 // is already on its way isn't requested again.

@@ -213,3 +213,45 @@ TEST(RevealRect, NeverZoomsOutPastMinScaleAndThenShowsTheTopLeft) {
   EXPECT_EQ(v.scale, 0.5f);
   EXPECT_FLOAT_EQ(v.offset.x, -kMargin / 0.5f);
 }
+
+// ---------------------------------------------------------------------------
+// pickWire
+// ---------------------------------------------------------------------------
+
+namespace {
+using SchematicLayout::RouteSegment;
+
+int pickedWire(const std::vector<std::vector<RouteSegment>>& trees, ImVec2 world,
+               float scale = 1.f) {
+  std::vector<const std::vector<RouteSegment>*> wires;
+  for (const auto& t : trees) wires.push_back(&t);
+  auto hit = pickWire(wires, world, scale);
+  return hit ? int(*hit) : -1;
+}
+} // namespace
+
+TEST(PickWire, HitsAnySegmentOfATree) {
+  // An L: (0,0) -> (100,0) -> (100,50).
+  std::vector<std::vector<RouteSegment>> trees = {
+      {{{0.f, 0.f}, {100.f, 0.f}}, {{100.f, 0.f}, {100.f, 50.f}}}};
+  EXPECT_EQ(pickedWire(trees, {50.f, 3.f}), 0);
+  EXPECT_EQ(pickedWire(trees, {103.f, 40.f}), 0);
+  EXPECT_EQ(pickedWire(trees, {50.f, kWireHitRadiusPx + 1.f}), -1);
+  EXPECT_EQ(pickedWire(trees, {50.f, 40.f}), -1);  // inside the bend
+}
+
+TEST(PickWire, NearestTreeWins) {
+  // Two parallel trunks 6 apart: both in reach of a point between them.
+  std::vector<std::vector<RouteSegment>> trees = {
+      {{{0.f, 0.f}, {0.f, 100.f}}},
+      {{{6.f, 0.f}, {6.f, 100.f}}}};
+  EXPECT_EQ(pickedWire(trees, {2.f, 50.f}), 0);
+  EXPECT_EQ(pickedWire(trees, {4.f, 50.f}), 1);
+}
+
+TEST(PickWire, ReachIsCappedInWorldUnitsWhenZoomedOut) {
+  std::vector<std::vector<RouteSegment>> trees = {{{{0.f, 0.f}, {100.f, 0.f}}}};
+  EXPECT_FLOAT_EQ(wireHitRadius(0.1f), kWireHitMaxWorld);
+  EXPECT_EQ(pickedWire(trees, {50.f, kWireHitMaxWorld - 1.f}, 0.1f), 0);
+  EXPECT_EQ(pickedWire(trees, {50.f, kWireHitMaxWorld + 1.f}, 0.1f), -1);
+}
