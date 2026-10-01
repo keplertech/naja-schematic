@@ -137,7 +137,9 @@ int runHeadlessExport(LocalSNLProvider* provider, const HeadlessExportOptions& o
       return;
     }
     (*req)["request"] = request;
-    if (trace) (*req)["trace_id"] = TraceStore::begin(termLabel(spec));
+    // Each is drawn in its own color, like the tree's Trace to Driver and
+    // Show Equipotential (a one-net trace).
+    (*req)["trace_id"] = TraceStore::begin(termLabel(spec) + (trace ? "" : " (net)"));
     provider->send(req->dump());
   };
   for (const auto& spec : options.equipotentials) sendTerm(spec, "load_equipotential", false);

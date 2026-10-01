@@ -181,6 +181,20 @@
                    {"path": [["", 1, "mid"], ["", 1, "LEAF"]], "name": "A"}]}],
      "unordered": ["occurrences"]},
 
+    {"name": "load_equipotential echoes the viewer's trace_id",
+     "request": {"request": "load_equipotential", "path": [], "term_id": 0, "trace_id": 7},
+     "expect": [{"response": "equipotential_response", "trace_id": 7,
+                 "terms": [{"name": "x", "child_id": 0}]}]},
+
+    {"name": "load_equipotential sends no trace_id when given none (a pin click)",
+     "request": {"request": "load_equipotential", "path": [], "term_id": 0},
+     "expect": [{"response": "equipotential_response"}],
+     "absent": ["trace_id"]},
+
+    {"name": "an unresolved load_equipotential still echoes its trace_id",
+     "request": {"request": "load_equipotential", "path": [], "term_id": 99, "trace_id": 8},
+     "expect": [{"response": "equipotential_response", "trace_id": 8}]},
+
     {"name": "instance_selected is a notification",
      "request": {"request": "instance_selected", "path": ["", ""], "id_path": [1, 0]},
      "expect": []}

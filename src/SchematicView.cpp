@@ -48,6 +48,13 @@ constexpr float kMinWireThickness  = 0.75f;
 // (one driver pin feeding more than one receiver) -- two wires that merely
 // cross on screen without sharing a pin get no dot, so a dot always means
 // "connected here" and a bare crossing always means "not connected."
+// A wire shared by several traces is striped in their colors: dashes this
+// long in world units, anchored to world coordinates so they line up across
+// corners and branches. Below kMinStripePx on screen the stripes would read
+// as noise, and the tree is drawn in its plain (convergence) color instead.
+constexpr float kStripeWorldLen = 10.0f;
+constexpr float kMinStripePx    = 5.0f;
+
 constexpr float kJunctionDotBaseR = 3.0f;
 constexpr float kMinJunctionDotR  = 1.25f;
 
@@ -834,10 +841,34 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
     float thickness = zoomedSizeOrHidden(kWireBaseThickness, transform.scale, kMinWireThickness);
     if (thickness <= 0.0f) return;
     if (route.isBus) thickness *= 2.0f;
+    const bool striped = route.stripeColors.size() >= 2 &&
+                         kStripeWorldLen * transform.scale >= kMinStripePx;
+    // The stripe color at world coordinate `t` along a segment's axis.
+    auto stripeAt = [&](float t) {
+        const long n = long(route.stripeColors.size());
+        long k = long(std::floor(t / kStripeWorldLen)) % n;
+        return route.stripeColors[size_t(k < 0 ? k + n : k)];
+    };
+    // A point's color: the stripe of the horizontal axis (corner caps and
+    // junction dots, where segments of both orientations meet).
+    auto colorAt = [&](ImVec2 w) { return striped ? stripeAt(w.x) : route.color; };
     for (const auto& seg : route.segments) {
-        ImVec2 a = worldToScreen(seg.a, canvasPos, canvasSize);
-        ImVec2 b = worldToScreen(seg.b, canvasPos, canvasSize);
-        dl->AddLine(a, b, route.color, thickness);
+        if (!striped) {
+            dl->AddLine(worldToScreen(seg.a, canvasPos, canvasSize),
+                        worldToScreen(seg.b, canvasPos, canvasSize), route.color, thickness);
+            continue;
+        }
+        const bool horiz = std::abs(seg.a.y - seg.b.y) < 0.5f;
+        float t0 = horiz ? seg.a.x : seg.a.y, t1 = horiz ? seg.b.x : seg.b.y;
+        if (t0 > t1) std::swap(t0, t1);
+        auto at = [&](float t) {
+            return worldToScreen(horiz ? ImVec2(t, seg.a.y) : ImVec2(seg.a.x, t), canvasPos, canvasSize);
+        };
+        for (float t = t0; t < t1; ) {
+            float next = std::min(t1, (std::floor(t / kStripeWorldLen) + 1.0f) * kStripeWorldLen);
+            dl->AddLine(at(t), at(next), stripeAt(0.5f * (t + next)), thickness);
+            t = next;
+        }
     }
     // A square cap where a horizontal and a vertical segment end at the same
     // point, so the corner isn't notched (butt-ended thick lines).
@@ -851,13 +882,13 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
             if (!corner) continue;
             ImVec2 p = worldToScreen(w, canvasPos, canvasSize);
             float r = thickness * 0.5f;
-            dl->AddRectFilled(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), route.color);
+            dl->AddRectFilled(ImVec2(p.x - r, p.y - r), ImVec2(p.x + r, p.y + r), colorAt(w));
         }
     }
     float dotR = zoomedSizeOrHidden(kJunctionDotBaseR, transform.scale, kMinJunctionDotR);
     if (dotR > 0.0f)
         for (const auto& j : route.junctions)
-            dl->AddCircleFilled(worldToScreen(j, canvasPos, canvasSize), route.isBus ? dotR * 1.5f : dotR, route.color);
+            dl->AddCircleFilled(worldToScreen(j, canvasPos, canvasSize), route.isBus ? dotR * 1.5f : dotR, colorAt(j));
 
     // Bus slash mark on the longest horizontal run, plus the
     // net name if we have one.

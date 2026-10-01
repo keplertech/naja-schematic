@@ -1,6 +1,8 @@
 #pragma once
 
 #include <compare>
+#include <map>
+#include <set>
 #include <string>
 #include <optional>
 #include <vector>
@@ -272,6 +274,11 @@ struct Equipotential {
   // while it has at least one of them.
   std::vector<int> traceIds;
   bool direct = false;
+  // Per trace in `traceIds`, the instances its own reply listed on this net.
+  // A trace's partial net (drivers + the receivers it entered through) folded
+  // into a fuller net already shown doesn't reach that net's other readers,
+  // so a gate counts as reached by a trace only through these.
+  std::map<int, std::set<InstancePath>> traceInstances;
 };
 
 // True when every endpoint (top-level term or instance pin) of `candidate` is

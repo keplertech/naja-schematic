@@ -195,9 +195,12 @@ void NetlistTreeNode::render() {
         if (!clicked) continue;
         NetlistTree::Path path;
         getPath(path);
+        std::string label = getTermBaseName();
+        if (isBusBit()) label += "[" + std::to_string(getBusBit()) + "]";
         getTree()->sendLoadEquipotential(
           path,
-          NetlistTree::TermID{getChildID(), isBusBit(), getBusBit()}, clearView);
+          NetlistTree::TermID{getChildID(), isBusBit(), getBusBit()},
+          traceLabel(getInstancePath(), label) + " (net)", clearView);
       }
       for (bool clearView : {true, false}) {
         bool clicked = ImGui::MenuItem(clearView ? "Trace to Driver (replace view)"
@@ -653,24 +656,17 @@ NetlistTree* NetlistTreeNode::getTree() const {
 }
 
 void NetlistTree::sendLoadEquipotential(const NetlistTree::Path& path, const TermID& termID,
-                                        bool clearView) const {
-  std::string request = R"({"request":"load_equipotential",)";
-  request += R"("path":[)";
-  for (size_t i = 0; i < path.size(); ++i) {
-    request += std::to_string(path[i]);
-    if (i < path.size() - 1) {
-      request += ",";
-    }
-  }
-  request += R"(],)";
-  request += R"("term_id":)" + std::to_string(termID.id);
-  if (termID.isBusBit) {
-    request += R"(,"bit":)" + std::to_string(termID.busBit);
-  }
-  request += R"(})";
-  Console::Log("Sending load equipotential request: " + request);
+                                        const std::string& label, bool clearView) const {
+  // Clear first: clearing the view also forgets its traces.
   if (clearView && onEquipotentialRequest_) onEquipotentialRequest_();
-  ws_->send(request);
+  json req;
+  req["request"] = "load_equipotential";
+  req["path"]    = path;
+  req["term_id"] = termID.id;
+  if (termID.isBusBit) req["bit"] = termID.busBit;
+  if (!label.empty()) req["trace_id"] = TraceStore::begin(label);
+  Console::Log("Sending load equipotential request: " + req.dump());
+  ws_->send(req.dump());
 }
 
 void NetlistTree::sendTraceDriver(const NetlistTree::Path& path, unsigned termChildID,

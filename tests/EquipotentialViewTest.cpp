@@ -656,16 +656,22 @@ class TraceOverlay : public SchematicClicks {
 
   // The color of the routed tree driven by u<id>.Y.
   ImU32 routeColorFrom(unsigned id) const {
+    const SchematicView::NetRoute* r = routeFrom(id);
+    return r ? r->color : 0;
+  }
+
+  // The routed tree driven by u<id>.Y.
+  const SchematicView::NetRoute* routeFrom(unsigned id) const {
     const InstanceShape* s = shape(u(id));
     const Port* y = pin(u(id), "Y");
-    if (!s || !y) return 0;
+    if (!s || !y) return nullptr;
     ImVec2 at = portAnchor(*s, *y);
     for (const auto& r : sv().routes)
       for (const auto& seg : r.segments)
         for (ImVec2 p : {seg.a, seg.b})
-          if (std::abs(p.x - at.x) < 0.5f && std::abs(p.y - at.y) < 0.5f) return r.color;
+          if (std::abs(p.x - at.x) < 0.5f && std::abs(p.y - at.y) < 0.5f) return &r;
     ADD_FAILURE() << "no route from u" << id << ".Y";
-    return 0;
+    return nullptr;
   }
 
   int a = 0, b = 0;
@@ -675,6 +681,44 @@ TEST_F(TraceOverlay, EachTraceIsDrawnInItsColorAndSharedWiresInTheConvergenceCol
   EXPECT_EQ(routeColorFrom(1), TraceStore::color(a));
   EXPECT_EQ(routeColorFrom(2), TraceStore::color(b));
   EXPECT_EQ(routeColorFrom(0), TraceStore::convergenceColor());
+}
+
+// The shared tree is striped in the colors of the traces sharing it, in
+// trace order; a tree on one trace isn't striped.
+TEST_F(TraceOverlay, SharedWiresAreStripedInTheirTracesColors) {
+  ASSERT_NE(routeFrom(0), nullptr);
+  EXPECT_EQ(routeFrom(0)->stripeColors,
+            (std::vector<ImU32>{TraceStore::color(a), TraceStore::color(b)}));
+  ASSERT_NE(routeFrom(1), nullptr);
+  EXPECT_TRUE(routeFrom(1)->stripeColors.empty());
+
+  TraceStore::setVisible(b, false);
+  frame(2);
+  EXPECT_TRUE(routeFrom(0)->stripeColors.empty());
+}
+
+// One net on two traces, but trace B's reply listed only u0 -> u1 (it
+// entered through u1.A): u2, another reader of the net, isn't on trace B.
+TEST_F(SchematicClicks, OnlyGatesBothTracesListedAreConvergencePoints) {
+  TraceStore::clear();
+  int a = TraceStore::begin("net");
+  int b = TraceStore::begin("u1/A");
+  auto u = [](unsigned id) { return InstancePath{{id, "u" + std::to_string(id)}}; };
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u0", 0, "Y", 9, Direction::Output, 3));
+  e.occurrences.push_back(occ("u1", 1, "A", 20, Direction::Input, 3));
+  e.occurrences.push_back(occ("u2", 2, "A", 20, Direction::Input, 3));
+  e.traceIds = {a, b};
+  e.traceInstances[a] = {u(0), u(1), u(2)};
+  e.traceInstances[b] = {u(0), u(1)};
+  add(e);
+  frame(3);
+
+  ASSERT_NE(shape(u(2)), nullptr);
+  EXPECT_EQ(shape(u(0))->diagOutline, TraceStore::convergenceColor());
+  EXPECT_EQ(shape(u(1))->diagOutline, TraceStore::convergenceColor());
+  EXPECT_EQ(shape(u(2))->diagOutline, 0u);
+  TraceStore::clear();
 }
 
 TEST_F(TraceOverlay, AGateBothTracesReachIsOutlined) {

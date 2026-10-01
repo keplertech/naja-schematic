@@ -70,15 +70,19 @@ TEST_F(Traces, VisibilityAndColorCanBeChanged) {
   EXPECT_EQ(TraceStore::color(a), palette);
 }
 
-TEST_F(Traces, APickedColorCannotBeTheConvergenceWhite) {
+TEST_F(Traces, APickedColorCannotBeTheConvergenceColorOrTheCanvas) {
   int a = TraceStore::begin("a");
   ImU32 before = TraceStore::color(a);
   EXPECT_FALSE(TraceStore::setColor(a, TraceStore::convergenceColor()));
+  EXPECT_FALSE(TraceStore::setColor(a, IM_COL32(50, 55, 60, 255)));     // near-black grey
   EXPECT_FALSE(TraceStore::setColor(a, IM_COL32(220, 225, 230, 255)));  // near-white grey
   EXPECT_EQ(TraceStore::color(a), before);
+  EXPECT_TRUE(TraceStore::setColor(a, IM_COL32(20, 40, 160, 255)));     // dark blue is fine
   EXPECT_TRUE(TraceStore::setColor(a, IM_COL32(255, 240, 120, 255)));   // pale yellow is fine
-  for (int s = 0; s < TraceStore::kStyleCount; ++s)
+  for (int s = 0; s < TraceStore::kStyleCount; ++s) {
     EXPECT_FALSE(TraceStore::tooCloseToConvergence(TraceStore::styleColor(s)));
+    EXPECT_FALSE(TraceStore::tooCloseToCanvas(TraceStore::styleColor(s)));
+  }
 }
 
 TEST(TraceLabel, IsThePinTheTraceStartsFrom) {

@@ -838,7 +838,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     g_pendingPinNets.resolve(pinRequestKey(g_portEquiByPortId[pid]));
                 }
                 equiEnds[ei].push_back({ false, item.path, "", pid, -1, pass == 0 });
-                mergeTraceIds(traceIdsByInstance[item.path], traceIdsByEi[ei]);
+                // Only the traces whose reply listed this instance on the
+                // net: another reader of a net a trace shares isn't on it.
+                for (int id : traceIdsByEi[ei]) {
+                    auto reached = eq->traceInstances.find(id);
+                    if (reached == eq->traceInstances.end() || reached->second.count(item.path))
+                        mergeTraceIds(traceIdsByInstance[item.path], {id});
+                }
             }
         }
     }
@@ -1355,6 +1361,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         for (size_t i = 0; i < g_schematic.routes.size(); ++i) {
             auto& r = g_schematic.routes[i];
             r.color = traceWireColor(r.color, routeTraces[i].ids, routeTraces[i].faint);
+            // A shared tree shows which traces share it (no diagnosis color).
+            if (r.color == TraceStore::convergenceColor()) {
+                std::vector<int> ids = routeTraces[i].ids;
+                std::sort(ids.begin(), ids.end());  // same stripe order every frame
+                for (int id : ids) r.stripeColors.push_back(TraceStore::color(id));
+            }
         }
         // Wiring nested in an expanded instance isn't routed: color it here.
         for (auto& n : g_schematic.nets)

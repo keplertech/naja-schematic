@@ -489,11 +489,16 @@ def _handle_load_equipotential(u, request):
     log.debug("load_equipotential for path: %s term_id: %s bit: %s", path_ids, term_id, bit)
     start_point = resolve_start_point(u.getTopDesign(), path_ids, term_id, bit)
     if start_point is None:
-        return _error("equipotential_response")
-    equipotential = naja.SNLEquipotential(
-        start_point, mode=naja.SNLEquipotential.Mode.TraverseAssigns)
-    response = equipotential_to_json(equipotential)
-    response["response"] = "equipotential_response"
+        response = _error("equipotential_response")[0]
+    else:
+        equipotential = naja.SNLEquipotential(
+            start_point, mode=naja.SNLEquipotential.Mode.TraverseAssigns)
+        response = equipotential_to_json(equipotential)
+        response["response"] = "equipotential_response"
+    # Echoed so the viewer knows which of its traces the net is for (a tree
+    # "Show Equipotential"); a schematic pin click sends none.
+    if "trace_id" in request:
+        response["trace_id"] = request["trace_id"]
     return [response]
 
 

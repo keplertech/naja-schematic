@@ -113,7 +113,8 @@ one of these:
   an object with `id_path`/`path`. It clears the view, so it's applied
   first.
 - `--trace <json>` (repeatable): a fan-in cone (`trace_driver`).
-- `--equipotential <json>` (repeatable): one net (`load_equipotential`).
+- `--equipotential <json>` (repeatable): one net (`load_equipotential`),
+  colored as a one-net trace like the tree's "Show Equipotential".
 
 A `--trace`/`--equipotential` argument names a terminal,
 `{"id_path"|"path": <containing instance>, "terminal": "A", "bit": 0}`,
@@ -405,12 +406,26 @@ Traces overlay: the viewer sends an optional `trace_id` (an int) with every
 (`Equipotential::traceIds`; `direct` marks a net also shown on its own), and
 a net the view already shows is not added twice but gets the new trace
 recorded on it (`GUIData::addEquipotential(eq, traceId)`). The schematic draws
-each visible trace in its own `TraceStore` color, and a wire tree or a gate
-two visible traces go through in the convergence color. A diagnosis color
+each visible trace in its own `TraceStore` color. A wire tree two visible
+traces go through is striped in their colors (`NetRoute::stripeColors`,
+dashes anchored to world coordinates; plain convergence color when zoomed
+too far out to read them), and a gate they share is outlined in the
+near-black convergence color -- only a gate each trace's own reply listed
+on the net (`Equipotential::traceInstances`): a trace's partial net folded
+into a fuller one already shown doesn't reach that net's other readers. A
+diagnosis color
 always wins over a trace color. A hidden trace keeps its nets in the layout,
 drawn faint, so nothing moves. `GUIData::removeTrace()` drops only the nets
 nothing else still shows. A reply with no `trace_id` (an older server) still
 becomes a trace of its own.
+
+The tree's "Show Equipotential" is a **one-net trace**: `load_equipotential`
+takes the same optional `trace_id` (registered under the pin's label plus
+" (net)"), both providers echo it in the `equipotential_response` (even an
+empty one), and the net gets a color, a Traces tab row and stripes where it
+meets other traces. A schematic pin click sends no `trace_id`: those nets
+are exploration and stay the plain wire color (a `direct` net). An empty
+reply to a tagged request drops its trace, so no empty row is left.
 
 Extending the schematic by hand works pin by pin. A box drawn with a dashed
 border shows only the pins on nets already in view; double-clicking its body
@@ -655,8 +670,9 @@ appear as boxes/pins there).
   show/hide it, change its color or remove it. Clicking the color swatch
   opens a popup (palette swatches, a color picker, Reset); a picked color
   is stored as `Trace::customColor` over the palette `style`, and
-  `TraceStore::setColor()` refuses a near-white one so shared wires stay
-  unambiguous.
+  `TraceStore::setColor()` refuses a near-black one (the convergence
+  color, so shared gates stay unambiguous) and a near-white one (invisible
+  on the white canvas).
 - **`SelectionStore`** — global static store (same pattern) for the one
   selected instance, by `InstancePath` (`{}` = top). It's set from the tree, the
   schematic or a host `focus_instance`, and drawn highlighted in both

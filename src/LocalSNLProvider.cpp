@@ -832,25 +832,26 @@ std::optional<json> LocalSNLProvider::termRequest(const json& spec, std::string&
 }
 
 std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const {
-  static const json empty = {
-    {"response",    "equipotential_response"},
-    {"terms",       json::array()},
-    {"occurrences", json::array()}
+  // The viewer's trace_id (a tree "Show Equipotential") is echoed back, so
+  // it knows which trace the net is for (see TraceStore).
+  auto reply = [&req](json response) {
+    response["response"] = "equipotential_response";
+    if (req.contains("trace_id")) response["trace_id"] = req["trace_id"];
+    return response.dump();
   };
+  const json empty = {{"terms", json::array()}, {"occurrences", json::array()}};
 
   auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
-  if (!topDesign) return empty.dump();
+  if (!topDesign) return reply(empty);
 
   try {
     auto start = resolveStartOccurrence(topDesign, req, std::nullopt);
-    if (!start.isValid()) return empty.dump();
+    if (!start.isValid()) return reply(empty);
     SNLEquipotential equi(start, SNLEquipotential::Mode::TraverseAssigns);
-    auto response = equipotentialJson(equi);
-    response["response"] = "equipotential_response";
-    return response.dump();
+    return reply(equipotentialJson(equi));
   } catch (const std::exception& e) {
     Console::Error("buildEquipotentialResponse: " + std::string(e.what()));
-    return empty.dump();
+    return reply(empty);
   }
 }
 

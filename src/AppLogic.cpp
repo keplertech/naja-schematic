@@ -271,7 +271,17 @@ void setupProvider(AppState& state) {
         parent->createNetNode(net.name, net.msb, net.lsb);
       }
     } else if (resp == "equipotential_response") {
-      if (state.guiData->addEquipotential(new Equipotential(j.get<Equipotential>()))) {
+      // A trace_id (echoed from a tree "Show Equipotential") makes the net a
+      // one-net trace; none (a schematic pin click) adds it uncolored.
+      int traceId = j.value("trace_id", 0);
+      if (traceId != 0 && !TraceStore::find(traceId)) traceId = 0;  // removed meanwhile
+      auto* eq = new Equipotential(j.get<Equipotential>());
+      if (traceId != 0 && eq->terms.empty() && eq->occurrences.empty()) {
+        // Nothing to show (unresolved term): no empty row in the Traces tab.
+        TraceStore::remove(traceId);
+        traceId = 0;
+      }
+      if (state.guiData->addEquipotential(eq, traceId)) {
         Console::Log("Equipotential data received");
         state.tableEquipotentialCount = 1;
       } else {

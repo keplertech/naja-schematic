@@ -188,8 +188,12 @@ TEST(NetlistTree, SendLoadEquipotentialFormatsRequestAndFiresCallback) {
   tree.sendLoadEquipotential({1, 2}, NetlistTree::TermID{9, true, 3});
 
   ASSERT_EQ(provider.sent.size(), 1u);
-  EXPECT_EQ(provider.sent[0],
-            R"({"request":"load_equipotential","path":[1,2],"term_id":9,"bit":3})");
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["request"], "load_equipotential");
+  EXPECT_EQ(req["path"], (std::vector<unsigned>{1, 2}));
+  EXPECT_EQ(req["term_id"], 9u);
+  EXPECT_EQ(req["bit"], 3);
+  EXPECT_FALSE(req.contains("trace_id"));  // no label: not a trace
   EXPECT_TRUE(callbackFired);
 }
 
@@ -200,20 +204,29 @@ TEST(NetlistTree, SendLoadEquipotentialOmitsBitForNonBusBit) {
   tree.sendLoadEquipotential({}, NetlistTree::TermID{4, false, 0});
 
   ASSERT_EQ(provider.sent.size(), 1u);
-  EXPECT_EQ(provider.sent[0], R"({"request":"load_equipotential","path":[],"term_id":4})");
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["path"], std::vector<unsigned>{});
+  EXPECT_EQ(req["term_id"], 4u);
+  EXPECT_FALSE(req.contains("bit"));
 }
 
-// "Show Equipotential (add to view)": the net is added, the view isn't cleared.
+// "Show Equipotential (add to view)": the net is added, the view isn't
+// cleared, and it's registered as a one-net trace.
 TEST(NetlistTree, SendLoadEquipotentialCanKeepTheView) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);
   bool callbackFired = false;
   tree.setOnEquipotentialRequest([&] { callbackFired = true; });
 
-  tree.sendLoadEquipotential({}, NetlistTree::TermID{4, false, 0}, /*clearView=*/false);
+  tree.sendLoadEquipotential({}, NetlistTree::TermID{4, false, 0}, "d (net)", /*clearView=*/false);
 
   ASSERT_EQ(provider.sent.size(), 1u);
   EXPECT_FALSE(callbackFired);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  const Trace* trace = TraceStore::find(req["trace_id"].get<int>());
+  ASSERT_NE(trace, nullptr);
+  EXPECT_EQ(trace->label, "d (net)");
+  TraceStore::clear();
 }
 
 TEST(NetlistTree, SendTraceDriverFormatsScalarRequestAndFiresCallback) {

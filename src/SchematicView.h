@@ -34,6 +34,11 @@ public:
         std::vector<SchematicLayout::RouteSegment> segments;
         std::vector<ImVec2> junctions;   // three or more directions meet here
         ImU32       color = NetWire{}.color;
+        // Two or more visible traces share this tree: it's drawn striped in
+        // their colors (world-anchored dashes) rather than in `color` (the
+        // convergence color), which is kept for when stripes are too short
+        // to read at the current zoom.
+        std::vector<ImU32> stripeColors;
         bool        isBus = false;
         std::string netName;
     };

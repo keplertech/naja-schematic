@@ -97,6 +97,24 @@ TEST(GUIData, RejectsANetAlreadyShown) {
   data.clearEquipotentials();
 }
 
+// A trace's partial net folded into the full net shown records only the
+// instances the trace listed: the net's other readers aren't on the trace.
+TEST(GUIData, RecordsTheInstancesEachTraceReached) {
+  GUIData data;
+  data.addEquipotential(new Equipotential(fullNet()), 1);
+  Equipotential partial{true, {}, {occ({{1, "u1"}}, "A", Direction::Input)}};
+  EXPECT_FALSE(data.addEquipotential(new Equipotential(partial), 2));
+
+  ASSERT_EQ(data.equipotentials_.size(), 1u);
+  const auto& reached = data.equipotentials_[0]->traceInstances;
+  EXPECT_EQ(reached.at(1), (std::set<InstancePath>{{{1, "u1"}}, {{3, "sub"}, {2, "u2"}}}));
+  EXPECT_EQ(reached.at(2), (std::set<InstancePath>{{{1, "u1"}}}));
+
+  data.removeTrace(2);
+  EXPECT_EQ(data.equipotentials_[0]->traceInstances.count(2), 0u);
+  data.clearEquipotentials();
+}
+
 TEST(GUIData, AcceptsANetThatAddsEndpoints) {
   GUIData data;
   Equipotential partial{true, {}, {occ({{1, "u1"}}, "A", Direction::Input)}};

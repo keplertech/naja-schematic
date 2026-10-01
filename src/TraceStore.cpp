@@ -6,15 +6,17 @@ namespace {
 std::vector<Trace> g_traces;
 int                g_nextId = 1;
 
-// Teal, magenta, lime, cyan: bright enough to read on the dark canvas and
-// distinct from the diagnosis severities and the selection blue.
+// Teal, magenta, lime, cyan: distinct from the diagnosis severities and the
+// selection blue.
 constexpr ImU32 kPalette[TraceStore::kStyleCount] = {
   IM_COL32( 60, 200, 150, 255),
   IM_COL32(225,  90, 205, 255),
   IM_COL32(175, 215,  60, 255),
   IM_COL32( 60, 215, 235, 255),
 };
-constexpr ImU32 kConvergence = IM_COL32(245, 245, 245, 255);
+// Near-black: stands out on the white "paper" canvas (and its SVG export)
+// next to the gray of untraced wires.
+constexpr ImU32 kConvergence = IM_COL32(30, 30, 30, 255);
 
 Trace* findMutable(int id) {
   for (auto& t : g_traces)
@@ -66,7 +68,7 @@ void TraceStore::setVisible(int id, bool visible) {
 
 bool TraceStore::setColor(int id, ImU32 color) {
   color |= IM_COL32_A_MASK;
-  if (tooCloseToConvergence(color)) return false;
+  if (tooCloseToConvergence(color) || tooCloseToCanvas(color)) return false;
   Trace* t = findMutable(id);
   if (!t) return false;
   t->customColor = color;
@@ -77,9 +79,18 @@ void TraceStore::resetColor(int id) {
   if (Trace* t = findMutable(id)) t->customColor.reset();
 }
 
-// Near-white: every channel bright. A pale but clearly tinted color (e.g.
-// a light yellow, with a low blue) is still fine.
+// Near-black: every channel dark. A deep but clearly tinted color (e.g. a
+// dark blue, with a high blue) is still fine.
 bool TraceStore::tooCloseToConvergence(ImU32 color) {
+  constexpr unsigned kMax = 80;
+  return (color >> IM_COL32_R_SHIFT & 0xFF) <= kMax &&
+         (color >> IM_COL32_G_SHIFT & 0xFF) <= kMax &&
+         (color >> IM_COL32_B_SHIFT & 0xFF) <= kMax;
+}
+
+// Near-white: every channel bright, unreadable on the white canvas. A pale
+// but clearly tinted color (e.g. a light yellow, with a low blue) is fine.
+bool TraceStore::tooCloseToCanvas(ImU32 color) {
   constexpr unsigned kMin = 190;
   return (color >> IM_COL32_R_SHIFT & 0xFF) >= kMin &&
          (color >> IM_COL32_G_SHIFT & 0xFF) >= kMin &&

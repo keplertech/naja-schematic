@@ -37,8 +37,11 @@ class NetlistTree {
     NetlistTreeNode* getNode(unsigned id) const;
     NetlistTreeNode* getRoot() const { return root_; }
     // `clearView` resets the schematic first; otherwise the net is added to
-    // what's shown.
+    // what's shown. A non-empty `label` registers the net as a one-net trace
+    // in TraceStore (its own color, a Traces tab row) and tags the request
+    // with its trace_id, echoed in the equipotential_response.
     void sendLoadEquipotential(const Path& path, const TermID& termID,
+                               const std::string& label = {},
                                bool clearView = true) const;
     // Requests the full combinational fan-in cone of the term's net, back to
     // the drivers (see "trace_driver" in CLAUDE.md). For a bus, pass every bit.

@@ -12,7 +12,7 @@
 namespace {
 
 // What the picker shows. It can hold a color TraceStore refuses (near the
-// convergence white): the trace then keeps its last accepted color.
+// convergence color or the canvas): the trace then keeps its last accepted color.
 ImVec4 g_pickerColor;
 
 void renderColorPopup(const Trace& t) {
@@ -35,8 +35,11 @@ void renderColorPopup(const Trace& t) {
   if (ImGui::ColorPicker3("##picker", &g_pickerColor.x,
                           ImGuiColorEditFlags_NoSidePreview | ImGuiColorEditFlags_NoSmallPreview))
     TraceStore::setColor(t.id, ImGui::ColorConvertFloat4ToU32(g_pickerColor));
-  if (TraceStore::tooCloseToConvergence(ImGui::ColorConvertFloat4ToU32(g_pickerColor)))
-    ImGui::TextDisabled("Too close to white, which marks wires two traces share.");
+  const ImU32 picked = ImGui::ColorConvertFloat4ToU32(g_pickerColor);
+  if (TraceStore::tooCloseToConvergence(picked))
+    ImGui::TextDisabled("Too close to black, which marks gates two traces share.");
+  else if (TraceStore::tooCloseToCanvas(picked))
+    ImGui::TextDisabled("Too close to white: it wouldn't show on the schematic.");
 
   if (ImGui::Button("Reset")) {
     TraceStore::resetColor(t.id);
@@ -56,8 +59,8 @@ void TraceView::render(GUIData& data) {
     ImGui::TextWrapped(
       "Right-click a pin, in the tree or on the schematic, and choose "
       "\"Trace to Driver (add to view)\": "
-      "each trace is drawn in its own color, and wires and gates two traces "
-      "share are drawn white.");
+      "each trace is drawn in its own color, wires two traces share are "
+      "striped in both colors, and gates they share are outlined in black.");
     return;
   }
 
