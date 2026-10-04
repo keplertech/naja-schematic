@@ -252,7 +252,11 @@ widget against the released PyPI package. `tests/test_notebook.py` runs it
 in a real kernel (nbclient) and splices in a cell that plays the viewer
 against its `view`, so a `Schematic`/protocol change that breaks it fails
 CI; its install cell skips `pip install` when `naja_schematic` is already
-importable, so CI tests the fresh wheel, not PyPI's.
+importable, so CI tests the fresh wheel, not PyPI's. The workflow's
+`colab` job runs the same test the other way (`NAJA_SCHEMATIC_COLAB_CHECK`):
+the branch's notebook installing from PyPI as Colab does -- the current
+release on PRs/main/weekly, the just-published one after a tag -- so a
+notebook edit needing an unreleased API, or a release that breaks it, fails CI.
 
 ## Architecture
 

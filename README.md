@@ -1,9 +1,9 @@
 # naja-schematic
 
-[![Native macOS Build](https://github.com/najaeda/naja-schematic/actions/workflows/native-macos.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/native-macos.yml)
-[![Native Linux Build](https://github.com/najaeda/naja-schematic/actions/workflows/native-linux.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/native-linux.yml)
-[![Emscripten Build](https://github.com/najaeda/naja-schematic/actions/workflows/emscripten.yml/badge.svg?branch=main)](https://github.com/najaeda/naja-schematic/actions/workflows/emscripten.yml)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/najaeda/naja-schematic/blob/main/python/notebooks/colab_test.ipynb)
+[![Native macOS Build](https://github.com/keplertech/naja-schematic/actions/workflows/native-macos.yml/badge.svg?branch=main)](https://github.com/keplertech/naja-schematic/actions/workflows/native-macos.yml)
+[![Native Linux Build](https://github.com/keplertech/naja-schematic/actions/workflows/native-linux.yml/badge.svg?branch=main)](https://github.com/keplertech/naja-schematic/actions/workflows/native-linux.yml)
+[![Emscripten Build](https://github.com/keplertech/naja-schematic/actions/workflows/emscripten.yml/badge.svg?branch=main)](https://github.com/keplertech/naja-schematic/actions/workflows/emscripten.yml)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/colab_test.ipynb)
 
 
 > **Note:** This is a proof of concept in beta. Expect rough edges, breaking
@@ -32,7 +32,7 @@ native desktop app and a WASM app that runs in a browser or a VSCode webview.
 Clone with submodules:
 
 ```bash
-git clone --recursive https://github.com/najaeda/naja-schematic.git
+git clone --recursive https://github.com/keplertech/naja-schematic.git
 # or, if already cloned without them:
 git submodule update --init --recursive
 ```
@@ -134,7 +134,7 @@ RTL-diagnosis workflow. Interfaces (in particular the wire protocol and the
 ## Reporting Issues
 
 This project is beta — if something breaks, crashes, or looks wrong, please
-[file a GitHub issue](https://github.com/najaeda/naja-schematic/issues/new).
+[file a GitHub issue](https://github.com/keplertech/naja-schematic/issues/new).
 Before reporting, check for error output in the relevant places:
 
 - **Native build**: the terminal you launched `naja-schematic-standalone`

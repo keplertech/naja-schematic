@@ -1,7 +1,7 @@
 version = 1
 SPDX-PackageName = "naja-schematic"
 SPDX-PackageSupplier = "najaeda"
-SPDX-PackageDownloadLocation = "https://github.com/najaeda/naja-schematic"
+SPDX-PackageDownloadLocation = "https://github.com/keplertech/naja-schematic"
 
 # Project's own sources, build config, docs, and scripts.
 # Listed explicitly (rather than "**") so the three exceptions below
