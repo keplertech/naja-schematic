@@ -1,5 +1,6 @@
-"""Runs python/notebooks/colab_test.ipynb (the Open-in-Colab notebook) in a
-real IPython kernel, so an API change that breaks it fails CI.
+"""Runs the Open-in-Colab notebooks (python/notebooks/getting_started.ipynb, the
+walkthrough, and tinyrocket.ipynb) in a real IPython kernel, so an API change
+that breaks them fails CI.
 
 The kernel side is all that can run headless: there's no browser to render
 the widget, so a cell spliced in mid-notebook plays the viewer against the
@@ -31,10 +32,10 @@ else:
     pytest.importorskip("ipykernel")
     pytest.importorskip("anywidget")
 
-NOTEBOOK = Path(__file__).parents[1] / "notebooks" / "colab_test.ipynb"
+NOTEBOOKS = Path(__file__).parents[1] / "notebooks"
 WIDGET_MIME = "application/vnd.jupyter.widget-view+json"
 
-# Stands in for the viewer while the full adder is loaded: every request
+# Stands in for the viewer while the RGB dimmer is loaded: every request
 # must be answered, and the viewer -> host selection must reach najaeda.
 VIEWER_CHECK = r'''
 import json
@@ -48,18 +49,24 @@ def _ask(request):
 
 replies = _ask({"request": "load_root"})
 assert [r["response"] for r in replies] == ["root_response", "focus_instance"], replies
-assert replies[0]["root"]["name"] == "fulladder", replies[0]
-assert replies[1]["path"] == ["ha1", "carry_and"], replies[1]
+assert replies[0]["root"]["name"] == "rgb_pwm", replies[0]
+assert replies[1]["path"] == ["u_counter"], replies[1]
 
-(resolved,) = _ask({"request": "resolve_instance", "path": ["ha2", "sum_xor"]})
+(resolved,) = _ask({"request": "resolve_instance", "path": ["u_red"]})
 assert resolved["response"] == "instance_resolved" and resolved["found"], resolved
 
-(props,) = _ask({"request": "get_properties", "kind": "instance", "path": ["ha1"]})
-assert {"name": "Model", "value": "halfadder"} in props["properties"], props
+(props,) = _ask({"request": "get_properties", "kind": "instance", "path": ["u_red"]})
+assert {"name": "Model", "value": "pwm_channel"} in props["properties"], props
 
-assert _ask({"request": "instance_selected", "path": ["ha2"]}) == []
-assert view.selected_path == ["ha2"]
-assert view.selected.get_name() == "ha2"
+assert _ask({"request": "instance_selected", "path": ["u_green"]}) == []
+assert view.selected_path == ["u_green"]
+assert view.selected.get_name() == "u_green"
+
+_svgs = []
+view.export_svg(callback=_svgs.append)
+assert [m["response"] for m in _sent] == ["export_svg"], _sent
+assert _ask({"request": "svg_exported", "svg": "<svg/>"}) == []
+assert _svgs == ["<svg/>"] and view.svg == "<svg/>"
 '''
 
 
@@ -99,9 +106,11 @@ def splice_viewer_check(nb):
     nb.cells.insert(at + 1, nbformat.v4.new_code_cell(VIEWER_CHECK))
 
 
-def test_colab_notebook_runs(notebook_env):
-    nb = nbformat.read(NOTEBOOK, as_version=4)
-    splice_viewer_check(nb)
+@pytest.mark.parametrize("name, min_views", [("getting_started", 3), ("tinyrocket", 1)])
+def test_colab_notebook_runs(notebook_env, name, min_views):
+    nb = nbformat.read(NOTEBOOKS / f"{name}.ipynb", as_version=4)
+    if name == "getting_started":
+        splice_viewer_check(nb)
     if COLAB_VERSION:
         install = next(i for i, cell in enumerate(nb.cells)
                        if cell.cell_type == "code")
@@ -123,4 +132,4 @@ def test_colab_notebook_runs(notebook_env):
     views = [c for c in code_cells
              if any(WIDGET_MIME in o.get("data", {}) for o in c.outputs)]
     shows = [c for c in code_cells if "show(" in c.source]
-    assert len(views) == len(shows) >= 4
+    assert len(views) == len(shows) >= min_views

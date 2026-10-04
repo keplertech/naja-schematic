@@ -13,8 +13,8 @@ pip install naja-schematic
 
 ## In a notebook (Jupyter, Google Colab, VSCode)
 
-[Try it in Colab](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/colab_test.ipynb):
-a walkthrough of every widget feature below, runnable as is.
+[Try it in Colab](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/getting_started.ipynb):
+a walkthrough of every widget feature below, runnable as is. Then a real design: [a RISC-V core](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/tinyrocket.ipynb).
 
 ```python
 from najaeda import netlist

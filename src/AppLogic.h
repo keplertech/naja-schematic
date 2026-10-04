@@ -25,6 +25,11 @@ struct AppState {
   // "Equipotential" table lists: 1 after a single load_equipotential, every
   // net of the cone after a trace_driver_response.
   size_t            tableEquipotentialCount {1};
+  // Set by a host's export_svg push (notebook Schematic.export_svg()):
+  // appFrame() answers with an svg_exported message once the schematic
+  // shows something, so a request sent while the view is still loading
+  // waits for its first drawing.
+  bool              svgExportRequested {false};
 };
 
 // Wire all provider callbacks (on_open, on_message, on_close, on_error)

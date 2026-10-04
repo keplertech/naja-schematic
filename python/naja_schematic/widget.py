@@ -42,6 +42,9 @@ class Schematic(anywidget.AnyWidget):
     # a name path, so moving between them wouldn't change it.
     selected_id_path = traitlets.List(default_value=None, allow_none=True)
     selected_path = traitlets.List(default_value=None, allow_none=True)
+    # The schematic as SVG, from the last export_svg(); None before.
+    # Kernel-side only, like the selection.
+    svg = traitlets.Unicode(default_value=None, allow_none=True)
 
     def __init__(self, **kwargs):
         # Read before AnyWidget.__init__, which turns it into a synced trait.
@@ -96,6 +99,26 @@ class Schematic(anywidget.AnyWidget):
         ready to be extended pin by pin. Kept across view reloads.
         """
         self._session.show_instance(target)
+
+    def export_svg(self, path=None, callback=None):
+        """Ask the view for its schematic as SVG: the whole sheet, as File >
+        Export Schematic as SVG... saves it. The view answers once it is
+        displayed and its schematic shows something -- after this cell, since
+        the kernel reads the view's messages between cells. The SVG then
+        lands in `svg`, is written to `path` if given, and is passed to
+        `callback(svg)`, e.g. to update a display:
+
+            out = display(Markdown("Waiting for the view..."), display_id=True)
+            view.export_svg("view.svg", lambda svg: out.update(SVG(svg)))
+        """
+        def done(svg):
+            if path is not None:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(svg)
+            self.svg = svg
+            if callback is not None:
+                callback(svg)
+        self._session.export_svg(done)
 
     def design_changed(self, diagnosis=None, instance=None):
         """Refresh this view after the design was replaced or edited in
