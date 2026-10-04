@@ -818,7 +818,7 @@ bool appFrame(AppState& state) {
     ImGui::Text("Version: %s", NAJA_SCHEMATIC_VERSION_STRING);
     ImGui::Text("Commit:  %s", NAJA_SCHEMATIC_GIT_HASH);
     ImGui::Text("naja:    %s", NAJA_VERSION_STRING);
-    ImGui::Text("Project: github.com/najaeda/naja-schematic");
+    ImGui::Text("Project: github.com/keplertech/naja-schematic");
     ImGui::Spacing();
 
     ImGui::SeparatorText("License");

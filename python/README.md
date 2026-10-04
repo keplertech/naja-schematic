@@ -1,11 +1,11 @@
 # naja-schematic (Python package)
 
 Interactive schematic viewer for [najaeda](https://pypi.org/project/najaeda/)
-netlists: the [naja-schematic](https://github.com/najaeda/naja-schematic)
+netlists: the [naja-schematic](https://github.com/keplertech/naja-schematic)
 WASM viewer, packaged with the Python backend that answers it from a live
 najaeda netlist.
 
-![naja-schematic demo: tracing an output port back to its drivers, then extending the schematic pin by pin](https://raw.githubusercontent.com/najaeda/naja-schematic/main/docs/demo.gif)
+![naja-schematic demo: tracing an output port back to its drivers, then extending the schematic pin by pin](https://raw.githubusercontent.com/keplertech/naja-schematic/main/docs/demo.gif)
 
 ```bash
 pip install naja-schematic
@@ -13,7 +13,7 @@ pip install naja-schematic
 
 ## In a notebook (Jupyter, Google Colab, VSCode)
 
-[Try it in Colab](https://colab.research.google.com/github/najaeda/naja-schematic/blob/main/python/notebooks/colab_test.ipynb):
+[Try it in Colab](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/colab_test.ipynb):
 a walkthrough of every widget feature below, runnable as is.
 
 ```python

@@ -29,7 +29,7 @@ test = ["pytest", "nbformat", "nbclient", "ipykernel"]
 naja-schematic = "naja_schematic.server:main"
 
 [project.urls]
-Homepage = "https://github.com/najaeda/naja-schematic"
+Homepage = "https://github.com/keplertech/naja-schematic"
 
 [tool.hatch.version]
 path = "naja_schematic/__init__.py"
