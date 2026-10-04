@@ -149,3 +149,41 @@ def test_design_changed_resolves_the_new_focus_first(top, view):
     v.design_changed(instance=["u_sub", "u_and"])
     v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
     assert sent_kinds(sent) == ["design_changed", "root_response", "focus_instance"]
+
+
+def test_export_svg_asks_the_view_and_keeps_its_answer(top, view, tmp_path):
+    v, sent = view
+    got = []
+    out = tmp_path / "view.svg"
+    v.export_svg(out, got.append)
+    assert [json.loads(m["json"]) for m in sent] == [{"response": "export_svg", "generation": 0}]
+    del sent[:]
+    v._on_viewer_message(v, {"json": json.dumps(
+        {"request": "svg_exported", "svg": "<svg/>", "generation": 0})}, [])
+    assert sent == []  # a notification: no reply
+    assert got == ["<svg/>"] and v.svg == "<svg/>" and out.read_text() == "<svg/>"
+    # One-shot: another rendering of the same view answering too is ignored.
+    v._on_viewer_message(v, {"json": json.dumps({"request": "svg_exported", "svg": "<svg>2</svg>"})}, [])
+    assert got == ["<svg/>"] and v.svg == "<svg/>"
+
+
+def test_export_svg_for_a_replaced_design_is_dropped(top, view):
+    v, _ = view
+    got = []
+    v.export_svg(callback=got.append)
+    v.design_changed()
+    v._on_viewer_message(v, {"json": json.dumps(
+        {"request": "svg_exported", "svg": "<svg/>", "generation": 0})}, [])
+    assert got == [] and v.svg is None
+
+
+def test_export_svg_waiting_is_asked_again_after_each_root(top, view):
+    v, sent = view
+    v.export_svg()
+    del sent[:]
+    v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
+    assert sent_kinds(sent) == ["root_response", "export_svg"]
+    v._on_viewer_message(v, {"json": json.dumps({"request": "svg_exported", "svg": "<svg/>"})}, [])
+    del sent[:]
+    v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
+    assert sent_kinds(sent) == ["root_response"]

@@ -168,6 +168,8 @@ class ViewerSession:
                                 if diagnosis is not None else None)
         self._focus_push = None
         self._select_callbacks = []
+        self._svg_callbacks = []  # one-shot, for the next svg_exported
+        self.svg = None
         self.selected_id_path = None
         self.selected_path = None
 
@@ -207,10 +209,17 @@ class ViewerSession:
             with self._state_lock:
                 generation = self._generation
                 pushes = [p for p in (self._diagnosis_push, self._focus_push) if p]
+                if self._svg_callbacks:
+                    # An export asked before the view was up got lost with
+                    # it: ask again once the view is (re)loaded.
+                    pushes.append(protocol.export_svg())
             if stamp is not None and stamp != generation:
                 return generation, None, pushes
             if kind == "instance_selected":
                 return generation, self._resolve_selection(request), pushes
+            if kind == "svg_exported":
+                svg = request.get("svg")
+                return generation, svg if isinstance(svg, str) else "", pushes
             return generation, protocol.handle_request(request), pushes
 
         generation, result, pushes = self._run(handle)
@@ -220,6 +229,9 @@ class ViewerSession:
         if kind == "instance_selected":
             self._commit_selection(generation, *result)
             return []  # a notification: no reply
+        if kind == "svg_exported":
+            self._commit_svg(generation, result)
+            return []
         replies = []
         for reply in result:
             replies.append(self._stamp(reply, generation))
@@ -259,6 +271,22 @@ class ViewerSession:
             except Exception:
                 log.exception("Error in a selection callback")
 
+    def _commit_svg(self, generation, svg):
+        with self._state_lock:
+            if generation != self._generation:
+                return
+            self.svg = svg
+            callbacks, self._svg_callbacks = self._svg_callbacks, []
+        for callback in callbacks:
+            self._dispatch(lambda cb=callback: self._deliver_svg(cb, svg))
+
+    @staticmethod
+    def _deliver_svg(callback, svg):
+        try:
+            callback(svg)
+        except Exception:
+            log.exception("Error in an SVG export callback")
+
     def on_select(self, callback):
         """Call `callback(id_path, path)` on each selection the viewer
         reports for the current design, and with (None, None) when
@@ -297,6 +325,18 @@ class ViewerSession:
             self._focus_push = message
             generation = self._generation
         self._send(self._stamp(message, generation))
+
+    def export_svg(self, callback=None):
+        """Ask the viewer(s) for the schematic as SVG (the whole sheet, as
+        File > Export Schematic as SVG... saves it). The answer comes
+        asynchronously, once a viewer's schematic shows something: it is
+        kept in `svg`, and `callback(svg)`, if given, is called once,
+        through `dispatch`."""
+        with self._state_lock:
+            if callback is not None:
+                self._svg_callbacks.append(callback)
+            generation = self._generation
+        self._send(self._stamp(protocol.export_svg(), generation))
 
     def design_changed(self, diagnosis=None, instance=None):
         """Start the next design generation: the viewer(s) reload the design

@@ -246,10 +246,13 @@ the wheel and publishes it to PyPI on a `v<version>` tag (version in
 also reads it into `NAJA_SCHEMATIC_VERSION_STRING` for the C++ app's About
 dialog, so a release is one edit plus a tag). For local work set
 `NAJA_SCHEMATIC_BUNDLE` to a locally built bundle (see `_bundle.py`). Tests:
-`pytest python/tests`. `python/notebooks/colab_test.ipynb` is the
+`pytest python/tests`. `python/notebooks/getting_started.ipynb` is the
 Open-in-Colab notebook (badge in the top `README.md`): a walkthrough of the
-widget against the released PyPI package. `tests/test_notebook.py` runs it
-in a real kernel (nbclient) and splices in a cell that plays the viewer
+widget against the released PyPI package. `python/notebooks/tinyrocket.ipynb` (a
+gate-level RISC-V core with Liberty) is its sequel, kept apart because
+najaeda holds one design at a time: in one notebook, *Run all* would leave
+every view showing the last design. `tests/test_notebook.py` runs both
+in a real kernel (nbclient) and, in the walkthrough, splices in a cell that plays the viewer
 against its `view`, so a `Schematic`/protocol change that breaks it fails
 CI; its install cell skips `pip install` when `naja_schematic` is already
 importable, so CI tests the fresh wheel, not PyPI's. The workflow's
@@ -551,7 +554,18 @@ the same `id_path`/`path` pair as diagnosis items:
   observes the ids, so moving between anonymous siblings fires it). The other hosts only log it (`protocol.py`) or ignore it
   (`LocalSNLProvider`).
 
-`design_changed` is a third server push, `{"response":"design_changed",
+`export_svg` is a server push too, `{"response":"export_svg"}`, from
+`Schematic.export_svg()` (`ViewerSession.export_svg()`): the viewer sets
+`AppState::svgExportRequested` and, at the first frame its schematic shows
+something, answers with a notification,
+`{"request":"svg_exported","svg":"<svg ...>"}` -- what File > Export
+Schematic as SVG... saves. The session intercepts it (like
+`instance_selected`), keeps it as `svg` and calls the request's one-shot
+callbacks; the widget also writes it to the `path` given. A notebook reads
+it in a later cell or through the callback (e.g. updating a
+`display_id` output), since comm messages reach the kernel between cells.
+
+`design_changed` is another server push, `{"response":"design_changed",
 "generation":N}`: the host replaced or edited the design, so every tree
 node, instance id and schematic box the viewer holds may be stale -- or,
 worse, name something else, since a new design can reuse ids. The viewer

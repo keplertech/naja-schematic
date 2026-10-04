@@ -399,6 +399,8 @@ void setupProvider(AppState& state) {
       Console::Log("Diagnosis received: " + std::to_string(items.size()) + " item(s)");
       DiagnosisStore::setDiagnostics(std::move(items));
       state.focusDiagnosisTab = true;
+    } else if (resp == "export_svg") {
+      state.svgExportRequested = true;
     } else if (resp == "focus_instance") {
       // Host push (notebook show_instance()): resolve the path, then
       // instance_resolved below reveals and draws it. The host names the
@@ -731,6 +733,13 @@ bool appFrame(AppState& state) {
       {
         if (EquipotentialView::takePendingClear()) state.guiData->clearEquipotentials();
         EquipotentialView::renderSchematic(state.guiData->equipotentials_);
+        if (state.svgExportRequested && EquipotentialView::hasSchematic()) {
+          state.svgExportRequested = false;
+          json reply;
+          reply["request"] = "svg_exported";
+          reply["svg"]     = EquipotentialView::exportSvg();
+          state.provider->send(reply.dump());
+        }
       }
       ImGui::EndChild();
     }

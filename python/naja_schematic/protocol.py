@@ -904,3 +904,11 @@ def design_changed():
     ignores messages for any other generation, and stamps its own requests
     with it."""
     return {"response": "design_changed"}
+
+
+def export_svg():
+    """Build an export_svg push message: the viewer answers, once its
+    schematic shows something, with an svg_exported notification carrying
+    the schematic as SVG (the whole sheet, as File > Export Schematic as
+    SVG... saves it). session.ViewerSession intercepts that answer."""
+    return {"response": "export_svg"}
