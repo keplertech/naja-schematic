@@ -1,5 +1,9 @@
 import json
+import subprocess
+import sys
 from types import SimpleNamespace
+
+from najaeda import naja
 
 from naja_schematic import protocol
 from naja_schematic.protocol import handle_message, handle_request
@@ -163,8 +167,11 @@ def test_get_primitive_type_uses_naja_modeling_not_names():
     checks = ("isAssign", "isSequential", "isInv", "isBuf", "isAnd", "isNand",
               "isOr", "isNor", "isXor", "isXnor", "isConst0", "isConst1")
 
-    def model(name, *true_checks):
+    output = SimpleNamespace(getDirection=lambda: naja.SNLTerm.Direction.Output)
+
+    def model(name, *true_checks, outputs=1):
         return SimpleNamespace(getName=lambda: name,
+                               getBitTerms=lambda: [output] * outputs,
                                **{c: (lambda c=c: c in true_checks) for c in checks})
     assert protocol.get_primitive_type(None) == "unknown"
     assert protocol.get_primitive_type(model("x", "isAssign")) == "assign"
@@ -175,3 +182,25 @@ def test_get_primitive_type_uses_naja_modeling_not_names():
     assert protocol.get_primitive_type(model("TIEH", "isConst1")) == "tie1"
     # The name never matters: an unmodelled "AND2" is just a box.
     assert protocol.get_primitive_type(model("AND2_X1")) == "unknown"
+    # A multi-output cell never reaches the truth-table checks (naja throws).
+    assert protocol.get_primitive_type(model("FA", "isXor", outputs=2)) == "unknown"
+    assert protocol.get_primitive_type(model("DFF2", "isSequential", outputs=2)) == "dff"
+
+
+def test_get_primitive_type_of_full_adder(tmp_path):
+    # SystemVerilog `a + b` elaborates to NLDB0 full adders (two outputs),
+    # whose truth-table checks abort the process inside najaeda: run it in a
+    # subprocess, which also keeps this design out of the session's universe.
+    (tmp_path / "add.sv").write_text(
+        "module top(input [1:0] a, b, output [1:0] y); assign y = a + b; endmodule\n")
+    script = (
+        "from najaeda import netlist, naja\n"
+        "from naja_schematic import protocol\n"
+        "netlist.load_system_verilog(['add.sv'])\n"
+        "top = naja.NLUniverse.get().getTopDesign()\n"
+        "print(sorted({protocol.get_primitive_type(i.getModel())\n"
+        "              for i in top.getInstances()}))\n")
+    run = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip().splitlines()[-1] == "['unknown']"

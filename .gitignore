@@ -18,3 +18,4 @@ python/dist/
 python/LICENSE
 .pytest_cache/
 __pycache__/
+dist/
