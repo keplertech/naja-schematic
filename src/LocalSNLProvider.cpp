@@ -134,10 +134,22 @@ static std::string displayChain(const std::vector<SNLInstance*>& chain) {
 // (e.g. gate-level Verilog loaded without Liberty) is Unknown and draws as
 // the generic box. protocol.py's get_primitive_type() mirrors this, same as
 // the rest of the wire protocol (see CLAUDE.md).
+// The truth-table checks are only asked of a cell with exactly one output
+// bit: on a multi-output cell (NLDB0's full adder, a multi-output Liberty
+// cell) naja's getTruthTable() throws from isConst0()/isInv()/...
+static size_t outputBitCount(const SNLDesign* model) {
+  size_t count = 0;
+  for (auto* term : model->getBitTerms()) {
+    if (term->getDirection() != SNLTerm::Direction::Input) ++count;
+  }
+  return count;
+}
+
 static PrimitiveType getPrimitiveType(const SNLDesign* model) {
   if (!model) return PrimitiveType::Unknown;
   if (NLDB0::isAssign(model)) return PrimitiveType::Assign;
   if (SNLDesignModeling::isSequential(model)) return PrimitiveType::Dff;
+  if (outputBitCount(model) != 1) return PrimitiveType::Unknown;
   if (SNLDesignModeling::isConst0(model)) return PrimitiveType::Tie0;
   if (SNLDesignModeling::isConst1(model)) return PrimitiveType::Tie1;
   if (SNLDesignModeling::isInv(model))  return PrimitiveType::Inv;

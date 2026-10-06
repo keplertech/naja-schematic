@@ -60,8 +60,11 @@ def has_visible_primitive_instances(design):
 # sequential model) -- never from its name. A cell naja has no model for is
 # "unknown" and draws as the generic box. LocalSNLProvider.cpp's
 # getPrimitiveType() mirrors this, same as the rest of the wire protocol.
+# The truth-table checks are only asked of a cell with exactly one output
+# bit: on a multi-output cell (NLDB0's full adder, a multi-output Liberty
+# cell) naja's getTruthTable() throws, and najaeda doesn't translate that
+# exception -- it aborts the process.
 _PRIMITIVE_TYPE_CHECKS = (
-    ("isSequential", "dff"),
     ("isConst0", "tie0"),
     ("isConst1", "tie1"),
     ("isInv", "inv"),
@@ -79,10 +82,18 @@ def get_primitive_type(model):
         return "unknown"
     if model.isAssign():
         return "assign"
+    if model.isSequential():
+        return "dff"
+    if output_bit_count(model) != 1:
+        return "unknown"
     for check, ptype in _PRIMITIVE_TYPE_CHECKS:
         if getattr(model, check)():
             return ptype
     return "unknown"
+
+def output_bit_count(model):
+    return sum(1 for term in model.getBitTerms()
+               if term.getDirection() != naja.SNLTerm.Direction.Input)
 
 def with_clock(entry, term):
     # Only sent when set: marks a flip-flop's clock pin (see drawDffInstance).
