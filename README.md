@@ -27,6 +27,39 @@ native desktop app and a WASM app that runs in a browser or a VSCode webview.
   browser build talks to a Python netlist server over WebSocket
 - Runs natively on macOS or Linux, or anywhere with a browser/VSCode via WASM
 
+## Controls
+
+The same list is in the app under **Help > Keyboard Shortcuts**. "Ctrl" is
+Cmd in the native macOS app (Ctrl in a browser, on any OS).
+
+| Keys (anywhere) | Action |
+|---|---|
+| Ctrl `+` / Ctrl `-` | Zoom the schematic in / out |
+| Ctrl `0` | Fit the schematic to the canvas |
+| Ctrl `K` | Clear all nets from the schematic |
+
+| Keys (mouse over the schematic) | Action |
+|---|---|
+| `W` `A` `S` `D` | Pan up / left / down / right |
+| `=` / `-` (hold) | Zoom in / out about the canvas center |
+| `0` or Home | Fit the schematic to the canvas |
+
+| Mouse | Action |
+|---|---|
+| Wheel | Zoom about the cursor |
+| Right or middle drag | Pan |
+| Click an open (hollow) pin | Add its net to the schematic |
+| Click a bus pin | Show its bits |
+| Double-click a dashed box | Show all of its pins |
+| Click a box | Select the instance (also in the design tree) |
+| Click a wire | Select (highlight) its net |
+| Click a box's hierarchy glyph | Show / hide what is inside it |
+| Right-click | Context menu: trace to driver, properties, fit, clear |
+
+In a notebook or a VSCode webview, the viewer takes keys only while its
+canvas has focus (click it first), and the host may keep some Ctrl chords
+for itself.
+
 ## Building
 
 Clone with submodules:

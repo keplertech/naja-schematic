@@ -989,8 +989,15 @@ void SchematicView::fitToRect(ImVec2 boundsMin, ImVec2 boundsMax, const ImVec2& 
     transform.offset.y = boundsMin.y - padY / transform.scale;
 }
 
-void SchematicView::zoomBy(float factor) {
+void SchematicView::zoomBy(float factor, const ImVec2& anchor) {
+    const float oldScale = transform.scale;
     transform.scale = clampf(transform.scale * factor, minScale, maxScale);
+    if (transform.scale == oldScale) return;
+    // world = (anchor - screenOrigin) / scale + offset, kept constant.
+    const ImVec2 a(anchor.x - transform.screenOrigin.x, anchor.y - transform.screenOrigin.y);
+    transform.offset.x += a.x / oldScale - a.x / transform.scale;
+    transform.offset.y += a.y / oldScale - a.y / transform.scale;
+    hasUserInteraction_ = true;
 }
 
 void SchematicView::requestFit(bool resetInteraction) {
@@ -1015,7 +1022,7 @@ void SchematicView::updateFitIfNeeded(const ImVec2& canvasPos, const ImVec2& can
     needsFit_ = false;
 }
 
-void SchematicView::handleInteraction(const ImVec2& canvasPos, const ImVec2& /*canvasSize*/) {
+void SchematicView::handleInteraction(const ImVec2& canvasPos, const ImVec2& canvasSize) {
     ImGuiIO& io = ImGui::GetIO();
     const bool allowKeyboard = ImGui::IsItemHovered() || ImGui::IsItemActive();
 
@@ -1051,7 +1058,9 @@ void SchematicView::handleInteraction(const ImVec2& canvasPos, const ImVec2& /*c
         }
     }
 
-    if (allowKeyboard) {
+    // Bare keys only: with Ctrl/Cmd/Alt held they belong to the app's
+    // shortcuts (View menu, AppLogic.cpp), which would otherwise act twice.
+    if (allowKeyboard && !io.KeyCtrl && !io.KeySuper && !io.KeyAlt) {
         float panSpeed = 420.0f * io.DeltaTime / std::max(0.001f, transform.scale);
         if (ImGui::IsKeyDown(ImGuiKey_A)) {
             transform.offset.x -= panSpeed;
@@ -1070,18 +1079,11 @@ void SchematicView::handleInteraction(const ImVec2& canvasPos, const ImVec2& /*c
             hasUserInteraction_ = true;
         }
 
-        if (ImGui::IsKeyDown(ImGuiKey_Equal) || ImGui::IsKeyDown(ImGuiKey_KeypadAdd)) {
-            float oldScale = transform.scale;
-            transform.scale = clampf(transform.scale * 1.02f, minScale, maxScale);
-            float deltaScale = transform.scale - oldScale;
-            if (deltaScale != 0.0f) hasUserInteraction_ = true;
-        }
-        if (ImGui::IsKeyDown(ImGuiKey_Minus) || ImGui::IsKeyDown(ImGuiKey_KeypadSubtract)) {
-            float oldScale = transform.scale;
-            transform.scale = clampf(transform.scale * 0.98f, minScale, maxScale);
-            float deltaScale = transform.scale - oldScale;
-            if (deltaScale != 0.0f) hasUserInteraction_ = true;
-        }
+        // Keyboard zoom is about the canvas center (the wheel's is about the
+        // cursor).
+        const ImVec2 center(canvasSize.x * 0.5f, canvasSize.y * 0.5f);
+        if (ImGui::IsKeyDown(ImGuiKey_Equal) || ImGui::IsKeyDown(ImGuiKey_KeypadAdd)) zoomBy(1.02f, center);
+        if (ImGui::IsKeyDown(ImGuiKey_Minus) || ImGui::IsKeyDown(ImGuiKey_KeypadSubtract)) zoomBy(0.98f, center);
 
         if (ImGui::IsKeyPressed(ImGuiKey_0) || ImGui::IsKeyPressed(ImGuiKey_Home)) {
             requestFit(true);

@@ -95,6 +95,83 @@ static void exportSchematicSvg() {
 #endif
 }
 
+// ImGuiMod_Ctrl is Cmd on macOS (ImGui swaps them), so name it that way there.
+#if defined(__APPLE__) && !defined(__EMSCRIPTEN__)
+#define NAJA_SHORTCUT(key) "Cmd+" key
+#else
+#define NAJA_SHORTCUT(key) "Ctrl+" key
+#endif
+
+// The View menu's shortcuts. Global, but not while a text field has focus.
+static void handleShortcuts(AppState& state) {
+  if (ImGui::GetIO().WantTextInput) return;
+  constexpr ImGuiInputFlags kRepeat = ImGuiInputFlags_RouteGlobal | ImGuiInputFlags_Repeat;
+  constexpr ImGuiInputFlags kOnce   = ImGuiInputFlags_RouteGlobal;
+  // "+" is Shift+= on most layouts: accept both.
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Equal, kRepeat) ||
+      ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiMod_Shift | ImGuiKey_Equal, kRepeat) ||
+      ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_KeypadAdd, kRepeat))
+    EquipotentialView::zoomIn();
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Minus, kRepeat) ||
+      ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_KeypadSubtract, kRepeat))
+    EquipotentialView::zoomOut();
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_0, kOnce) ||
+      ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Keypad0, kOnce))
+    EquipotentialView::fitView();
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_K, kOnce))
+    state.guiData->clearEquipotentials();
+}
+
+// Help > Keyboard Shortcuts. Keep in step with handleShortcuts() above,
+// SchematicView::handleInteraction(), EquipotentialView's canvas clicks and
+// the README's "Controls" section.
+static void renderShortcutsWindow(bool& open) {
+  if (!open) return;
+  struct Row { const char* keys; const char* action; };
+  static const Row kAnywhere[] = {
+    {NAJA_SHORTCUT("+") "  /  " NAJA_SHORTCUT("-"), "Zoom the schematic in / out"},
+    {NAJA_SHORTCUT("0"),                             "Fit the schematic to the canvas"},
+    {NAJA_SHORTCUT("K"),                             "Clear all nets from the schematic"},
+  };
+  static const Row kCanvasKeys[] = {
+    {"W  A  S  D",         "Pan up / left / down / right"},
+    {"=  /  -  (hold)",    "Zoom in / out about the canvas center"},
+    {"0  or  Home",        "Fit the schematic to the canvas"},
+  };
+  static const Row kMouse[] = {
+    {"Wheel",                        "Zoom about the cursor"},
+    {"Right or middle drag",         "Pan"},
+    {"Click an open (hollow) pin",   "Add its net to the schematic"},
+    {"Click a bus pin",              "Show its bits"},
+    {"Double-click a dashed box",    "Show all of its pins"},
+    {"Click a box",                  "Select the instance (also in the tree)"},
+    {"Click a wire",                 "Select (highlight) its net"},
+    {"Click a box's hierarchy glyph","Show / hide what is inside it"},
+    {"Right-click",                  "Context menu: trace, properties, fit, clear"},
+  };
+  auto table = [](const char* id, const Row* rows, size_t n) {
+    if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) return;
+    for (size_t i = 0; i < n; ++i) {
+      ImGui::TableNextRow();
+      ImGui::TableSetColumnIndex(0);
+      ImGui::TextUnformatted(rows[i].keys);
+      ImGui::TableSetColumnIndex(1);
+      ImGui::TextUnformatted(rows[i].action);
+    }
+    ImGui::EndTable();
+  };
+  ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_FirstUseEver);
+  if (ImGui::Begin("Keyboard Shortcuts", &open, ImGuiWindowFlags_NoSavedSettings)) {
+    ImGui::SeparatorText("Anywhere");
+    table("##anywhere", kAnywhere, IM_COUNTOF(kAnywhere));
+    ImGui::SeparatorText("Mouse over the schematic");
+    table("##canvaskeys", kCanvasKeys, IM_COUNTOF(kCanvasKeys));
+    ImGui::SeparatorText("Mouse");
+    table("##mouse", kMouse, IM_COUNTOF(kMouse));
+  }
+  ImGui::End();
+}
+
 static void reloadNetlist(AppState& state) {
   // Cleared now, not with clearNets()' next-frame clear: a focus_instance
   // re-pushed after the new root can be drawn before that frame, and the
@@ -498,6 +575,7 @@ bool appFrame(AppState& state) {
 
   // ==== Top Menu Bar ====
   static bool aboutOpen = false;
+  static bool shortcutsOpen = false;
 #ifndef __EMSCRIPTEN__
   static bool snlDialogOpen = false;
   static bool vrlDialogOpen = false;
@@ -508,6 +586,8 @@ bool appFrame(AppState& state) {
   static char svFilesBuf[8192]    = {};
   static char svTopBuf[256]       = {};
 #endif
+
+  handleShortcuts(state);
 
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
@@ -528,20 +608,24 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Export Schematic as SVG...", "", false,
                           EquipotentialView::hasSchematic()))
         exportSchematicSvg();
-      ImGui::Separator();
-      if (ImGui::MenuItem("About")) aboutOpen = true;
       ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-      if (ImGui::MenuItem("Zoom In",    "Ctrl++")) EquipotentialView::zoomIn();
-      if (ImGui::MenuItem("Zoom Out",   "Ctrl+-")) EquipotentialView::zoomOut();
-      if (ImGui::MenuItem("Fit",        "Ctrl+0")) EquipotentialView::fitView();
+      if (ImGui::MenuItem("Zoom In",    NAJA_SHORTCUT("+"))) EquipotentialView::zoomIn();
+      if (ImGui::MenuItem("Zoom Out",   NAJA_SHORTCUT("-"))) EquipotentialView::zoomOut();
+      if (ImGui::MenuItem("Fit",        NAJA_SHORTCUT("0"))) EquipotentialView::fitView();
       if (ImGui::MenuItem("Show Hierarchy", "", EquipotentialView::showHierarchy()))
         EquipotentialView::setShowHierarchy(!EquipotentialView::showHierarchy());
       ImGui::Separator();
-      if (ImGui::MenuItem("Clear nets", "Ctrl+K")) state.guiData->clearEquipotentials();
+      if (ImGui::MenuItem("Clear nets", NAJA_SHORTCUT("K"))) state.guiData->clearEquipotentials();
       // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
       // if (ImGui::MenuItem("Clear diagnosis", ""))  DiagnosisStore::clear();
+      ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Help")) {
+      if (ImGui::MenuItem("Keyboard Shortcuts")) shortcutsOpen = true;
+      ImGui::Separator();
+      if (ImGui::MenuItem("About")) aboutOpen = true;
       ImGui::EndMenu();
     }
     ImGui::EndMainMenuBar();
@@ -806,6 +890,8 @@ bool appFrame(AppState& state) {
     ImGui::EndChild();
   }
   ImGui::End();
+
+  renderShortcutsWindow(shortcutsOpen);
 
   // === About modal ===
   if (aboutOpen) { ImGui::OpenPopup("About naja-schematic"); aboutOpen = false; }

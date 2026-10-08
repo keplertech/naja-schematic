@@ -779,6 +779,20 @@ tag their request with it as `instance_path` + `instance_id_path` (echoed
 back in the reply, so the view knows which box it's for -- two anonymous
 sibling boxes differ only by id).
 
+### User controls documentation
+
+Every user-facing control -- keyboard shortcut, bare canvas key, mouse
+action -- is documented in **two places that must be kept up to date with
+the code in the same change**: the in-app **Help > Keyboard Shortcuts**
+window (`renderShortcutsWindow()` in `AppLogic.cpp`) and the "Controls"
+section of the top `README.md` (`python/README.md` only links to it). When
+adding, removing or changing a control, update both. The code they
+describe: `handleShortcuts()` (global Ctrl/Cmd chords, labeled in the
+View menu with `NAJA_SHORTCUT()`, Cmd on native macOS since ImGui maps
+`ImGuiMod_Ctrl` to Cmd there), `SchematicView::handleInteraction()` (bare
+canvas keys, ignored while Ctrl/Cmd/Alt is held, and wheel/drag), and the
+canvas clicks in `EquipotentialView::renderSchematic()`.
+
 ### VSCode integration
 
 `.vscode/settings.json` locks `cmake-tools` to preset mode

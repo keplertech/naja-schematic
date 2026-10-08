@@ -884,3 +884,66 @@ TEST_F(SchematicClicks, ExportEscapesNames) {
   EXPECT_NE(svg.find(">a&lt;b&amp;c</text>"), std::string::npos);
   EXPECT_EQ(svg.find("a<b"), std::string::npos);
 }
+
+// Keyboard and View-menu zoom keep the canvas center still (they used to
+// zoom about the canvas's top-left corner, so the drawing slid away).
+namespace {
+ImVec2 canvasCenter() {
+  const ImVec2 o = EquipotentialView::canvasOriginForTesting(), sz = EquipotentialView::canvasSizeForTesting();
+  return ImVec2(o.x + sz.x * 0.5f, o.y + sz.y * 0.5f);
+}
+ImVec2 screenToWorld(const SchematicView& sv, ImVec2 p) {
+  const ImVec2 o = EquipotentialView::canvasOriginForTesting();
+  const Transform& t = sv.transform;
+  return ImVec2((p.x - o.x - t.screenOrigin.x) / t.scale + t.offset.x,
+                (p.y - o.y - t.screenOrigin.y) / t.scale + t.offset.y);
+}
+} // namespace
+
+TEST_F(SchematicClicks, KeyboardZoomKeepsTheCanvasCenterStill) {
+  showFirstNet();
+  moveTo(canvasCenter());
+  const ImVec2 world = screenToWorld(sv(), canvasCenter());
+  const float scaleBefore = sv().transform.scale;
+
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Equal, true);
+  frame(10);
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Equal, false);
+  frame();
+
+  EXPECT_GT(sv().transform.scale, scaleBefore);
+  const ImVec2 after = toScreen(world);
+  EXPECT_NEAR(after.x, canvasCenter().x, 0.5f);
+  EXPECT_NEAR(after.y, canvasCenter().y, 0.5f);
+}
+
+TEST_F(SchematicClicks, MenuZoomKeepsTheCanvasCenterStill) {
+  showFirstNet();
+  const ImVec2 world = screenToWorld(sv(), canvasCenter());
+  const float scaleBefore = sv().transform.scale;
+
+  EquipotentialView::zoomOut();
+  frame(2);
+
+  EXPECT_LT(sv().transform.scale, scaleBefore);
+  const ImVec2 after = toScreen(world);
+  EXPECT_NEAR(after.x, canvasCenter().x, 0.5f);
+  EXPECT_NEAR(after.y, canvasCenter().y, 0.5f);
+}
+
+// With Ctrl (Cmd on macOS) held, "=" is the app's Zoom In shortcut
+// (AppLogic.cpp): the canvas must not zoom on its own as well.
+TEST_F(SchematicClicks, BareKeyZoomIgnoresCtrlChords) {
+  showFirstNet();
+  moveTo(canvasCenter());
+  const float scaleBefore = sv().transform.scale;
+
+  ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, true);
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Equal, true);
+  frame(10);
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Equal, false);
+  ImGui::GetIO().AddKeyEvent(ImGuiMod_Ctrl, false);
+  frame();
+
+  EXPECT_EQ(sv().transform.scale, scaleBefore);
+}

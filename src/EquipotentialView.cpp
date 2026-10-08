@@ -61,8 +61,9 @@ static SchematicInteraction::PendingRequests g_pendingPinNets;
 // when the cursor has rested on it.
 static int                g_hintShapeId      = -1;
 static double             g_hintSince        = 0.0;
-// Screen position of the canvas's top-left corner, last frame.
+// Screen position and size of the canvas, last frame.
 static ImVec2             g_canvasOrigin{};
+static ImVec2             g_canvasSize{};
 static INetlistProvider*  g_provider         = nullptr;
 // Which instance box (if any) the canvas right-click popup currently
 // targets; -1 = the canvas-level menu (Clear all nets / Fit view).
@@ -442,6 +443,7 @@ bool EquipotentialView::showHierarchy() { return g_showHierarchy; }
 
 const SchematicView& EquipotentialView::schematicForTesting() { return g_schematic; }
 ImVec2 EquipotentialView::canvasOriginForTesting() { return g_canvasOrigin; }
+ImVec2 EquipotentialView::canvasSizeForTesting()   { return g_canvasSize; }
 
 void EquipotentialView::setShowHierarchy(bool on) {
     if (g_showHierarchy == on) return;
@@ -562,12 +564,14 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     ImDrawList* dl   = ImGui::GetWindowDrawList();
     ImVec2      cpos = ImGui::GetItemRectMin();
     g_canvasOrigin   = cpos;
+    g_canvasSize     = inner;
 
     g_schematic.handleInteraction(cpos, inner);
 
     if (g_pendingZoomSteps) {
         float f = g_pendingZoomSteps > 0 ? 1.1f : 0.9f;
-        for (int i = 0; i < std::abs(g_pendingZoomSteps); ++i) g_schematic.zoomBy(f);
+        for (int i = 0; i < std::abs(g_pendingZoomSteps); ++i)
+            g_schematic.zoomBy(f, ImVec2(inner.x * 0.5f, inner.y * 0.5f));
         g_pendingZoomSteps = 0;
     }
     if (g_pendingFit) { g_schematic.requestFit(true); g_pendingFit = false; }

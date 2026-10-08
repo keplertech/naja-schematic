@@ -11,6 +11,10 @@ najaeda netlist.
 pip install naja-schematic
 ```
 
+Mouse and keyboard controls are listed in the
+[main README](https://github.com/keplertech/naja-schematic#controls) and in
+the viewer under **Help > Keyboard Shortcuts**.
+
 ## In a notebook (Jupyter, Google Colab, VSCode)
 
 [Try it in Colab](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/getting_started.ipynb):

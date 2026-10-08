@@ -105,4 +105,5 @@ class EquipotentialView {
     // position (see tests/EquipotentialViewTest.cpp).
     static const SchematicView& schematicForTesting();
     static ImVec2 canvasOriginForTesting();
+    static ImVec2 canvasSizeForTesting();
 };

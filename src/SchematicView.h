@@ -23,7 +23,9 @@ struct Transform {
 
 class SchematicView {
 public:
-    void zoomBy(float factor);
+    // Zooms by `factor` about `anchor` (canvas-local pixels): the world point
+    // under it stays put on screen. Counts as user interaction (no auto-fit).
+    void zoomBy(float factor, const ImVec2& anchor);
 
     std::vector<InstanceShape> instances;
     std::vector<NetWire> nets;
