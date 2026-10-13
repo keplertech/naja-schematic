@@ -5,50 +5,128 @@
 [![Emscripten Build](https://github.com/keplertech/naja-schematic/actions/workflows/emscripten.yml/badge.svg?branch=main)](https://github.com/keplertech/naja-schematic/actions/workflows/emscripten.yml)
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/getting_started.ipynb)
 
+An interactive schematic viewer for netlists loaded with
+[naja](https://github.com/najaeda/naja): browse the design hierarchy, trace
+a signal back to its drivers, and jump from any gate to the source line it
+came from. It runs as a desktop app (macOS, Linux), in a browser, or inside
+a Jupyter/Colab/VSCode notebook.
 
-> **Note:** This is a proof of concept in beta. Expect rough edges, breaking
-> changes, and incomplete features.
-
-A C++20, [Dear ImGui](https://github.com/ocornut/imgui)-based netlist
-viewer/schematic browser for the [naja](https://github.com/najaeda/naja) SNL
-netlist data model. It builds to two targets from the same core sources: a
-native desktop app and a WASM app that runs in a browser or a VSCode webview.
+> **Note:** This is a beta. Expect rough edges and breaking changes.
 
 ![naja-schematic demo on a gate-level RISC-V core: two driver traces overlaid across the core module boundary, shared wires striped in both colors, then Show Sources on a gate](docs/demo.gif)
 
+## Quick start
+
+**In a notebook**: no install needed, [open the getting-started notebook
+in Colab](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/getting_started.ipynb),
+then try [a real RISC-V core](https://colab.research.google.com/github/keplertech/naja-schematic/blob/main/python/notebooks/tinyrocket.ipynb).
+Locally:
+
+```bash
+pip install naja-schematic
+```
+
+```python
+from najaeda import netlist
+import naja_schematic
+
+netlist.load_liberty("cells.lib")
+netlist.load_verilog("design.v")
+naja_schematic.show()          # the viewer, in the cell output
+```
+
+**In a browser**, from a shell (same `pip install`):
+
+```bash
+naja-schematic --verilog design.v --liberty cells.lib --open
+```
+
+**As a desktop app**: [build it](#building-from-source), then:
+
+```bash
+naja-schematic-standalone design.v --liberty cells.lib
+```
+
+See the [Python package README](python/README.md) for the notebook API
+(diagnosis overlays, selecting instances from code, embedding the viewer in
+your own tool).
+
 ## Features
 
-- Interactive hierarchical schematic and equipotential (net fan-out) views
-- Lazy-loaded design tree (instances, terms, bus bits) for large netlists
-- Diagnosis overlay: color-codes and annotates flagged instances/pins/nets
-  from a `diagnosis_response` JSON payload, with hover tooltips and a flat
-  diagnostics list panel
-- Source cross-probing: **Show Sources** on an instance, term or net lists
-  where it is declared and, for synthesized logic, the RTL it came from
-  (naja source references, e.g. from Yosys `src` attributes), and opens
-  the file at the highlighted range
-- Loads Verilog, SystemVerilog, or pre-built SNL netlists natively; the
-  browser build talks to a Python netlist server over WebSocket
-- Runs natively on macOS or Linux, or anywhere with a browser/VSCode via WASM
+- **Schematic view** with real gate symbols (AND, OR, XOR, inverter,
+  flip-flop, ...), taken from the cell's Liberty function, never guessed
+  from its name. Modules are drawn as nested frames.
+- **Trace to Driver**: the whole combinational fan-in cone of a pin, back
+  to flip-flops and ports. Overlay several traces: each gets its own color,
+  shared wires are striped and shared gates outlined.
+- **Grow the schematic by hand**: click an open pin to add its net,
+  double-click a box to show all of its pins.
+- **Design tree**, loaded lazily so large netlists open fast: instances,
+  ports, nets and bus bits.
+- **Show Sources**: where an instance, pin or net is declared and, for
+  synthesized logic, the RTL it came from (e.g. Yosys `src` attributes),
+  opened at the highlighted line.
+- **Diagnosis overlay**: color and annotate flagged instances, pins and
+  nets from a JSON report, e.g. from a formal equivalence check.
+- **SVG export** of the schematic, from the File menu or headless from the
+  command line.
+- Loads gate-level Verilog (with Liberty), SystemVerilog, or naja SNL
+  netlists.
+
+## Command-line options
+
+Both the desktop app and the `naja-schematic` browser server take a design
+plus options, in any order. Their flags differ slightly:
+
+| Desktop app (`naja-schematic-standalone`) | Browser server (`naja-schematic`) | What it does |
+|---|---|---|
+| `design.v` | `--verilog design.v` | Load a gate-level Verilog netlist |
+| `design.sv` | `--sv a.sv b.sv --top top` | Load SystemVerilog (elaborated with slang) |
+| | `--flist design.f`, `-D NAME=VALUE` | SystemVerilog command file, defines |
+| `snl_dir/` | | Load a naja-if (SNL) netlist directory |
+| `--liberty a.lib --liberty b.lib` | `--liberty a.lib b.lib` | Liberty cell libraries (Verilog only) |
+| `--diagnosis report.json` | `--diagnosis report.json` | Show a diagnosis report on the design |
+| `--yosys-src` | `--yosys-src` | Read Yosys `(* src *)` attributes, so Show Sources leads back to the RTL (Verilog only) |
+| `--source-root dir` | `--source-root dir` | Where to look for relative source paths (repeatable) |
+| `--source-map FROM=TO` | `--source-map FROM=TO` | Rewrite source paths recorded on another machine (repeatable) |
+| | `--open` | Open the viewer in a browser |
+| | `--port N`, `--host H` | Where to serve (default `localhost:8081`) |
+
+Without a design, the desktop app starts empty: use the **File** menu (Open Verilog..., Open SystemVerilog..., Open naja-if...). A
+diagnosis report can also be loaded later with **File > Load Diagnosis
+JSON...**. `naja-schematic --help` lists every server option.
+
+Source paths are looked up as recorded, then under each `--source-root` in
+order, then in the current directory. `--source-map /home/ci/flow=/work/flow`
+finds a file recorded as `/home/ci/flow/rtl/top.v` at
+`/work/flow/rtl/top.v`.
+
+### Headless SVG export
+
+The desktop app can draw a schematic to an SVG file without opening a
+window:
+
+```bash
+naja-schematic-standalone design.v --liberty cells.lib --export cone.svg \
+  --trace '{"terminal": "y"}'
+```
+
+`--export out.svg` needs at least one of:
+
+- `--trace '<pin>'` (repeatable): the fan-in cone of a pin.
+- `--equipotential '<pin>'` (repeatable): one net.
+- `--focus '["u1", "u2"]'`: one instance drawn alone, with all its pins.
+
+A pin is `{"path": ["u1"], "terminal": "A", "bit": 0}`: `path` is the
+instance that holds it (leave it out for a top-level port), `bit` is only
+for buses.
 
 ## Controls
 
 The same list is in the app under **Help > Keyboard Shortcuts**. "Ctrl" is
-Cmd in the native macOS app (Ctrl in a browser, on any OS).
+Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 
-| Keys (anywhere) | Action |
-|---|---|
-| Ctrl `+` / Ctrl `-` | Zoom the schematic in / out |
-| Ctrl `0` | Fit the schematic to the canvas |
-| Ctrl `K` | Clear all nets from the schematic |
-
-| Keys (mouse over the schematic) | Action |
-|---|---|
-| `W` `A` `S` `D` | Pan up / left / down / right |
-| `=` / `-` (hold) | Zoom in / out about the canvas center |
-| `0` or Home | Fit the schematic to the canvas |
-
-| Mouse | Action |
+| Mouse on the schematic | Action |
 |---|---|
 | Wheel | Zoom about the cursor |
 | Right or middle drag | Pan |
@@ -58,7 +136,19 @@ Cmd in the native macOS app (Ctrl in a browser, on any OS).
 | Click a box | Select the instance (also in the design tree) |
 | Click a wire | Select (highlight) its net |
 | Click a box's hierarchy glyph | Show / hide what is inside it |
-| Right-click | Context menu: trace to driver, sources, properties, fit, clear |
+| Right-click | Menu: trace to driver, sources, properties, fit, clear |
+
+| Keys (mouse over the schematic) | Action |
+|---|---|
+| `W` `A` `S` `D` | Pan up / left / down / right |
+| `=` / `-` (hold) | Zoom in / out about the canvas center |
+| `0` or Home | Fit the schematic to the canvas |
+
+| Keys (anywhere) | Action |
+|---|---|
+| Ctrl `+` / Ctrl `-` | Zoom the schematic in / out |
+| Ctrl `0` | Fit the schematic to the canvas |
+| Ctrl `K` | Clear all nets from the schematic |
 
 | Keys (Source tab, after clicking in the text) | Action |
 |---|---|
@@ -67,20 +157,17 @@ Cmd in the native macOS app (Ctrl in a browser, on any OS).
 | Ctrl `C` | Copy the selected text |
 | Ctrl `A` | Select the whole file |
 
-The native app also has an **Open in Editor** button in the Source tab: it
-runs `$NAJA_SCHEMATIC_EDITOR` (`{file}`, `{line}` and `{col}` are filled in,
-e.g. `subl {file}:{line}:{col}`). Without it, VS Code is used at the line
-(`code -g` if on PATH, else the CLI inside `Visual Studio Code.app`), else
-the system's default app; the result (or the error) shows next to the
-button. Edits made there reach the viewer only when the design is loaded
-again: until then, the Source tab warns that the file changed after the
-design was loaded and its highlighted lines may be off.
-
 In a notebook or a VSCode webview, the viewer takes keys only while its
 canvas has focus (click it first), and the host may keep some Ctrl chords
 for itself.
 
-## Building
+**Open in Editor** (desktop app, Source tab) opens the file in your editor:
+`$NAJA_SCHEMATIC_EDITOR` if set (`{file}`, `{line}` and `{col}` are filled
+in, e.g. `subl {file}:{line}:{col}`), else VS Code, else the system's
+default app. Edits there show up in the viewer only after the design is
+loaded again; until then, the Source tab warns that the file changed.
+
+## Building from source
 
 Clone with submodules:
 
@@ -90,126 +177,76 @@ git clone --recursive https://github.com/keplertech/naja-schematic.git
 git submodule update --init --recursive
 ```
 
-### Native standalone target (`naja-schematic-standalone`)
+### Desktop app (`naja-schematic-standalone`)
 
-Builds on macOS and Linux. Requires SDL2 and OpenGL, plus a native file-picker
-backend (Cocoa on macOS, `zenity` on Linux — see `CLAUDE.md` for the full
-Linux dependency list).
+Needs SDL2 and OpenGL.
 
-On macOS:
-
-```bash
-brew install sdl2
-```
-
-Build with CMake presets, which pin the compiler to Apple Clang so
-Emscripten on `PATH` doesn't get auto-detected:
+**macOS** (`brew install sdl2`), with the CMake presets:
 
 ```bash
 cmake --preset native-debug      # or native-release
 cmake --build --preset native-debug
+../naja-schematic-build/native-debug/naja-schematic-standalone
 ```
 
-The build directory lives outside the repo, at
-`../naja-schematic-build/<preset>`.
+The build directory is outside the repo, at `../naja-schematic-build/<preset>`.
+The presets pin Apple Clang, so an Emscripten on `PATH` isn't picked up.
 
-On Linux, invoke CMake directly instead (the presets are macOS-specific):
+**Linux**: the package list is in
+[`.github/workflows/native-linux.yml`](.github/workflows/native-linux.yml)
+(SDL2, OpenGL, boost, capnproto, tbb, and `zenity` for file dialogs). Then:
 
 ```bash
 cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
+build/naja-schematic-standalone
 ```
 
-Run (`../naja-schematic-build/native-debug/naja-schematic-standalone` on
-macOS, `build/naja-schematic-standalone` on Linux), optionally with a
-netlist to load (dispatched by extension — `.v` → Verilog, `.sv` →
-SystemVerilog, otherwise treated as an SNL directory), one or more
-`--liberty` files defining the primitive cell library for a `.v` design,
-a diagnosis JSON to pre-load, and/or directories to look up relative source
-file paths in (Show Sources):
+### Browser viewer
+
+The browser viewer is the same C++ code built with
+[Emscripten](https://emscripten.org/). It doesn't load netlists itself: it
+asks a Python server (the `naja-schematic` package) over a WebSocket. To
+work on the Python package with a locally built viewer, see
+[python/README.md](python/README.md#development).
+
+A standalone page, talking to a server on `ws://localhost:8081/ws`:
 
 ```bash
-naja-schematic-standalone [path/to/netlist] [--liberty path/to/cells.lib]... [--diagnosis path/to/diagnosis.json] [--source-root dir]... [--source-map FROM=TO]... [--yosys-src]
+emcmake cmake -S . -B build-wasm
+cmake --build build-wasm
+python3 scripts/najaeda_server.py --verilog design.v --liberty cells.lib &
+emrun --port 8080 build-wasm/naja-schematic.html
 ```
 
-`<netlist>`, `--liberty <path>`, `--diagnosis <path>` and `--source-root
-<dir>` are all optional and order-independent. `--source-root` is
-repeatable: a relative source path is looked up in each, in order, then in
-the current directory. `--source-map FROM=TO` (repeatable) rewrites paths
-recorded on another machine, e.g. Yosys `src` paths of a synthesis server:
-`--source-map /home/ci/flow=/work/flow`. `--yosys-src` (`.v` only; also a checkbox in File >
-Open Verilog...) decodes Yosys `(* src *)` attributes, so Show Sources on a
-synthesized gate also lists the RTL it came from. `--liberty` is repeatable (once per file) and only
-supported for `.v` designs — a gate-level Verilog netlist that instantiates
-Liberty std cells needs it to resolve them; it errors out for `.sv`, since the
-SystemVerilog frontend has no liberty hook. Without `--diagnosis`, use File >
-Load Diagnosis JSON... in the app instead.
+`scripts/najaeda_server.py` runs the `naja-schematic` server straight from
+this source tree, without installing it.
 
-### WASM target (`naja-schematic`)
+## How it works
 
-Requires [Emscripten](https://emscripten.org/) (`emcmake`/`emrun` on `PATH`).
+The desktop app and the browser viewer share all of their C++ code except
+where the netlist comes from: the desktop app loads it in-process through
+the naja C++ API, the browser viewer asks a Python server that uses
+najaeda. Both speak the same JSON request/response protocol. A diagnosis
+report is a message pushed to the viewer, which colors the netlist already
+on screen.
 
-```bash
-mkdir build-wasm && cd build-wasm
-emcmake cmake ..
-cmake --build .
-emrun --port 8080 naja-schematic.html
-```
+[`CLAUDE.md`](CLAUDE.md) is the full architecture writeup, including the
+protocol's message shapes; it is also the guide for AI coding agents
+working in this repo.
 
-The WASM app doesn't link naja directly — it talks to a netlist server over a
-WebSocket. Start the server first, optionally pointing it at a Verilog
-netlist and the Liberty files defining its cell library:
+## Reporting issues
 
-```bash
-python3 scripts/najaeda_server.py   # serves ws://localhost:8081/ws
-# or, to serve a gate-level design instead of the default canned one:
-python3 scripts/najaeda_server.py --verilog path/to/netlist.v --liberty path/to/cells.lib
-```
+If something breaks, crashes, or looks wrong, please
+[file a GitHub issue](https://github.com/keplertech/naja-schematic/issues/new)
+with the steps to reproduce, the netlist if you can share it, and any error
+output:
 
-Note the flag shapes differ from the native CLI above: the server takes
-`--verilog <path>` (single file) plus `--liberty <path> [<path>...]` (one
-flag, many files), while the native standalone takes a positional
-`<design>` plus a repeatable `--liberty <path>` (once per file) — the two
-modes aren't symmetric.
-
-## Architecture
-
-The app has two entry points (`src/main_native.cpp`, `src/main_wasm.cpp`)
-that share almost everything except how netlist data is sourced, behind an
-`INetlistProvider` interface. Requests/responses between the UI and a
-provider are JSON messages over a small request/response protocol; a
-`diagnosis_response` message is a server push that annotates the currently
-loaded netlist without loading anything new.
-
-See [`CLAUDE.md`](CLAUDE.md) for the full architecture writeup, including the
-wire protocol's message shapes and the diagnosis overlay's data flow — it
-doubles as the guide used by AI coding agents working in this repo.
-
-## Status
-
-This project is under active development as part of an evolving AI
-RTL-diagnosis workflow. Interfaces (in particular the wire protocol and the
-`diagnosis_response` shape) may still change.
-
-## Reporting Issues
-
-This project is beta — if something breaks, crashes, or looks wrong, please
-[file a GitHub issue](https://github.com/keplertech/naja-schematic/issues/new).
-Before reporting, check for error output in the relevant places:
-
-- **Native build**: the terminal you launched `naja-schematic-standalone`
-  from.
-- **WASM build**: there are *two* separate places to check, since a WASM
-  session has two live processes —
-  - the terminal running `python3 scripts/najaeda_server.py` (netlist
-    parsing/serving errors surface here), and
-  - the browser's JavaScript console (Cmd+Opt+J in Chrome, Cmd+Opt+K in
-    Firefox; in VSCode's webview, use "Developer: Open Webview Developer
-    Tools" from the command palette) — this is where WASM runtime errors,
-    WebSocket issues, and rendering problems show up.
-
-Please include the relevant console output (both, for WASM issues), the
-netlist/diagnosis files involved if possible, and steps to reproduce.
+- **Desktop app**: the terminal you started it from.
+- **Browser or notebook**: the terminal (or notebook cell) running the
+  server, where netlist errors show up, *and* the browser's JavaScript
+  console (Cmd+Opt+J in Chrome, Cmd+Opt+K in Firefox; in VSCode, "Developer:
+  Open Webview Developer Tools"), where viewer errors show up.
 
 ## License
 
