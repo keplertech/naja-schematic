@@ -17,6 +17,20 @@ void viewModeTooltip(bool clearView) {
                               : "Keeps what the schematic already shows");
 }
 
+// "Show Sources" (when the provider flagged the object) and "Show
+// Properties" for the object `address` names (kind, path/id_path,
+// terminal/net, bit): get_sources and get_properties take the same address.
+void inspectMenuItems(INetlistProvider* provider, json address, bool hasSources) {
+  if (hasSources && ImGui::MenuItem("Show Sources")) {
+    address["request"] = "get_sources";
+    provider->send(address.dump());
+  }
+  if (ImGui::MenuItem("Show Properties")) {
+    address["request"] = "get_properties";
+    provider->send(address.dump());
+  }
+}
+
 }  // namespace
 
 void NetlistTree::createRootNode(
@@ -26,8 +40,8 @@ void NetlistTree::createRootNode(
   bool hasPrimitives,
   bool hasInstances,
   bool hasNets,
-  const std::optional<SourceLoc>& sourceLoc) {
-  root_ = new NetlistTreeInstanceNode(this, name, design_ref, hasTerms, hasPrimitives, hasInstances, hasNets, sourceLoc);
+  bool hasSources) {
+  root_ = new NetlistTreeInstanceNode(this, name, design_ref, hasTerms, hasPrimitives, hasInstances, hasNets, hasSources);
 }
 
 void NetlistTree::render() {
@@ -41,7 +55,20 @@ void NetlistTree::render() {
   }
   advanceReveal();
   if (root_) {
+    // The selected row must stand out more than the row under the mouse.
+    // The default theme does the opposite (hovered at 80% opacity, selected
+    // at 31%), so after a context-menu click the row under the closed menu
+    // looked selected. Here the selection takes the strong accent and hover
+    // a faint one, both from the current theme.
+    const ImGuiStyle& style = ImGui::GetStyle();
+    ImVec4 accent = style.Colors[ImGuiCol_HeaderHovered];
+    ImVec4 faint  = accent;
+    accent.w = 0.85f;
+    faint.w  = 0.22f;
+    ImGui::PushStyleColor(ImGuiCol_Header, accent);
+    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, faint);
     root_->render();
+    ImGui::PopStyleColor(2);
   } else {
     ImGui::Text("Loading Root Node...");
   }
@@ -216,62 +243,41 @@ void NetlistTreeNode::render() {
           isBusBit() ? std::vector<int>{getBusBit()} : std::vector<int>{},
           traceLabel(getInstancePath(), label), clearView);
       }
-      if (ImGui::MenuItem("Show Properties")) {
-        json req;
-        req["request"]  = "get_properties";
-        req["kind"]     = "term";
-        writePath(req, getInstancePath());
-        req["terminal"] = getTermBaseName();
-        if (isBusBit()) req["bit"] = getBusBit();
-        getTree()->getProvider()->send(req.dump());
-      }
+      json req;
+      req["kind"]     = "term";
+      writePath(req, getInstancePath());
+      req["terminal"] = getTermBaseName();
+      if (isBusBit()) req["bit"] = getBusBit();
+      inspectMenuItems(getTree()->getProvider(), req, hasSources());
       ImGui::EndPopup();
     }
   } else if (isBus()) {
     if (ImGui::BeginPopupContextItem()) {
       // No bus-level Show Equipotential or Trace to Driver for now: both
       // work one bit at a time, from the bit rows.
-      if (ImGui::MenuItem("Show Properties")) {
-        json req;
-        req["request"]  = "get_properties";
-        req["kind"]     = "term";
-        writePath(req, getInstancePath());
-        req["terminal"] = getTermBaseName();
-        getTree()->getProvider()->send(req.dump());
-      }
+      json req;
+      req["kind"]     = "term";
+      writePath(req, getInstancePath());
+      req["terminal"] = getTermBaseName();
+      inspectMenuItems(getTree()->getProvider(), req, hasSources());
       ImGui::EndPopup();
     }
   } else if (isBitNet() || isBusNet()) {
     if (ImGui::BeginPopupContextItem()) {
-      if (ImGui::MenuItem("Show Properties")) {
-        json req;
-        req["request"] = "get_properties";
-        req["kind"]    = "net";
-        writePath(req, getInstancePath());
-        req["net"]     = getNetBaseName();
-        if (isBusBit()) req["bit"] = getBusBit();
-        getTree()->getProvider()->send(req.dump());
-      }
+      json req;
+      req["kind"] = "net";
+      writePath(req, getInstancePath());
+      req["net"]  = getNetBaseName();
+      if (isBusBit()) req["bit"] = getBusBit();
+      inspectMenuItems(getTree()->getProvider(), req, hasSources());
       ImGui::EndPopup();
     }
   } else if (isInstanceNode()) {
     if (ImGui::BeginPopupContextItem()) {
-      if (auto loc = getSourceLoc()) {
-        if (ImGui::MenuItem("Show RTL Source")) {
-          json req;
-          req["request"] = "load_source";
-          req["file"]    = loc->file;
-          req["line"]    = loc->line;
-          getTree()->getProvider()->send(req.dump());
-        }
-      }
-      if (ImGui::MenuItem("Show Properties")) {
-        json req;
-        req["request"] = "get_properties";
-        req["kind"]    = "instance";
-        writePath(req, getInstancePath());
-        getTree()->getProvider()->send(req.dump());
-      }
+      json req;
+      req["kind"] = "instance";
+      writePath(req, getInstancePath());
+      inspectMenuItems(getTree()->getProvider(), req, hasSources());
       ImGui::EndPopup();
     }
   }
@@ -303,13 +309,13 @@ NetlistTreeInstanceNode::NetlistTreeInstanceNode(
     bool hasPrimitives,
     bool hasInstances,
     bool hasNets,
-    const std::optional<SourceLoc>& sourceLoc):
+    bool hasSources):
     NetlistTreeNode(tree),
     isRoot_(true), name_(name),
     childID_(0),designRef_(designRef),
     hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances),
     hasNets_(hasNets),
-    sourceLoc_(sourceLoc)
+    hasSources_(hasSources)
 {}
 
 NetlistTreeInstanceNode::NetlistTreeInstanceNode(
@@ -322,13 +328,13 @@ NetlistTreeInstanceNode::NetlistTreeInstanceNode(
     bool hasPrimitives,
     bool hasInstances,
     bool hasNets,
-    const std::optional<SourceLoc>& sourceLoc):
+    bool hasSources):
     NetlistTreeNode(parent),
     isRoot_(false), name_(name), modelName_(modelName),
     childID_(childID), designRef_(designRef),
     hasTerms_(hasTerms), hasPrimitives_(hasPrimitives), hasInstances_(hasInstances),
     hasNets_(hasNets),
-    sourceLoc_(sourceLoc)
+    hasSources_(hasSources)
 {}
 
 void NetlistTreeInstanceNode::getPath(NetlistTree::Path& path) const {
@@ -425,8 +431,10 @@ NetlistTreeTermNode::NetlistTreeTermNode(
   unsigned childID,
   Direction direction,
   std::optional<int> msb,
-  std::optional<int> lsb):
-  NetlistTreeNode(parent), name_(name), childID_(childID), direction_(direction), msb_(msb), lsb_(lsb) {
+  std::optional<int> lsb,
+  bool hasSources):
+  NetlistTreeNode(parent), name_(name), childID_(childID), direction_(direction), msb_(msb), lsb_(lsb),
+  hasSources_(hasSources) {
   if (not msb_.has_value() or not lsb_.has_value()) { //scalar
     children_ = new Children();
   }
@@ -514,8 +522,9 @@ NetlistTreeNetNode::NetlistTreeNetNode(
   NetlistTreeNode* parent,
   const std::string& name,
   std::optional<int> msb,
-  std::optional<int> lsb):
-  NetlistTreeNode(parent), name_(name), msb_(msb), lsb_(lsb) {
+  std::optional<int> lsb,
+  bool hasSources):
+  NetlistTreeNode(parent), name_(name), msb_(msb), lsb_(lsb), hasSources_(hasSources) {
   if (not msb_.has_value() or not lsb_.has_value()) { //scalar
     children_ = new Children();
   }
@@ -602,17 +611,19 @@ void NetlistTreeNode::createTermNode(
   unsigned childID,
   Direction direction,
   std::optional<int> msb,
-  std::optional<int> lsb) {
+  std::optional<int> lsb,
+  bool hasSources) {
   //this should be a group node of type Terms
-  children_->push_back(new NetlistTreeTermNode(this, name, childID, direction, msb, lsb));
+  children_->push_back(new NetlistTreeTermNode(this, name, childID, direction, msb, lsb, hasSources));
 }
 
 void NetlistTreeNode::createNetNode(
   const std::string& name,
   std::optional<int> msb,
-  std::optional<int> lsb) {
+  std::optional<int> lsb,
+  bool hasSources) {
   //this should be a group node of type Nets
-  children_->push_back(new NetlistTreeNetNode(this, name, msb, lsb));
+  children_->push_back(new NetlistTreeNetNode(this, name, msb, lsb, hasSources));
 }
 
 void NetlistTreeNode::createInstanceNode(
@@ -624,12 +635,12 @@ void NetlistTreeNode::createInstanceNode(
   bool hasPrimitives,
   bool hasInstances,
   bool hasNets,
-  const std::optional<SourceLoc>& sourceLoc) {
+  bool hasSources) {
   auto node = new NetlistTreeInstanceNode(
     this, name, modelName,
     childID,
     design_ref,
-    hasTerms, hasPrimitives, hasInstances, hasNets, sourceLoc);
+    hasTerms, hasPrimitives, hasInstances, hasNets, hasSources);
   children_->push_back(node);
 }
 

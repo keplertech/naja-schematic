@@ -62,6 +62,20 @@ assert _ask({"request": "instance_selected", "path": ["u_green"]}) == []
 assert view.selected_path == ["u_green"]
 assert view.selected.get_name() == "u_green"
 
+# Show Sources, in packages that have it (from 0.2.0; the colab job plays
+# the current PyPI release, which may predate it): u_red's instantiation
+# and module definition, and its file read from the notebook's directory.
+from naja_schematic import protocol as _protocol
+if hasattr(_protocol, "request_sources"):
+    (_src,) = _ask({"request": "get_sources", "kind": "instance", "path": ["u_red"]})
+    _roles = [s["role"] for s in _src["sources"]]
+    assert _roles[0] == "declaration" and "model_declaration" in _roles, _src
+    (_txt,) = _ask({"request": "load_source", "kind": "instance", "path": ["u_red"],
+                    "role": "declaration"})
+    assert _txt["found"] and not _txt["stale"], _txt
+    assert "u_red" in _txt["text"].splitlines()[_txt["line"] - _txt["first_line"]], _txt
+    del _sent[:]
+
 _svgs = []
 view.export_svg(callback=_svgs.append)
 assert [m["response"] for m in _sent] == ["export_svg"], _sent

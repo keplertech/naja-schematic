@@ -193,8 +193,8 @@ struct Item {
     bool                   hasInstances = false;
     // Total bit-term count of the instance's model, if known.
     std::optional<size_t>  bitTermCount;
-    // RTL source location of the instance itself, if available.
-    std::optional<SourceLoc> sourceLoc;
+    // Whether the instance itself has source references (get_sources).
+    bool                   hasSources = false;
     // Instance occurrences only: per-segment instance names / model names of
     // the full hierarchical path (the last entry is the instance itself).
     // `path` is the instance's identity in the layout.

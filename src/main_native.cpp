@@ -18,6 +18,8 @@
 
 int main(int argc, char* argv[]) {
   // CLI usage: naja-schematic-standalone [<design>] [--liberty <path>]... [--diagnosis <path>]
+  //                                     [--source-root <dir>]... [--source-map FROM=TO]...
+  //                                     [--yosys-src]
   //                                     [--export <out.svg> [--focus <json>]
   //                                      [--trace <json>]... [--equipotential <json>]...]
   // <design> is loaded by extension (.sv/.v/otherwise-assumed-SNL-directory);
@@ -28,6 +30,13 @@ int main(int argc, char* argv[]) {
   // caller (a script, or naja-agent's skill, after an edit-check cycle) can
   // open a fully annotated view in one command instead of requiring a human
   // to click through File > Open .../Load Diagnosis JSON... by hand.
+  // --yosys-src (.v only) decodes Yosys (* src *) attributes into source
+  // origins, so Show Sources leads from a gate back to its RTL;
+  // --source-map FROM=TO (repeatable) rewrites source paths recorded on
+  // another machine (e.g. a synthesis server's) to start with TO instead;
+  // --source-root adds a directory relative source file references (Show
+  // Sources) are looked up in (repeatable, tried in order, then the current
+  // directory);
   // --export draws the schematic to an SVG file and exits, with no window
   // (see HeadlessExport.h for what --focus/--trace/--equipotential take).
   auto* provider = new LocalSNLProvider();
@@ -35,6 +44,7 @@ int main(int argc, char* argv[]) {
   std::string designPath;
   std::string diagnosisPath;
   std::vector<std::string> libertyPaths;
+  bool yosysSrc = false;
   HeadlessExportOptions exportOptions;
   bool exporting = false;
   for (int i = 1; i < argc; ++i) {
@@ -54,6 +64,18 @@ int main(int argc, char* argv[]) {
       diagnosisPath = argv[++i];
     } else if (arg == "--liberty" && i + 1 < argc) {
       libertyPaths.push_back(argv[++i]);
+    } else if (arg == "--yosys-src") {
+      yosysSrc = true;
+    } else if (arg == "--source-map" && i + 1 < argc) {
+      const std::string map = argv[++i];
+      const auto eq = map.find('=');
+      if (eq == std::string::npos || eq == 0) {
+        std::cerr << "--source-map expects FROM=TO, got " << map << "\n";
+        return 1;
+      }
+      provider->addSourceMap(map.substr(0, eq), map.substr(eq + 1));
+    } else if (arg == "--source-root" && i + 1 < argc) {
+      provider->addSourceRoot(argv[++i]);
     } else if (designPath.empty()) {
       designPath = arg;
     }
@@ -66,9 +88,13 @@ int main(int argc, char* argv[]) {
         std::cerr << "--liberty is only supported for .v designs, not .sv\n";
         return 1;
       }
+      if (yosysSrc) {
+        std::cerr << "--yosys-src is only supported for .v designs\n";
+        return 1;
+      }
       provider->loadSystemVerilog({designPath});
     } else if (ext == "v") {
-      provider->loadVerilog({designPath}, libertyPaths);
+      provider->loadVerilog({designPath}, libertyPaths, yosysSrc);
     } else {
       provider->loadSNL(designPath); // assume SNL directory
     }

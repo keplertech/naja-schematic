@@ -56,7 +56,8 @@ remaining piece to actually produce the file this flag consumes.
 
 ## Building
 
-Clone with submodules (`thirdparty/imgui`, `thirdparty/naja`) — if already cloned
+Clone with submodules (`thirdparty/imgui`, `thirdparty/naja`,
+`thirdparty/ImGuiColorTextEdit`) — if already cloned
 without them: `git submodule update --init --recursive`.
 
 ### Native standalone target (`naja-schematic-standalone`)
@@ -91,12 +92,18 @@ Run directly, optionally with a netlist to load (dispatched by extension —
 directory), `--liberty <path>` (repeatable, once per file — defines the
 primitive cell library for a `.v` design; not supported for `.sv`, since
 `LocalSNLProvider::loadSystemVerilog()`/`SNLSVConstructor` has no liberty
-hook, and the CLI fails loudly rather than silently ignoring it), and/or a
-diagnosis JSON to pre-load (`--diagnosis <path>`, any order, all optional —
-see `loadDiagnosisFile()` in `AppLogic.cpp`):
+hook, and the CLI fails loudly rather than silently ignoring it), a
+diagnosis JSON to pre-load (`--diagnosis <path>` — see
+`loadDiagnosisFile()` in `AppLogic.cpp`), and/or directories to look up
+relative source file references in (`--source-root <dir>`, repeatable; see
+"Source references" under Wire protocol), path prefixes to rewrite for
+files recorded on another machine (`--source-map FROM=TO`, repeatable),
+and `--yosys-src` (`.v` only:
+decode Yosys `(* src *)` attributes into source origins; also a checkbox in
+File > Open Verilog...) — any order, all optional:
 
 ```bash
-../naja-schematic-build/native-debug/naja-schematic-standalone [path/to/netlist] [--liberty path/to/cells.lib]... [--diagnosis path/to/diagnosis.json]
+../naja-schematic-build/native-debug/naja-schematic-standalone [path/to/netlist] [--liberty path/to/cells.lib]... [--diagnosis path/to/diagnosis.json] [--source-root dir]... [--source-map FROM=TO]... [--yosys-src]
 
 # gate-level Verilog + Liberty example:
 ../naja-schematic-build/native-debug/naja-schematic-standalone design.v --liberty cells.lib
@@ -200,7 +207,11 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   the universe directly on the host's thread -- so a host holding its lock,
   or running on the thread `run` hops to, never deadlocks on itself.
 - `server.py` — the `naja-schematic` CLI (same flags as above, plus `--host`,
-  `--open`, `--diagnosis <json>`, `--stdio`) and its two transports: a
+  `--open`, `--diagnosis <json>`, `--stdio`, `--source-root <dir>`
+  (repeatable; `source_roots=` on `ViewerSession`/`ViewerServer`/`show()`),
+  `--source-map FROM=TO` (repeatable; `source_maps=` there too),
+  `--yosys-src` (with `--verilog`: `VerilogConfig.yosys_source_attributes`))
+  and its two transports: a
   WebSocket server that also serves the viewer page on the same port
   (`static/index.html` sets `Module.najaWsUrl` from `location`, query
   string included), and JSON
@@ -532,7 +543,7 @@ the same `id_path`/`path` pair as diagnosis items:
     // path/id_path: the resolved instance's names and ids (the request's, as given, if not found)
     "instance": {                        // absent for the top design ([])
       "path": [["u1", 3, "Mod"], ["u2", 7, "AND2"]],   // [name, child_id, model] per level
-      "design_ref": {...}, "primitive_type": "and", "has_instances": false, "source_loc": null,
+      "design_ref": {...}, "primitive_type": "and", "has_instances": false, "has_sources": true,
       "terms": [ {"name": "A", "child_id": 0, "direction": 0}, ... ] } }  // expanded_instance_terms shape
   ```
   The viewer then:
@@ -651,6 +662,48 @@ so unlike a term's properties there's no "Direction" entry, and nets don't
 offer a schematic-side "Show Properties" entry point (only terms/instances
 appear as boxes/pins there).
 
+**Source references** (full design: `docs/source_information.md`; needs
+najaeda >= 0.7.29). naja keeps, per object, an optional *declaration*
+(where it's written in the loaded input: a gate's netlist line, an
+instance's instantiation, a design's definition) and ordered *origins*
+(upstream RTL, e.g. Yosys `src`), each qualified by provider/language/
+representation (`""` = unknown -- shown as is, never inferred, same rule as
+gate types), plus the older unclassified legacy slot (`getSourceLoc()`).
+SV and gate-level Verilog fill declarations; Yosys `src` becomes origins
+only when asked (`--yosys-src`, `yosys_source_attributes`: naja never
+guesses provenance). Entries carry a sparse `"has_sources": true`
+(instances: own references -- `hasSourceReferences()`, allocation-free --
+or legacy, or the model's declaration; a bus: itself or any bit) -- this
+replaced the old inline `source_loc`. `get_sources`
+takes the `get_properties` address and answers `sources_response` with
+`subject`, the address echoed, and `sources`: `declaration`, `origin`s
+(with `index`), `model_declaration` (instances), `legacy` only when there's
+no typed reference; a bus bit without its own falls back to its bus's.
+`load_source` names one entry (address + `role` + `index`), **never a
+path**: the host reads only files the design references -- first through
+each source map whose FROM prefixes it at a path boundary (if a file is
+there), then an absolute path as is, a relative one under each source root
+then the current directory (`resolveSourceFile()`/`resolve_source_file()`,
+Python groups roots and maps as `protocol.SourcePaths`), whole up to 4 MiB, else
+the lines within 500 of the reference (`first_line`, `truncated`). Both
+backends: `requestSources()` in `LocalSNLProvider.cpp`,
+`request_sources()` in `protocol.py`; shared cases in
+`tests/data/source_protocol_cases.json`, on a Yosys-style gate netlist
+both runners load with naja's Verilog loader (add one when changing
+either). The raw Python API is read-only for sources, so Python tests get
+source data by loading files, never by setting it.
+The tree (flagged rows) and schematic boxes (and module frames, always)
+offer "Show Sources"; the reply fills the "Source" tab, opens the first
+entry's file, and grows the bottom panel to 45% of the height once
+(`AppState::growSourcePanel`; never shrinks it). A found `source_response`
+also says `"stale"`: the file was modified after the design was loaded
+(`LocalSNLProvider::loadedAt_`, stamped in `freshDB()`/`setDB()`;
+`SourcePaths.loaded_at`, stamped by `ViewerSession` at start and on each
+`design_changed()`), so naja's ranges may not match it -- the Source tab
+shows a warning. naja keeps no file hashes, so modification time is the
+check. A found `source_response` also carries `path`, the absolute
+path the host read, used by the native "Open in Editor".
+
 ### Core modules (`src/`)
 
 - **`NetlistTree`** — the design hierarchy tree (instances, terms, nets, bus
@@ -680,6 +733,31 @@ appear as boxes/pins there).
   `root_response`/`root_loaded`.
 - **`PropertiesView`** — renders the current `PropertiesStore` contents as a
   two-column name/value table into the "Properties" bottom-panel tab.
+- **`SourceStore`** — global static store (same pattern) for the "Source"
+  tab: the last `sources_response` (subject, the object's address, its
+  `SourceRef`s; `loadRequest(i)` builds the `load_source` for one) and the
+  shown file (`source_response`: lines, `first_line` offset, the reference
+  range; `highlightBytes()` gives the byte span to shade per line, by the
+  1-based inclusive columns, never inventing an unknown end). Cleared on
+  every fresh `root_response`/`root_loaded`.
+- **`SourceView`** — renders `SourceStore` into the "Source" tab: the
+  reference rows (click to load one) above the file, shown in a read-only
+  [ImGuiColorTextEdit](https://github.com/goossens/ImGuiColorTextEdit)
+  editor (submodule; `TextEditor.cpp` is in `CORE_SOURCES`) drawn with the
+  embedded monospace Cousine font (`CousineFont.h`, loaded in
+  `setupFonts()`): coloring by `VerilogLanguage`, find (Ctrl+F), copy, the
+  reference's range as a background squiggle (byte columns converted with
+  `SourceStore::glyphIndex()`), line markers for it and the object's other
+  references into the same file, line numbers offset by `first_line` for a
+  windowed file. Native only: "Open in Editor" runs
+  `$NAJA_SCHEMATIC_EDITOR`, else VS Code (`code` on PATH, else the CLI in
+  the app bundle), else `open`/`xdg-open` (`SourceStore::editorPattern()`,
+  `editorCommand()`, path shell-quoted) on a worker thread, and shows its
+  result or error next to the button.
+- **`VerilogLanguage`** — the editor's Verilog/SystemVerilog language
+  definition: keywords, types, `` ` `` directive lines, comments, strings,
+  `$system` tasks, escaped identifiers and sized/based numbers (its own
+  tokenizers, `tests/VerilogLanguageTest.cpp`). Coloring only, not a parser.
 - **`TraceStore`** — global static store (same pattern) for the driver
   traces in the schematic: id, label (the start pin), palette color,
   visibility. A trace is registered when its `trace_driver` request is sent,

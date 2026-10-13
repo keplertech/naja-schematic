@@ -27,6 +27,7 @@ class EquipotentialView {
       DesignRef   designRef{};
       PrimitiveType primitiveType = PrimitiveType::Unknown;
       bool        hasInstances = false;  // can itself be expanded further
+      bool        hasSources = false;    // has source references (get_sources)
     };
     // One endpoint of an internal net: a bit term on a specific sub-instance
     // (instChildId set), or the parent instance's own boundary port
@@ -56,7 +57,7 @@ class EquipotentialView {
       DesignRef                designRef{}; // the instance's model
       PrimitiveType            primitiveType = PrimitiveType::Unknown;
       bool                     hasInstances = false;
-      std::optional<SourceLoc> sourceLoc;
+      bool                     hasSources = false;
       std::vector<ExpandedPort> ports;      // every pin, bus bits expanded
     };
 

@@ -21,6 +21,7 @@ path = [
   "CMakePresets.json",
   "README.md",
   "docs/demo.gif",
+  "docs/source_information.md",
   "python/README.md",
   "python/naja_schematic/__init__.py",
   "python/naja_schematic/__main__.py",
@@ -35,11 +36,13 @@ path = [
   "python/notebooks/tinyrocket.ipynb",
   "python/pyproject.toml",
   "python/tests/conftest.py",
+  "python/tests/protocol_cases.py",
   "python/tests/test_anonymous_instances.py",
   "python/tests/data/design.v",
   "python/tests/test_design_generations.py",
   "python/tests/test_notebook.py",
   "python/tests/test_protocol.py",
+  "python/tests/test_source_references.py",
   "python/tests/test_transports.py",
   "python/tests/test_viewer_server.py",
   "python/tests/test_widget.py",
@@ -98,6 +101,8 @@ path = [
   "src/TraceStore.h",
   "src/TraceView.cpp",
   "src/TraceView.h",
+  "src/VerilogLanguage.cpp",
+  "src/VerilogLanguage.h",
   "src/Types.cpp",
   "src/Types.h",
   "src/Version.h",
@@ -119,7 +124,11 @@ path = [
   "tests/SourceStoreTest.cpp",
   "tests/TraceTest.cpp",
   "tests/TypesJsonTest.cpp",
+  "tests/VerilogLanguageTest.cpp",
   "tests/data/anonymous_protocol_cases.json",
+  "tests/data/source_protocol_cases.json",
+  "tests/data/sources/gate/alu_syn.v",
+  "tests/data/sources/rtl/alu.v",
   "tests/provider/LocalSNLProviderProtocolTest.cpp",
 ]
 SPDX-FileCopyrightText = "2026 najaeda contributors"
@@ -139,6 +148,14 @@ SPDX-License-Identifier = "Apache-2.0"
 path = "src/DroidSansFont.h"
 SPDX-FileCopyrightText = "Google Inc."
 SPDX-License-Identifier = "Apache-2.0"
+
+# Exported copy of thirdparty/imgui's misc/fonts/Cousine-Regular.ttf (by
+# Steve Matteson, SIL Open Font License 1.1 per imgui's docs/FONTS.md), the
+# Source tab's monospace font, embedded like DroidSansFont.h.
+[[annotations]]
+path = "src/CousineFont.h"
+SPDX-FileCopyrightText = "2010 Google Corporation"
+SPDX-License-Identifier = "OFL-1.1"
 
 # Derived from Emscripten's html/shell_minimal.html template, which
 # Emscripten dual-licenses under MIT and the University of Illinois/NCSA

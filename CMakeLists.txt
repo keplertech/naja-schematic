@@ -97,6 +97,7 @@ set(CORE_SOURCES
   src/DiagnosisView.cpp
   src/SourceStore.cpp
   src/SourceView.cpp
+  src/VerilogLanguage.cpp
   src/PropertiesStore.cpp
   src/PropertiesView.cpp
   src/SelectionStore.cpp
@@ -104,6 +105,8 @@ set(CORE_SOURCES
   src/TraceView.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
+  # Read-only code view of the Source tab (SourceView).
+  ${CMAKE_SOURCE_DIR}/thirdparty/ImGuiColorTextEdit/TextEditor.cpp
 )
 
 # ============================================================
@@ -267,10 +270,12 @@ if(NOT EMSCRIPTEN_BUILD)
       src/EquipotentialView.cpp
       src/SchematicView.cpp
       src/SvgPainter.cpp
+      src/VerilogLanguage.cpp
       ${IMGUI_DIR}/imgui.cpp
       ${IMGUI_DIR}/imgui_draw.cpp
       ${IMGUI_DIR}/imgui_tables.cpp
       ${IMGUI_DIR}/imgui_widgets.cpp
+      ${CMAKE_SOURCE_DIR}/thirdparty/ImGuiColorTextEdit/TextEditor.cpp
       ${NAJA_SCHEMATIC_TEST_SOURCES}
     )
     target_link_libraries(naja-schematic-tests PRIVATE gtest_main)
@@ -294,7 +299,7 @@ if(NOT EMSCRIPTEN_BUILD)
       naja_nl_dump
     )
     target_compile_definitions(naja-schematic-provider-tests PRIVATE
-      NAJA_SCHEMATIC_PROTOCOL_CASES="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/anonymous_protocol_cases.json"
+      NAJA_SCHEMATIC_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
     )
 
     enable_testing()

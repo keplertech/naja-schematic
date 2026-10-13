@@ -32,7 +32,7 @@ void buildItems(const Equipotential* eq,
         item.pathIds     = occ.pathIds;
         item.hasInstances = occ.has_instances;
         item.bitTermCount = occ.bit_term_count;
-        item.sourceLoc    = occ.source_loc;
+        item.hasSources   = occ.has_sources;
         item.path         = occ.path;
         item.pathModels   = occ.pathModels;
         item.direction = occ.term.direction;

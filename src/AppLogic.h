@@ -19,6 +19,9 @@ struct AppState {
   // cleared) by appFrame() to auto-select the matching bottom-panel tab for
   // that one frame.
   bool              focusSourceTab     {false};
+  // Set by a sources_response: give the bottom panel room for the code
+  // once (see kSourcePanelShare in AppLogic.cpp).
+  bool              growSourcePanel    {false};
   bool              focusDiagnosisTab  {false};
   bool              focusPropertiesTab {false};
   // How many of the most recently added equipotentials the bottom

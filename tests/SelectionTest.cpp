@@ -278,3 +278,68 @@ TEST_F(TreeReveal, RevealsASelectionMadeElsewhereOnRender) {
   SelectionStore::clear();
   ImGui::DestroyContext();
 }
+
+// Choosing a context-menu entry must not select the tree row that happens
+// to lie under the menu item: the click belongs to the menu.
+TEST_F(TreeReveal, ContextMenuClickDoesNotSelectTheRowUnderIt) {
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(800.f, 600.f);
+  io.DeltaTime   = 1.f / 60.f;
+  io.IniFilename = nullptr;
+  unsigned char* px; int w, h;
+  io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+  ImVec2 origin;
+  float pitch = 0.f;
+  auto frame = [&] {
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImVec2(400, 500));
+    ImGui::Begin("Tree", nullptr, ImGuiWindowFlags_NoMove);
+    origin = ImGui::GetCursorScreenPos();
+    pitch  = ImGui::GetTextLineHeightWithSpacing();
+    tree.render();
+    ImGui::End();
+    ImGui::Render();
+  };
+  // Center of tree row `row` (0 = top), `x` from the window's content start.
+  auto at = [&](int row, float x) {
+    return ImVec2(origin.x + x, origin.y + row * pitch + ImGui::GetFontSize() * 0.5f);
+  };
+  auto click = [&](ImVec2 pos, ImGuiMouseButton button) {
+    io.AddMousePosEvent(pos.x, pos.y);
+    frame();
+    io.AddMouseButtonEvent(button, true);
+    frame();
+    io.AddMouseButtonEvent(button, false);
+    frame();
+    frame();
+  };
+
+  SelectionStore::clear();
+  frame();
+  click(at(0, 4.f), ImGuiMouseButton_Left);   // open "top"
+  // Its groups: Terms, Primitives, Instances. Open Instances (on its arrow,
+  // one indent in): that loads it.
+  click(at(3, ImGui::GetStyle().IndentSpacing + 5.f), ImGuiMouseButton_Left);
+  auto load = take("load_instances");
+  ASSERT_EQ(load.size(), 1u);
+  answer(load[0]["gui_id"].get<unsigned>(),
+         {{"u0", 0, false}, {"u1", 1, false}, {"u2", 2, false}});
+  frame();
+  SelectionStore::clear();
+  provider.sent.clear();
+
+  click(at(4, 60.f), ImGuiMouseButton_Right);  // u0's context menu
+  // Its first entry ("Show Properties") lies over the next row, u1's.
+  click(ImVec2(at(4, 60.f).x + 30.f, at(5, 0.f).y), ImGuiMouseButton_Left);
+
+  auto props = take("get_properties");
+  ASSERT_EQ(props.size(), 1u);
+  EXPECT_EQ(props[0]["id_path"], nlohmann::json::array({0}));  // u0's
+  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{1, "u1"}}));
+  EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{2, "u2"}}));
+
+  SelectionStore::clear();
+  ImGui::DestroyContext();
+}

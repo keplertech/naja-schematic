@@ -5,16 +5,30 @@
 
 #include "Console.h"
 
-static std::optional<SourceLoc> parseSourceLoc(const json& j) {
-  if (!j.contains("source_loc") || j["source_loc"].is_null()) return std::nullopt;
-  const auto& s = j["source_loc"];
-  SourceLoc loc;
-  loc.file      = s.value("file", std::string(""));
-  loc.line      = s.value("line", 0);
-  loc.endLine   = s.value("end_line", loc.line);
-  loc.column    = s.value("column", 0);
-  loc.endColumn = s.value("end_column", loc.column);
-  return loc;
+SourceRef parseSourceRef(const json& j) {
+  SourceRef ref;
+  ref.role = j.value("role", std::string(""));
+  if (j.contains("index") && j["index"].is_number_unsigned())
+    ref.index = j["index"].get<unsigned>();
+  ref.file           = j.value("file", std::string(""));
+  // Missing coordinates stay 0 (unknown): an end is never made up.
+  ref.line           = j.value("line", 0u);
+  ref.column         = j.value("column", 0u);
+  ref.endLine        = j.value("end_line", 0u);
+  ref.endColumn      = j.value("end_column", 0u);
+  ref.provider       = j.value("provider", std::string(""));
+  ref.language       = j.value("language", std::string(""));
+  ref.representation = j.value("representation", std::string(""));
+  return ref;
+}
+
+std::string sourceRefLocation(const SourceRef& ref) {
+  std::string out = ref.file.empty() ? "<unknown file>" : ref.file;
+  if (ref.line) {
+    out += ":" + std::to_string(ref.line);
+    if (ref.column) out += ":" + std::to_string(ref.column);
+  }
+  return out;
 }
 
 Direction intToDirection(int dirInt) {
@@ -50,7 +64,7 @@ void from_json(const json& j, InstanceResponseJson& r) {
   j.at("has_instances").get_to(r.has_instances);
   j.at("has_terms").get_to(r.has_terms);
   j.at("has_nets").get_to(r.has_nets);
-  r.source_loc = parseSourceLoc(j);
+  r.has_sources = j.value("has_sources", false);
 }
 
 void from_json(const json& j, InstancesResponseJson& instances) {
@@ -90,6 +104,7 @@ void from_json(const json& j, TermsResponseJson& t) {
       } else {
         term.lsb = std::nullopt;
       }
+      term.has_sources = child.value("has_sources", false);
 
       t.children.push_back(std::move(term));
     }
@@ -118,6 +133,7 @@ void from_json(const json& j, NetsResponseJson& n) {
       } else {
         net.lsb = std::nullopt;
       }
+      net.has_sources = child.value("has_sources", false);
 
       n.children.push_back(std::move(net));
     }
@@ -191,7 +207,7 @@ void from_json(const json& j, Equipotential& e) {
       occurrence.has_instances = occJson.value("has_instances", false);
       if (occJson.contains("bit_term_count") && occJson["bit_term_count"].is_number_unsigned())
         occurrence.bit_term_count = occJson["bit_term_count"].get<size_t>();
-      occurrence.source_loc    = parseSourceLoc(occJson);
+      occurrence.has_sources   = occJson.value("has_sources", false);
 
       e.occurrences.push_back(std::move(occurrence));
     }

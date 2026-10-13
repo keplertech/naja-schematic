@@ -6,54 +6,15 @@ shared with tests/provider/LocalSNLProviderProtocolTest.cpp, so protocol.py
 and LocalSNLProvider are held to the same answers.
 """
 import json
-from pathlib import Path
 
 import pytest
 from najaeda import naja
 
 from naja_schematic import protocol
 from naja_schematic.protocol import handle_request
+from protocol_cases import build_design, check_case, load_spec, substitute
 
-CASES_FILE = Path(__file__).resolve().parents[2] / "tests" / "data" / "anonymous_protocol_cases.json"
-SPEC = json.loads(CASES_FILE.read_text())
-
-_DIRECTIONS = {"input": naja.SNLTerm.Direction.Input,
-               "output": naja.SNLTerm.Direction.Output,
-               "inout": naja.SNLTerm.Direction.InOut}
-
-
-def build_design(spec):
-    """Build the spec'd netlist with the raw naja API in a DB of its own;
-    returns {design name: design}. Instances are created in list order, so
-    their ids are their list indices."""
-    u = naja.NLUniverse.get()
-    db = naja.NLDB.create(u)
-    designs = {}
-    prims = naja.NLLibrary.createPrimitives(db, "anon_prims")
-    for p in spec["primitives"]:
-        d = naja.SNLDesign.createPrimitive(prims, p["name"])
-        for name, direction in p["terms"]:
-            naja.SNLScalarTerm.create(d, _DIRECTIONS[direction], name)
-        designs[p["name"]] = d
-    lib = naja.NLLibrary.create(db, "anon_work")
-    for spec_d in spec["designs"]:
-        d = naja.SNLDesign.create(lib, spec_d["name"])
-        for name, direction in spec_d["terms"]:
-            naja.SNLScalarTerm.create(d, _DIRECTIONS[direction], name)
-        instances = []
-        for index, (name, model) in enumerate(spec_d["instances"]):
-            inst = (naja.SNLInstance.create(d, designs[model], name) if name
-                    else naja.SNLInstance.create(d, designs[model]))
-            assert inst.getID() == index
-            instances.append(inst)
-        for n in spec_d["nets"]:
-            net = naja.SNLScalarNet.create(d, n["name"])
-            d.getScalarTerm(n["term"]).setNet(net)
-            for index, term in n["pins"]:
-                inst = instances[index]
-                inst.getInstTerm(inst.getModel().getScalarTerm(term)).setNet(net)
-        designs[spec_d["name"]] = d
-    return designs
+SPEC = load_spec("anonymous_protocol_cases.json")
 
 
 @pytest.fixture(scope="module")
@@ -68,74 +29,11 @@ def anon(top):
     u.setTopDesign(previous)
 
 
-def design_ref(design):
-    return {"db_id": design.getDB().getID(), "library_id": design.getLibrary().getID(),
-            "design_id": design.getID()}
-
-
-def substitute(value, designs):
-    if isinstance(value, str) and value.startswith("$design:"):
-        return design_ref(designs[value[len("$design:"):]])
-    if isinstance(value, dict):
-        return {k: substitute(v, designs) for k, v in value.items()}
-    if isinstance(value, list):
-        return [substitute(v, designs) for v in value]
-    return value
-
-
-def matches_unordered(expected, actual, where):
-    # Each expected element matched to a different actual element.
-    if not isinstance(actual, list) or len(actual) != len(expected):
-        return f"{where}: expected {expected!r}, got {actual!r}"
-    left = list(actual)
-    for e in expected:
-        hit = next((i for i, a in enumerate(left) if matches(e, a) is None), None)
-        if hit is None:
-            return f"{where}: nothing left matches {e!r} in {actual!r}"
-        left.pop(hit)
-    return None
-
-
-def matches(expected, actual, where="reply"):
-    """Every key of `expected` is in `actual` with that value (objects
-    recursively, lists element-wise with the same length). Returns the
-    first mismatch as a string, or None."""
-    if isinstance(expected, dict):
-        if not isinstance(actual, dict):
-            return f"{where}: expected an object, got {actual!r}"
-        for key, value in expected.items():
-            if key not in actual:
-                return f"{where}: missing {key!r}"
-            if (err := matches(value, actual[key], f"{where}.{key}")):
-                return err
-        return None
-    if isinstance(expected, list):
-        if not isinstance(actual, list) or len(actual) != len(expected):
-            return f"{where}: expected {expected!r}, got {actual!r}"
-        for i, (e, a) in enumerate(zip(expected, actual)):
-            if (err := matches(e, a, f"{where}[{i}]")):
-                return err
-        return None
-    # bool is an int in Python: don't let True match 1.
-    if expected != actual or isinstance(expected, bool) != isinstance(actual, bool):
-        return f"{where}: expected {expected!r}, got {actual!r}"
-    return None
-
-
 @pytest.mark.parametrize("case", SPEC["cases"], ids=[c["name"] for c in SPEC["cases"]])
 def test_shared_protocol_case(anon, case):
     replies = handle_request(substitute(case["request"], anon))
     # Through JSON, like the wire, so both sides compare the same thing.
-    replies = json.loads(json.dumps(replies))
-    expect = [dict(e) for e in case["expect"]]
-    for key in case.get("unordered", []):
-        expected_list = expect[0].pop(key)
-        err = matches_unordered(expected_list, replies[0].get(key) if replies else None,
-                                f"replies[0].{key}")
-        assert err is None, err
-    assert (err := matches(expect, replies, "replies")) is None, err
-    for key in case.get("absent", []):
-        assert key not in replies[0], f"unexpected {key!r} in {replies[0]}"
+    check_case(case, json.loads(json.dumps(replies)))
 
 
 def test_resolved_ids_address_the_same_instance(anon):

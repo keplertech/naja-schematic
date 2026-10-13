@@ -15,7 +15,7 @@ TEST(DesignRefJson, ThrowsOnMissingField) {
   EXPECT_THROW(j.get<DesignRef>(), json::exception);
 }
 
-TEST(InstanceResponseJson, ParsesWithoutSourceLoc) {
+TEST(InstanceResponseJson, ParsesWithoutSources) {
   json j = {
     {"name", "u1"},
     {"model_name", "AND2"},
@@ -34,26 +34,62 @@ TEST(InstanceResponseJson, ParsesWithoutSourceLoc) {
   EXPECT_FALSE(r.has_instances);
   EXPECT_TRUE(r.has_terms);
   EXPECT_TRUE(r.has_nets);
-  EXPECT_FALSE(r.source_loc.has_value());
+  EXPECT_FALSE(r.has_sources);
 }
 
-TEST(InstanceResponseJson, ParsesSourceLocWithDefaults) {
+TEST(InstanceResponseJson, ParsesHasSources) {
   json j = {
     {"design_ref", {{"db_id", 1}, {"library_id", 2}, {"design_id", 3}}},
     {"has_primitives", false},
     {"has_instances", false},
     {"has_terms", false},
     {"has_nets", false},
-    {"source_loc", {{"file", "top.sv"}, {"line", 42}}},
+    {"has_sources", true},
   };
-  InstanceResponseJson r = j.get<InstanceResponseJson>();
-  ASSERT_TRUE(r.source_loc.has_value());
-  EXPECT_EQ(r.source_loc->file, "top.sv");
-  EXPECT_EQ(r.source_loc->line, 42);
-  // end_line/column/end_column default from line/column when absent.
-  EXPECT_EQ(r.source_loc->endLine, 42);
-  EXPECT_EQ(r.source_loc->column, 0);
-  EXPECT_EQ(r.source_loc->endColumn, 0);
+  EXPECT_TRUE(j.get<InstanceResponseJson>().has_sources);
+}
+
+TEST(SourceRefJson, ParsesAReference) {
+  SourceRef r = parseSourceRef(json::parse(R"({"role": "origin", "index": 1,
+    "file": "rtl/alu.v", "line": 2, "column": 14, "end_line": 2, "end_column": 24,
+    "provider": "yosys", "language": "", "representation": ""})"));
+  EXPECT_EQ(r.role, "origin");
+  EXPECT_EQ(r.index, 1u);
+  EXPECT_EQ(r.file, "rtl/alu.v");
+  EXPECT_EQ(r.line, 2u);
+  EXPECT_EQ(r.column, 14u);
+  EXPECT_EQ(r.endLine, 2u);
+  EXPECT_EQ(r.endColumn, 24u);
+  EXPECT_EQ(r.provider, "yosys");
+  EXPECT_EQ(r.language, "");
+  EXPECT_EQ(sourceRefLocation(r), "rtl/alu.v:2:14");
+}
+
+TEST(SourceRefJson, MissingCoordinatesStayUnknown) {
+  // Unknown is 0 and an end is never made up from the start.
+  SourceRef r = parseSourceRef(json{{"role", "declaration"}, {"file", "top.sv"}, {"line", 42}});
+  EXPECT_FALSE(r.index.has_value());
+  EXPECT_EQ(r.line, 42u);
+  EXPECT_EQ(r.endLine, 0u);
+  EXPECT_EQ(r.column, 0u);
+  EXPECT_EQ(r.endColumn, 0u);
+  EXPECT_EQ(sourceRefLocation(r), "top.sv:42");
+  EXPECT_EQ(sourceRefLocation(parseSourceRef(json::object())), "<unknown file>");
+}
+
+TEST(TermsResponseJson, ParsesHasSources) {
+  TermsResponseJson t = json::parse(R"({"gui_id": 1, "children": [
+    {"name": "a", "child_id": 0, "direction": 0, "msb": 1, "lsb": 0, "has_sources": true},
+    {"name": "y", "child_id": 1, "direction": 1}]})").get<TermsResponseJson>();
+  EXPECT_TRUE(t.children[0].has_sources);
+  EXPECT_FALSE(t.children[1].has_sources);
+}
+
+TEST(NetsResponseJson, ParsesHasSources) {
+  NetsResponseJson n = json::parse(R"({"gui_id": 1, "children": [
+    {"name": "s", "msb": 1, "lsb": 0, "has_sources": true}, {"name": "n1"}]})").get<NetsResponseJson>();
+  EXPECT_TRUE(n.children[0].has_sources);
+  EXPECT_FALSE(n.children[1].has_sources);
 }
 
 TEST(InstanceResponseJson, MissingNameDefaultsEmpty) {
