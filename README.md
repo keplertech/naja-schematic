@@ -23,6 +23,10 @@ native desktop app and a WASM app that runs in a browser or a VSCode webview.
 - Diagnosis overlay: color-codes and annotates flagged instances/pins/nets
   from a `diagnosis_response` JSON payload, with hover tooltips and a flat
   diagnostics list panel
+- Source cross-probing: **Show Sources** on an instance, term or net lists
+  where it is declared and, for synthesized logic, the RTL it came from
+  (naja source references, e.g. from Yosys `src` attributes), and opens
+  the file at the highlighted range
 - Loads Verilog, SystemVerilog, or pre-built SNL netlists natively; the
   browser build talks to a Python netlist server over WebSocket
 - Runs natively on macOS or Linux, or anywhere with a browser/VSCode via WASM
@@ -54,7 +58,23 @@ Cmd in the native macOS app (Ctrl in a browser, on any OS).
 | Click a box | Select the instance (also in the design tree) |
 | Click a wire | Select (highlight) its net |
 | Click a box's hierarchy glyph | Show / hide what is inside it |
-| Right-click | Context menu: trace to driver, properties, fit, clear |
+| Right-click | Context menu: trace to driver, sources, properties, fit, clear |
+
+| Keys (Source tab, after clicking in the text) | Action |
+|---|---|
+| Ctrl `F` | Find in the shown file |
+| Ctrl `G` | Find the next match |
+| Ctrl `C` | Copy the selected text |
+| Ctrl `A` | Select the whole file |
+
+The native app also has an **Open in Editor** button in the Source tab: it
+runs `$NAJA_SCHEMATIC_EDITOR` (`{file}`, `{line}` and `{col}` are filled in,
+e.g. `subl {file}:{line}:{col}`). Without it, VS Code is used at the line
+(`code -g` if on PATH, else the CLI inside `Visual Studio Code.app`), else
+the system's default app; the result (or the error) shows next to the
+button. Edits made there reach the viewer only when the design is loaded
+again: until then, the Source tab warns that the file changed after the
+design was loaded and its highlighted lines may be off.
 
 In a notebook or a VSCode webview, the viewer takes keys only while its
 canvas has focus (click it first), and the host may keep some Ctrl chords
@@ -104,15 +124,22 @@ Run (`../naja-schematic-build/native-debug/naja-schematic-standalone` on
 macOS, `build/naja-schematic-standalone` on Linux), optionally with a
 netlist to load (dispatched by extension — `.v` → Verilog, `.sv` →
 SystemVerilog, otherwise treated as an SNL directory), one or more
-`--liberty` files defining the primitive cell library for a `.v` design, and/or
-a diagnosis JSON to pre-load:
+`--liberty` files defining the primitive cell library for a `.v` design,
+a diagnosis JSON to pre-load, and/or directories to look up relative source
+file paths in (Show Sources):
 
 ```bash
-naja-schematic-standalone [path/to/netlist] [--liberty path/to/cells.lib]... [--diagnosis path/to/diagnosis.json]
+naja-schematic-standalone [path/to/netlist] [--liberty path/to/cells.lib]... [--diagnosis path/to/diagnosis.json] [--source-root dir]... [--source-map FROM=TO]... [--yosys-src]
 ```
 
-`<netlist>`, `--liberty <path>` and `--diagnosis <path>` are all optional and
-order-independent. `--liberty` is repeatable (once per file) and only
+`<netlist>`, `--liberty <path>`, `--diagnosis <path>` and `--source-root
+<dir>` are all optional and order-independent. `--source-root` is
+repeatable: a relative source path is looked up in each, in order, then in
+the current directory. `--source-map FROM=TO` (repeatable) rewrites paths
+recorded on another machine, e.g. Yosys `src` paths of a synthesis server:
+`--source-map /home/ci/flow=/work/flow`. `--yosys-src` (`.v` only; also a checkbox in File >
+Open Verilog...) decodes Yosys `(* src *)` attributes, so Show Sources on a
+synthesized gate also lists the RTL it came from. `--liberty` is repeatable (once per file) and only
 supported for `.v` designs — a gate-level Verilog netlist that instantiates
 Liberty std cells needs it to resolve them; it errors out for `.sv`, since the
 SystemVerilog frontend has no liberty hook. Without `--diagnosis`, use File >

@@ -27,6 +27,7 @@ using json = nlohmann::json;
 #include "TraceStore.h"
 #include "TraceView.h"
 #include "PropertiesView.h"
+#include "CousineFont.h"
 #include "DroidSansFont.h"
 
 #ifndef __EMSCRIPTEN__
@@ -60,6 +61,9 @@ void setupFonts() {
   ImGuiIO& io = ImGui::GetIO();
   io.Fonts->AddFontFromMemoryCompressedTTF(
       DroidSans_compressed_data, DroidSans_compressed_size, kBaseFontSizePx);
+  // Monospace, for code in the Source tab; DroidSans above stays the default.
+  SourceView::setFont(io.Fonts->AddFontFromMemoryCompressedTTF(
+      Cousine_compressed_data, Cousine_compressed_size, kBaseFontSizePx - 1.0f));
 }
 
 // ---------------------------------------------------------------------------
@@ -138,6 +142,12 @@ static void renderShortcutsWindow(bool& open) {
     {"=  /  -  (hold)",    "Zoom in / out about the canvas center"},
     {"0  or  Home",        "Fit the schematic to the canvas"},
   };
+  static const Row kSource[] = {
+    {NAJA_SHORTCUT("F"),           "Find in the shown file"},
+    {NAJA_SHORTCUT("G"),           "Find the next match"},
+    {NAJA_SHORTCUT("C"),           "Copy the selected text"},
+    {NAJA_SHORTCUT("A"),           "Select the whole file"},
+  };
   static const Row kMouse[] = {
     {"Wheel",                        "Zoom about the cursor"},
     {"Right or middle drag",         "Pan"},
@@ -147,7 +157,7 @@ static void renderShortcutsWindow(bool& open) {
     {"Click a box",                  "Select the instance (also in the tree)"},
     {"Click a wire",                 "Select (highlight) its net"},
     {"Click a box's hierarchy glyph","Show / hide what is inside it"},
-    {"Right-click",                  "Context menu: trace, properties, fit, clear"},
+    {"Right-click",                  "Context menu: trace, sources, properties, fit, clear"},
   };
   auto table = [](const char* id, const Row* rows, size_t n) {
     if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) return;
@@ -168,6 +178,8 @@ static void renderShortcutsWindow(bool& open) {
     table("##canvaskeys", kCanvasKeys, IM_COUNTOF(kCanvasKeys));
     ImGui::SeparatorText("Mouse");
     table("##mouse", kMouse, IM_COUNTOF(kMouse));
+    ImGui::SeparatorText("Source tab (text clicked first)");
+    table("##source", kSource, IM_COUNTOF(kSource));
   }
   ImGui::End();
 }
@@ -256,6 +268,7 @@ void setupProvider(AppState& state) {
       Console::Log("Root node data received");
       DiagnosisStore::clear();  // stale diagnoses reference the old design
       PropertiesStore::clear(); // stale properties reference the old design
+      SourceStore::clear();     // so do source references
       SelectionStore::clear();  // so does a stale selection
       const auto& root = j["root"];
       if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
@@ -263,7 +276,7 @@ void setupProvider(AppState& state) {
         state.guiData->netlist_->createRootNode(
           data.name, data.design_ref,
           data.has_terms, data.has_primitives, data.has_instances, data.has_nets,
-          data.source_loc);
+          data.has_sources);
       } else {
         DesignRef designRef{};
         if (root.contains("design_ref")) {
@@ -314,7 +327,7 @@ void setupProvider(AppState& state) {
         parent->createInstanceNode(
           instance.name, instance.model_name, instance.child_id, instance.design_ref,
           instance.has_terms, instance.has_primitives, instance.has_instances, instance.has_nets,
-          instance.source_loc);
+          instance.has_sources);
       }
     } else if (resp == "terms_response") {
       TermsResponseJson data = j.get<TermsResponseJson>();
@@ -330,7 +343,7 @@ void setupProvider(AppState& state) {
       parent->createChildren();
       for (auto& term : data.children) {
         parent->createTermNode(term.name, term.child_id,
-                               Direction(term.direction), term.msb, term.lsb);
+                               Direction(term.direction), term.msb, term.lsb, term.has_sources);
       }
     } else if (resp == "nets_response") {
       NetsResponseJson data = j.get<NetsResponseJson>();
@@ -345,7 +358,7 @@ void setupProvider(AppState& state) {
       }
       parent->createChildren();
       for (auto& net : data.children) {
-        parent->createNetNode(net.name, net.msb, net.lsb);
+        parent->createNetNode(net.name, net.msb, net.lsb, net.has_sources);
       }
     } else if (resp == "equipotential_response") {
       // A trace_id (echoed from a tree "Show Equipotential") makes the net a
@@ -424,6 +437,7 @@ void setupProvider(AppState& state) {
             ic.designRef = c["design_ref"].get<DesignRef>();
           ic.primitiveType = primitiveTypeFromString(c.value("primitive_type", std::string("unknown")));
           ic.hasInstances = c.value("has_instances", false) || c.value("has_primitives", false);
+          ic.hasSources   = c.value("has_sources", false);
           data.children.push_back(std::move(ic));
         }
       }
@@ -450,16 +464,32 @@ void setupProvider(AppState& state) {
         }
       }
       EquipotentialView::applyInstanceInternals(*path, data);
+    } else if (resp == "sources_response") {
+      // The source references of the object a "Show Sources" asked about;
+      // the first one's file is opened right away.
+      std::vector<SourceRef> refs;
+      for (const auto& entry : j.value("sources", json::array()))
+        refs.push_back(parseSourceRef(entry));
+      json address = json::object();
+      for (const char* key : {"kind", "id_path", "path", "terminal", "net", "bit"})
+        if (j.contains(key)) address[key] = j[key];
+      const bool any = !refs.empty();
+      SourceStore::setReferences(j.value("subject", std::string("")), address, std::move(refs));
+      state.focusSourceTab  = true;
+      state.growSourcePanel = true;
+      if (any && state.provider) state.provider->send(SourceStore::loadRequest(0).dump());
     } else if (resp == "source_response") {
-      std::string file = j.value("file", std::string(""));
-      bool found = j.value("found", false);
-      if (found) {
-        SourceStore::setSource(file, j.value("line", 0), j.value("text", std::string("")));
-        state.focusSourceTab = true;
-        Console::Log("Loaded RTL source: " + file);
+      SourceRef ref = parseSourceRef(j);
+      if (j.value("found", false)) {
+        SourceStore::setSource(ref, j.value("text", std::string("")),
+                               j.value("first_line", std::uint64_t(1)), j.value("truncated", false),
+                               j.value("path", std::string("")), j.value("stale", false));
+        Console::Log("Loaded source: " + ref.file);
       } else {
-        Console::Error("Failed to load RTL source: " + file);
+        SourceStore::setMissing(ref);
+        Console::Error("Failed to load source: " + (ref.file.empty() ? "no such reference" : ref.file));
       }
+      state.focusSourceTab = true;
     } else if (resp == "properties_response") {
       PropertiesResponseJson data = j.get<PropertiesResponseJson>();
       std::string subject = j.value("subject", std::string(""));
@@ -583,6 +613,7 @@ bool appFrame(AppState& state) {
   static char snlPathBuf[1024]    = {};
   static char vrlFilesBuf[8192]   = {};
   static char vrlLibertyBuf[4096] = {};
+  static bool vrlYosysSrc         = false;
   static char svFilesBuf[8192]    = {};
   static char svTopBuf[256]       = {};
 #endif
@@ -706,9 +737,14 @@ bool appFrame(AppState& state) {
     }
     ImGui::InputTextMultiline("##vrlliberty", vrlLibertyBuf, sizeof(vrlLibertyBuf), ImVec2(-1, 80));
     ImGui::Spacing();
+    ImGui::Checkbox("Decode Yosys src attributes", &vrlYosysSrc);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("For a Yosys-synthesized netlist: Show Sources then also\n"
+                        "lists the RTL each gate came from");
+    ImGui::Spacing();
     if (ImGui::Button("Open", ImVec2(120,0)) && vrlFilesBuf[0]) {
       if (localProvider) {
-        localProvider->loadVerilog(splitLines(vrlFilesBuf), splitLines(vrlLibertyBuf));
+        localProvider->loadVerilog(splitLines(vrlFilesBuf), splitLines(vrlLibertyBuf), vrlYosysSrc);
         reloadNetlist(state);
       }
       ImGui::CloseCurrentPopup();
@@ -771,6 +807,15 @@ bool appFrame(AppState& state) {
     const float  minPanelH = 40.0f;
     float totalH = ImGui::GetContentRegionAvail().y;
     if (schematicHeight < 0.0f) schematicHeight = totalH * 0.65f;
+    // Show Sources: the reference list plus readable code need more than
+    // the default bottom panel. Grow it to this share of the height, once
+    // per Show Sources, and only if it's smaller: a panel the user made
+    // bigger stays as is, and later drags aren't undone.
+    constexpr float kSourcePanelShare = 0.45f;
+    if (state.growSourcePanel) {
+      state.growSourcePanel = false;
+      schematicHeight = std::min(schematicHeight, totalH * (1.0f - kSourcePanelShare));
+    }
 
     auto vSplitter = [&](const char* id, float& width) {
       ImGui::SameLine();
@@ -870,8 +915,8 @@ bool appFrame(AppState& state) {
           //   ImGui::EndTabItem();
           // }
           ImGuiTabItemFlags srcFlags = state.focusSourceTab ? ImGuiTabItemFlags_SetSelected : 0;
-          if (ImGui::BeginTabItem("RTL Source", nullptr, srcFlags)) {
-            SourceView::render();
+          if (ImGui::BeginTabItem("Source", nullptr, srcFlags)) {
+            SourceView::render(state.provider);
             ImGui::EndTabItem();
           }
           ImGuiTabItemFlags propFlags = state.focusPropertiesTab ? ImGuiTabItemFlags_SetSelected : 0;

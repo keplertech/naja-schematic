@@ -1,6 +1,7 @@
 #pragma once
 
 #include <compare>
+#include <cstdint>
 #include <map>
 #include <set>
 #include <string>
@@ -20,16 +21,30 @@ struct DesignRef {
   int design_id;
 };
 
-// RTL source location for an elaborated object (naja's SNLRTLInfos), only
-// populated for SystemVerilog-loaded designs today (see CLAUDE.md). Absent
-// means "no source location available" -- not an error.
-struct SourceLoc {
+// One source reference of a netlist object, an entry of a sources_response
+// (see docs/source_information.md). `role` is "declaration" (where the object
+// is written in the loaded input), "origin" (where it came from upstream,
+// e.g. a Yosys src RTL line; `index` orders them), "model_declaration" (an
+// instance's model definition) or "legacy" (naja's unclassified location).
+// Lines and byte columns are 1-based and inclusive; 0 means unknown, and an
+// unknown end is not made up. "" qualifiers mean unknown, never guessed.
+struct SourceRef {
+  std::string role;
+  std::optional<unsigned> index;
   std::string file;
-  int line = 0;
-  int endLine = 0;
-  int column = 0;
-  int endColumn = 0;
+  std::uint32_t line = 0;
+  std::uint32_t column = 0;
+  std::uint32_t endLine = 0;
+  std::uint32_t endColumn = 0;
+  std::string provider;
+  std::string language;
+  std::string representation;
 };
+
+SourceRef parseSourceRef(const json& j);
+
+// "rtl/alu.v:2:14": the reference's start, for a human to read.
+std::string sourceRefLocation(const SourceRef& ref);
 
 // Coarse gate/cell function classification for an instance, used to pick a
 // standard schematic symbol instead of a generic box (see
@@ -103,7 +118,7 @@ struct InstanceResponseJson {
   bool has_instances;
   bool has_terms;
   bool has_nets;
-  std::optional<SourceLoc> source_loc;
+  bool has_sources = false;  // see get_sources (CLAUDE.md, "Source references")
 };
 
 struct InstancesResponseJson {
@@ -229,8 +244,8 @@ struct InstTermOccurrence {
   // bit), if the provider sent it -- used to tell a fully-shown interface
   // from a partial one.
   std::optional<size_t> bit_term_count;
-  // RTL source location of the tail instance itself, if available.
-  std::optional<SourceLoc> source_loc;
+  // Whether the tail instance has source references (get_sources).
+  bool has_sources = false;
 };
 
 struct TermResponseJson {
@@ -239,6 +254,7 @@ struct TermResponseJson {
   Direction direction;
   std::optional<int> msb;
   std::optional<int> lsb;
+  bool has_sources = false;  // the term, or any bit of a bus term
 };
 
 struct TermsResponseJson {
@@ -255,6 +271,7 @@ struct NetResponseJson {
   std::string name;
   std::optional<int> msb;
   std::optional<int> lsb;
+  bool has_sources = false;  // the net, or any bit of a bus net
 };
 
 struct NetsResponseJson {

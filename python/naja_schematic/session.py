@@ -21,9 +21,11 @@ A host that replaces the design calls design_changed(): the session moves to
 the next design generation, and requests the viewer made for an older one
 are dropped (see ViewerSession).
 """
+import dataclasses
 import json
 import logging
 import threading
+import time
 
 from najaeda import naja
 
@@ -144,6 +146,9 @@ class ViewerSession:
     `dispatch(fn)` calls fn() -- a selection notification -- eventually, in
     the order given (default: right away, on the calling thread).
     `diagnosis` pre-loads diagnosis items, sent after the first root load.
+    `source_roots` lists the directories relative source file references
+    are looked up in, `source_maps` (FROM, TO) path prefixes to rewrite for
+    files recorded on another machine (see protocol.resolve_source_file()).
 
     Design generations: the session numbers the designs it has shown,
     starting at 0; design_changed() moves to the next one. Every message to
@@ -158,8 +163,13 @@ class ViewerSession:
     predating generations) are answered for the current design.
     """
 
-    def __init__(self, push=None, run=None, diagnosis=None, dispatch=None):
+    def __init__(self, push=None, run=None, diagnosis=None, dispatch=None, source_roots=(),
+                 source_maps=()):
         self._push = push
+        # Stamped now and at each design_changed(): the design the viewer
+        # shows was loaded by then, so a source file modified later is stale.
+        self._source_paths = protocol.SourcePaths(
+            tuple(source_roots), tuple((str(a), str(b)) for a, b in source_maps), time.time())
         self._run = run or lock_runner(threading.RLock())
         self._dispatch = dispatch or (lambda fn: fn())
         self._state_lock = threading.Lock()  # generation, pushes, selection; not the universe
@@ -220,7 +230,7 @@ class ViewerSession:
             if kind == "svg_exported":
                 svg = request.get("svg")
                 return generation, svg if isinstance(svg, str) else "", pushes
-            return generation, protocol.handle_request(request), pushes
+            return generation, protocol.handle_request(request, self._source_paths), pushes
 
         generation, result, pushes = self._run(handle)
         if result is None:
@@ -359,6 +369,7 @@ class ViewerSession:
         with self._state_lock:
             self._generation += 1
             generation = self._generation
+            self._source_paths = dataclasses.replace(self._source_paths, loaded_at=time.time())
             self._diagnosis_push, self._focus_push = diagnosis_push, focus_push
             had_selection = self.selected_id_path is not None or self.selected_path is not None
             self.selected_path = self.selected_id_path = None

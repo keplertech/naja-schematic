@@ -1,0 +1,150 @@
+{
+  "comment": [
+    "Source-reference cases both backends must answer the same way: run by",
+    "python/tests/test_source_references.py against protocol.py and by",
+    "tests/provider/LocalSNLProviderProtocolTest.cpp against LocalSNLProvider,",
+    "same format as anonymous_protocol_cases.json except for the design: the",
+    "runners load `design.verilog` with naja's Verilog loader, Yosys src",
+    "decoding on, from `source_root` (tests/data/sources) as the current",
+    "directory and as their source root, so recorded paths are relative.",
+    "gate/alu_syn.v is a Yosys-style gate netlist: every object gets its",
+    "netlist declaration (provider naja-verilog) and its (* src *) attributes",
+    "become ordered origins (provider yosys) into rtl/alu.v, which is there,",
+    "and rtl/top.v, which isn't, and /synth/machine/rtl/alu.v, a path from",
+    "another machine that `source_map` rewrites (FROM -> TO, TO relative to",
+    "tests/data). \"$design:<name>\" stands for the design_ref of the design",
+    "of that name, the top or any model below it."
+  ],
+  "source_root": "sources",
+  "source_map": [["/synth/machine", "sources"]],
+  "design": {"verilog": "gate/alu_syn.v", "top": "top"},
+  "cases": [
+    {"name": "the root design flags its definition",
+     "request": {"request": "load_root"},
+     "expect": [{"response": "root_response", "root": {"name": "top", "has_sources": true}}]},
+
+    {"name": "an instance flags its instantiation",
+     "request": {"request": "load_instances", "design_ref": "$design:top", "gui_id": 1},
+     "expect": [{"response": "instances_response", "gui_id": 1, "children": [
+       {"name": "u_alu", "child_id": 0, "has_sources": true}]}]},
+
+    {"name": "gates flag their netlist declaration, the anonymous one included",
+     "request": {"request": "load_primitives", "design_ref": "$design:alu", "gui_id": 2},
+     "expect": [{"response": "primitives_response", "gui_id": 2, "children": [
+       {"name": "g0", "child_id": 0, "has_sources": true},
+       {"name": "", "child_id": 1, "has_sources": true},
+       {"name": "g2", "child_id": 2, "has_sources": true}]}]},
+
+    {"name": "terms flag their declaration",
+     "request": {"request": "load_terms", "design_ref": "$design:alu", "gui_id": 3},
+     "expect": [{"response": "terms_response", "gui_id": 3, "children": [
+       {"name": "a", "has_sources": true},
+       {"name": "y", "has_sources": true}]}]},
+
+    {"name": "a gate lists its netlist declaration, then its Yosys origins in order",
+     "request": {"request": "get_sources", "kind": "instance", "path": ["u_alu", "g0"]},
+     "expect": [{"response": "sources_response", "subject": "u_alu/g0",
+                 "kind": "instance", "path": ["u_alu", "g0"], "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 10, "column": 7,
+        "end_line": 10, "end_column": 8,
+        "provider": "naja-verilog", "language": "verilog", "representation": ""},
+       {"role": "origin", "index": 0, "file": "rtl/alu.v", "line": 2, "column": 14,
+        "end_line": 2, "end_column": 24, "provider": "yosys", "language": "", "representation": ""},
+       {"role": "origin", "index": 1, "file": "rtl/alu.v", "line": 1, "column": 12,
+        "end_line": 1, "end_column": 24, "provider": "yosys", "language": "", "representation": ""}]}]},
+
+    {"name": "an anonymous gate by id_path: its type span, and an origin with no end",
+     "request": {"request": "get_sources", "kind": "instance", "id_path": [0, 1]},
+     "expect": [{"response": "sources_response", "subject": "u_alu/<#1>", "id_path": [0, 1], "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 12, "column": 3,
+        "end_line": 12, "end_column": 5},
+       {"role": "origin", "index": 0, "file": "rtl/alu.v", "line": 2, "column": 14,
+        "end_line": 0, "end_column": 0}]}]},
+
+    {"name": "a gate whose origin was recorded on another machine",
+     "request": {"request": "get_sources", "kind": "instance", "id_path": [0, 2]},
+     "expect": [{"response": "sources_response", "subject": "u_alu/g2", "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 14, "column": 7},
+       {"role": "origin", "index": 0, "file": "/synth/machine/rtl/alu.v", "line": 2, "column": 14}]}]},
+
+    {"name": "a hierarchical instance lists its instantiation, origins, then its model's definition",
+     "request": {"request": "get_sources", "kind": "instance", "id_path": [0]},
+     "expect": [{"response": "sources_response", "subject": "u_alu", "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 21, "column": 7},
+       {"role": "origin", "index": 0, "file": "rtl/top.v", "line": 2, "column": 3},
+       {"role": "model_declaration", "file": "gate/alu_syn.v", "line": 2, "column": 1,
+        "end_line": 2, "end_column": 10}]}]},
+
+    {"name": "the top design lists its definition",
+     "request": {"request": "get_sources", "kind": "instance", "id_path": []},
+     "expect": [{"response": "sources_response", "subject": "top", "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 17}]}]},
+
+    {"name": "a term lists its port declaration and its origin",
+     "request": {"request": "get_sources", "kind": "term", "id_path": [0], "terminal": "y"},
+     "expect": [{"response": "sources_response", "subject": "u_alu/y", "terminal": "y", "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 6, "column": 3, "end_column": 10},
+       {"role": "origin", "index": 0, "file": "rtl/alu.v", "line": 1, "column": 27}]}]},
+
+    {"name": "a bus term bit with no reference of its own lists its bus's",
+     "request": {"request": "get_sources", "kind": "term", "id_path": [0], "terminal": "a", "bit": 0},
+     "expect": [{"response": "sources_response", "subject": "u_alu/a[0]", "bit": 0, "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 4, "column": 3, "end_column": 15},
+       {"role": "origin", "index": 0, "file": "rtl/alu.v", "line": 1, "column": 12}]}]},
+
+    {"name": "a net lists its wire declaration",
+     "request": {"request": "get_sources", "kind": "net", "id_path": [0], "net": "n1"},
+     "expect": [{"response": "sources_response", "subject": "u_alu/n1", "net": "n1", "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 7, "column": 3, "end_column": 10}]}]},
+
+    {"name": "a bus net bit lists its bus's",
+     "request": {"request": "get_sources", "kind": "net", "id_path": [0], "net": "s", "bit": 1},
+     "expect": [{"response": "sources_response", "subject": "u_alu/s[1]", "sources": [
+       {"role": "declaration", "file": "gate/alu_syn.v", "line": 8}]}]},
+
+    {"name": "an unknown terminal lists nothing",
+     "request": {"request": "get_sources", "kind": "term", "id_path": [0], "terminal": "nope"},
+     "expect": [{"response": "sources_response", "sources": []}]},
+
+    {"name": "an unresolvable path lists nothing",
+     "request": {"request": "get_sources", "kind": "instance", "id_path": [7]},
+     "expect": [{"response": "sources_response", "subject": "", "sources": []}]},
+
+    {"name": "load_source reads an origin's file, found under the source root",
+     "request": {"request": "load_source", "kind": "instance", "id_path": [0, 0],
+                 "role": "origin", "index": 0},
+     "expect": [{"response": "source_response", "found": true, "role": "origin", "index": 0,
+                 "file": "rtl/alu.v", "line": 2, "column": 14, "end_line": 2, "end_column": 24,
+                 "first_line": 1, "truncated": false, "stale": false,
+                 "text": "module alu(input [1:0] a, output y);\n  assign y = a[0] & a[1];\nendmodule\n"}]},
+
+    {"name": "load_source reads a file recorded on another machine through the source map",
+     "request": {"request": "load_source", "kind": "instance", "id_path": [0, 2],
+                 "role": "origin", "index": 0},
+     "expect": [{"response": "source_response", "found": true,
+                 "file": "/synth/machine/rtl/alu.v", "line": 2, "first_line": 1,
+                 "text": "module alu(input [1:0] a, output y);\n  assign y = a[0] & a[1];\nendmodule\n"}]},
+
+    {"name": "load_source reads a gate's netlist declaration",
+     "request": {"request": "load_source", "kind": "instance", "path": ["u_alu", "g0"],
+                 "role": "declaration"},
+     "expect": [{"response": "source_response", "found": true, "file": "gate/alu_syn.v", "line": 10,
+                 "provider": "naja-verilog", "first_line": 1}]},
+
+    {"name": "load_source reports a referenced file that is not there",
+     "request": {"request": "load_source", "kind": "instance", "id_path": [0],
+                 "role": "origin", "index": 0},
+     "expect": [{"response": "source_response", "found": false, "file": "rtl/top.v", "text": ""}]},
+
+    {"name": "load_source with no such reference reads nothing",
+     "request": {"request": "load_source", "kind": "instance", "id_path": [0, 0],
+                 "role": "origin", "index": 5},
+     "expect": [{"response": "source_response", "found": false, "text": ""}],
+     "absent": ["file"]},
+
+    {"name": "load_source never reads a path the viewer names",
+     "request": {"request": "load_source", "file": "rtl/alu.v", "line": 1},
+     "expect": [{"response": "source_response", "found": false, "text": ""}],
+     "absent": ["file"]}
+  ]
+}

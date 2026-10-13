@@ -74,12 +74,14 @@ def _static_response(connection, request):
     return Response(http.HTTPStatus.OK, http.HTTPStatus.OK.phrase, headers, body)
 
 
-async def serve(host="localhost", port=DEFAULT_PORT, diagnosis=None, open_browser=False):
+async def serve(host="localhost", port=DEFAULT_PORT, diagnosis=None, open_browser=False,
+                source_roots=(), source_maps=()):
     """Serve the viewer page and its WebSocket on host:port, forever."""
     from websockets.asyncio.server import serve as ws_serve
     from websockets.exceptions import ConnectionClosed
 
-    session = ViewerSession(diagnosis=diagnosis)
+    session = ViewerSession(diagnosis=diagnosis, source_roots=source_roots,
+                            source_maps=source_maps)
 
     async def handle_connection(websocket):
         log.info("Client connected")
@@ -149,10 +151,15 @@ class ViewerServer:
     connections, come from this server's own page or one of
     `allowed_origins` -- so another web page open in the same browser
     can't read the design. Pass token=None to turn the token off.
+    The viewer can only read source files the design's source references
+    name (Show Sources); relative ones are looked up in `source_roots`,
+    then the current directory, and `source_maps` rewrites (FROM, TO) path
+    prefixes for files recorded on another machine.
     """
 
     def __init__(self, host="127.0.0.1", port=0, *, lock=None, run=None,
-                 token=True, allowed_origins=(), diagnosis=None):
+                 token=True, allowed_origins=(), diagnosis=None, source_roots=(),
+                 source_maps=()):
         if lock is not None and run is not None:
             raise ValueError("pass lock or run, not both")
         if run is None:
@@ -169,7 +176,8 @@ class ViewerServer:
         self._callbacks = ThreadPoolExecutor(max_workers=1,
                                              thread_name_prefix="naja-schematic-callbacks")
         self._session = ViewerSession(push=self._broadcast, run=run, diagnosis=diagnosis,
-                                      dispatch=self._dispatch_callback)
+                                      dispatch=self._dispatch_callback,
+                                      source_roots=source_roots, source_maps=source_maps)
         self._thread = None
         self._loop = None
         self._stopping = None
@@ -445,12 +453,13 @@ class ViewerServer:
 # stdio server
 # ---------------------------------------------------------------------------
 
-def serve_stdio(diagnosis=None, stdin=None, stdout=None):
+def serve_stdio(diagnosis=None, stdin=None, stdout=None, source_roots=(), source_maps=()):
     """Answer one JSON request per stdin line with JSON lines on stdout,
     until stdin closes. Logging must not go to stdout in this mode."""
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
-    session = ViewerSession(diagnosis=diagnosis)
+    session = ViewerSession(diagnosis=diagnosis, source_roots=source_roots,
+                            source_maps=source_maps)
     for line in stdin:
         line = line.strip()
         if not line:
@@ -463,6 +472,14 @@ def serve_stdio(diagnosis=None, stdin=None, stdout=None):
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _source_map(value):
+    # FROM=TO, split at the first "=".
+    prefix, sep, replacement = value.partition("=")
+    if not sep or not prefix:
+        raise argparse.ArgumentTypeError(f"expected FROM=TO, got {value!r}")
+    return (prefix, replacement)
+
 
 def build_arg_parser():
     parser = argparse.ArgumentParser(
@@ -481,6 +498,15 @@ def build_arg_parser():
     parser.add_argument("--diagnosis", metavar="FILE",
                         help="Diagnosis JSON ({\"items\": [...]} or a bare array) to "
                              "push to the viewer after the design loads")
+    parser.add_argument("--source-root", action="append", default=[], metavar="DIR",
+                        dest="source_roots",
+                        help="Directory to look up relative source file references in "
+                             "(repeatable, tried in order, then the current directory)")
+    parser.add_argument("--source-map", action="append", default=[], metavar="FROM=TO",
+                        dest="source_maps", type=_source_map,
+                        help="Rewrite source paths starting with FROM to start with TO "
+                             "(repeatable): for files recorded on another machine, e.g. "
+                             "Yosys src paths of a synthesis server")
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Log every request (to stderr)")
     parser.add_argument("--xilinx", action="store_true",
@@ -490,6 +516,9 @@ def build_arg_parser():
     parser.add_argument("--liberty", nargs="*", help="List of liberty files to load")
     parser.add_argument("--verilog", type=str,
                         help="Verilog netlist to load")
+    parser.add_argument("--yosys-src", action="store_true",
+                        help="Verilog only: decode Yosys (* src *) attributes into source "
+                             "origins, so Show Sources leads from gates back to the RTL")
     parser.add_argument("--systemverilog", "--sv", nargs="+", metavar="FILE",
                         help="SystemVerilog file(s) to load (elaborated with slang)")
     parser.add_argument("--flist", "-f", type=str, metavar="FILE",
@@ -538,6 +567,7 @@ def load_design(args):
         log.info("Loading Verilog netlist: %s", args.verilog)
         config = netlist.VerilogConfig()
         config.allow_unknown_designs = args.allow_unknown_designs
+        config.yosys_source_attributes = args.yosys_src
         top = netlist.load_verilog(args.verilog, config=config)
     log.info("Design loaded: %s", top.get_name())
     return top
@@ -563,6 +593,8 @@ def main(argv=None):
         # Same restriction as the native standalone: the SystemVerilog loader
         # has no liberty hook, so fail loudly rather than silently ignore it.
         parser.error("--liberty is not supported with --systemverilog/--flist")
+    if is_sv and args.yosys_src:
+        parser.error("--yosys-src only applies to --verilog")
     if args.stdio and args.open:
         parser.error("--open does not apply to --stdio")
 
@@ -590,10 +622,12 @@ def main(argv=None):
     load_design(args)
 
     if args.stdio:
-        serve_stdio(diagnosis, stdout=protocol_out)
+        serve_stdio(diagnosis, stdout=protocol_out, source_roots=args.source_roots,
+                    source_maps=args.source_maps)
         return
     try:
-        asyncio.run(serve(args.host, args.port, diagnosis, args.open))
+        asyncio.run(serve(args.host, args.port, diagnosis, args.open, args.source_roots,
+                          args.source_maps))
     except KeyboardInterrupt:
         pass
 

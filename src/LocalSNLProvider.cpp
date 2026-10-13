@@ -7,9 +7,11 @@
 #include <nlohmann/json.hpp>
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <set>
 #include <sstream>
 
@@ -235,9 +237,6 @@ static json bitTermJson(const SNLBitTerm* bt) {
   return t;
 }
 
-// RTL source location for an elaborated object, if naja has one recorded
-// (SNLRTLInfos -- populated today only by the SystemVerilog/slang frontend).
-// Returns JSON null when unavailable, which the client treats as "no link".
 // Every pin of a design, bus terms expanded bit by bit ("data[3]", with
 // "bit" set) so each gets its own schematic pin.
 static json allBitTermsJson(const SNLDesign* design) {
@@ -267,18 +266,88 @@ static json allBitTermsJson(const SNLDesign* design) {
   return terms;
 }
 
-static json sourceLocJson(const SNLDesignObject* obj) {
-  if (!obj || !obj->hasRTLInfos()) return nullptr;
-  auto* rtl = obj->getRTLInfos();
-  if (!rtl->hasSourceLoc()) return nullptr;
-  const auto& loc = *rtl->getSourceLoc();
+// ---------------------------------------------------------------------------
+// Source references (see docs/source_information.md)
+// ---------------------------------------------------------------------------
+// naja keeps, per object, an optional *declaration* (where the object is
+// written in the loaded input: a gate's line in the netlist, an instance's
+// instantiation, a design's definition) and ordered *origins* (where it came
+// from upstream, e.g. Yosys `src` RTL lines), each qualified by provider,
+// language and representation ("" = unknown, never guessed). Older frontends
+// only fill the unclassified legacy slot (getSourceLoc()), sent as role
+// "legacy" when the object has no typed reference. Mirrors protocol.py's
+// object_sources().
+
+static json sourceRangeJson(const SNLSourceLoc& loc) {
   return json{
     {"file",       loc.file.getString()},
     {"line",       loc.line},
-    {"end_line",   loc.endLine},
     {"column",     loc.column},
+    {"end_line",   loc.endLine},
     {"end_column", loc.endColumn}
   };
+}
+
+static json sourceReferenceJson(const std::string& role, const SNLSourceReference& ref,
+                                std::optional<size_t> index = std::nullopt) {
+  json entry = sourceRangeJson(ref.range);
+  entry["role"]           = role;
+  entry["provider"]       = ref.provider.getString();
+  entry["language"]       = ref.language.getString();
+  entry["representation"] = ref.representation.getString();
+  if (index) entry["index"] = *index;
+  return entry;
+}
+
+// The source entries of one design object or design: its declaration, its
+// origins in order, or else its legacy location.
+template <class T>
+static json objectSources(const T* obj) {
+  json entries = json::array();
+  auto* infos = obj ? obj->getRTLInfos() : nullptr;
+  if (!infos) return entries;
+  if (const auto& declaration = infos->getSourceDeclaration())
+    entries.push_back(sourceReferenceJson("declaration", *declaration));
+  const auto& origins = infos->getSourceOrigins();
+  for (size_t i = 0; i < origins.size(); ++i)
+    entries.push_back(sourceReferenceJson("origin", origins[i], i));
+  if (entries.empty() && infos->hasSourceLoc()) {
+    json entry = sourceRangeJson(*infos->getSourceLoc());
+    entry["role"] = "legacy";
+    entry["provider"] = entry["language"] = entry["representation"] = "";
+    entries.push_back(std::move(entry));
+  }
+  return entries;
+}
+
+template <class T>
+static bool hasSources(const T* obj) {
+  auto* infos = obj ? obj->getRTLInfos() : nullptr;
+  return infos && (infos->hasSourceReferences() || infos->hasSourceLoc());
+}
+
+// An instance's has_sources flag: its own references, or its model's
+// definition (listed after them as "model_declaration").
+static bool instanceHasSources(const SNLInstance* inst) {
+  auto* model = inst->getModel();
+  auto* modelInfos = model ? model->getRTLInfos() : nullptr;
+  return hasSources(inst) || (modelInfos && modelInfos->getSourceDeclaration());
+}
+
+// A bus row offers its sources if the bus or any of its bits has some (a bit
+// row inherits the flag; a bit with none of its own shows the bus's).
+template <class Bus>
+static bool busHasSources(const Bus* bus) {
+  if (hasSources(bus)) return true;
+  for (auto* bit : bus->getBits())
+    if (hasSources(bit)) return true;
+  return false;
+}
+
+// Only sent when set, like "clock".
+static json& withSources(json& entry, bool flag) {
+  if (flag) entry["has_sources"] = true;
+  return entry;
 }
 
 // Find a design matching {dbId, libId, designId}.
@@ -336,6 +405,7 @@ void LocalSNLProvider::send(const std::string& msg) { handleRequest(msg); }
 
 NLDB* LocalSNLProvider::freshDB() {
   db_ = nullptr; // old DB remains in universe; SNL has no public single-DB removal API
+  loadedAt_ = std::filesystem::file_time_type::clock::now();  // a design is being loaded
   return NLDB::create(NLUniverse::get());
 }
 
@@ -401,7 +471,8 @@ void LocalSNLProvider::loadSNL(const std::string& path) {
 
 void LocalSNLProvider::loadVerilog(
     const std::vector<std::string>& verilogFiles,
-    const std::vector<std::string>& libertyFiles)
+    const std::vector<std::string>& libertyFiles,
+    bool yosysSourceAttributes)
 {
   Console::Log("LocalSNLProvider: loading Verilog (" +
                std::to_string(verilogFiles.size()) + " files, " +
@@ -419,6 +490,7 @@ void LocalSNLProvider::loadVerilog(
     auto* userLib = NLLibrary::create(db_, NLName("work"));
     SNLVRLConstructor::Config cfg;
     cfg.blackboxUnknownModules_ = !libertyFiles.empty();
+    cfg.yosysSourceAttributes_  = yosysSourceAttributes;
     SNLVRLConstructor vrlCtor(userLib);
     vrlCtor.config_ = cfg;
     std::vector<std::filesystem::path> paths(verilogFiles.begin(), verilogFiles.end());
@@ -548,6 +620,8 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildExpandInstanceTermsResponse(req));
   } else if (request == "load_instance_internals") {
     msgCb_(buildInstanceInternalsResponse(req));
+  } else if (request == "get_sources") {
+    msgCb_(buildSourcesResponse(req));
   } else if (request == "load_source") {
     msgCb_(buildSourceResponse(req));
   } else if (request == "get_properties") {
@@ -589,6 +663,7 @@ std::string LocalSNLProvider::buildRootResponse() const {
       {"has_instances",  !top->getNonPrimitiveInstances().empty()},
       {"has_nets",       hasVisibleNets(top)}
     };
+    withSources(root, hasSources(top));
   }
   return json{{"response", "root_response"}, {"root", root}}.dump();
 }
@@ -628,9 +703,9 @@ std::string LocalSNLProvider::buildInstancesResponse(
         {"has_terms",      model && !model->getTerms().empty()},
         {"has_primitives", model && hasVisiblePrimitiveInstances(model)},
         {"has_instances",  model && !model->getNonPrimitiveInstances().empty()},
-        {"has_nets",       model && hasVisibleNets(model)},
-        {"source_loc",     sourceLocJson(inst)}
+        {"has_nets",       model && hasVisibleNets(model)}
       });
+      withSources(children.back(), instanceHasSources(inst));
     }
   }
 
@@ -666,9 +741,10 @@ std::string LocalSNLProvider::buildTermsResponse(
           {"msb",       static_cast<int>(bt->getMSB())},
           {"lsb",       static_cast<int>(bt->getLSB())}
         };
-        children.push_back(std::move(t));
+        children.push_back(std::move(withSources(t, busHasSources(bt))));
       } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
-        children.push_back(bitTermJson(st));
+        json t = bitTermJson(st);
+        children.push_back(std::move(withSources(t, hasSources(st))));
       }
     }
   }
@@ -704,9 +780,10 @@ std::string LocalSNLProvider::buildNetsResponse(
           {"msb",  static_cast<int>(bn->getMSB())},
           {"lsb",  static_cast<int>(bn->getLSB())}
         };
-        children.push_back(std::move(n));
+        children.push_back(std::move(withSources(n, busHasSources(bn))));
       } else if (auto* bit = dynamic_cast<SNLBitNet*>(net)) {
-        children.push_back({{"name", bit->getName().getString()}});
+        json n = {{"name", bit->getName().getString()}};
+        children.push_back(std::move(withSources(n, hasSources(bit))));
       }
     }
   }
@@ -767,7 +844,7 @@ static json equipotentialJson(const SNLEquipotential& equi,
     // screen (solid box) or only a subset (dashed, double-click to expand).
     if (auto* model = theInst->getModel())
       entry["bit_term_count"] = model->getBitTerms().size();
-    entry["source_loc"]    = sourceLocJson(theInst);
+    withSources(entry, instanceHasSources(theInst));
     occs.push_back(std::move(entry));
   }
   return json{{"terms", std::move(terms)}, {"occurrences", std::move(occs)}};
@@ -1020,9 +1097,9 @@ std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) cons
     }},
     {"primitive_type", toString(getPrimitiveType(design))},
     {"has_instances", hasAnySubInstances(design)},
-    {"source_loc",    sourceLocJson(instance)},
     {"terms",         allBitTermsJson(design)}
   };
+  withSources(reply["instance"], instanceHasSources(instance));
   return reply.dump();
 }
 
@@ -1064,9 +1141,9 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
         }},
         {"has_terms",      sub && !sub->getTerms().empty()},
         {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
-        {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()},
-        {"source_loc",     sourceLocJson(inst)}
+        {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()}
       });
+      withSources(children.back(), instanceHasSources(inst));
     }
     for (auto* inst : model->getPrimitiveInstances()) {
       auto* sub = inst->getModel();
@@ -1083,9 +1160,9 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
         }},
         {"has_terms",      sub && !sub->getTerms().empty()},
         {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
-        {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()},
-        {"source_loc",     sourceLocJson(inst)}
+        {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()}
       });
+      withSources(children.back(), instanceHasSources(inst));
     }
 
     // Internal nets: split each net's components into sub-instance pins
@@ -1132,31 +1209,210 @@ std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) co
   }.dump();
 }
 
-// Fetches the raw text of an RTL source file named by a source_loc (see
-// sourceLocJson() above), so the client can display it without needing
-// filesystem access of its own -- the WASM/browser build has none, so this
-// goes through the same provider abstraction as everything else rather than
-// having native mode read the file directly.
-std::string LocalSNLProvider::buildSourceResponse(const json& req) const {
-  std::string file = req.value("file", std::string(""));
-  int line = req.value("line", 0);
+// The source entries of the object a get_sources/load_source request names
+// -- same addressing as get_properties: "kind" (instance, term or net), the
+// (containing) instance by "id_path"/"path", "terminal"/"net" and an optional
+// "bit". `entries` is empty when the object doesn't resolve or has no source
+// information.
+//
+// An instance lists its own references (its instantiation, its origins) and
+// then its model's definition ("model_declaration"); the top design ([]) its
+// definition. A bus bit with no reference of its own lists its bus's.
+// Mirrors protocol.py's request_sources().
+static void requestSources(SNLDesign* top, const json& req,
+                           std::string& subject, json& entries) {
+  subject.clear();
+  entries = json::array();
+  if (!top) return;
+  auto resolved = resolveRequestPath(top, req);
+  if (!resolved.ok) return;
+  SNLDesign* design = resolved.design;
+  const std::string at = displayChain(resolved.chain);
+  const std::string kind = req.value("kind", std::string("instance"));
+  if (kind == "term" || kind == "net") {
+    const json name = req.value(kind == "term" ? "terminal" : "net", json(""));
+    if (!name.is_string()) return;
+    const std::string n = name.get<std::string>();
+    subject = at.empty() ? n : at + "/" + n;
+    if (n.empty() || !design) return;
+    const bool hasBit = req.contains("bit") && !req["bit"].is_null();
+    if (hasBit && (!req["bit"].is_number_integer())) return;
+    if (kind == "term") {
+      auto* term = design->getTerm(NLName(n));
+      if (!term) return;
+      if (!hasBit) { entries = objectSources(term); return; }
+      auto* bus = dynamic_cast<SNLBusTerm*>(term);
+      auto* bit = bus ? bus->getBit(static_cast<NLID::Bit>(req["bit"].get<int>())) : nullptr;
+      if (!bit) return;
+      subject += "[" + std::to_string(bit->getBit()) + "]";
+      entries = objectSources(bit);
+      if (entries.empty()) entries = objectSources(bus);
+    } else {
+      auto* net = design->getNet(NLName(n));
+      if (!net) return;
+      if (!hasBit) { entries = objectSources(net); return; }
+      auto* bus = dynamic_cast<SNLBusNet*>(net);
+      auto* bit = bus ? bus->getBit(static_cast<NLID::Bit>(req["bit"].get<int>())) : nullptr;
+      if (!bit) return;
+      subject += "[" + std::to_string(bit->getBit()) + "]";
+      entries = objectSources(bit);
+      if (entries.empty()) entries = objectSources(bus);
+    }
+    return;
+  }
+  auto* instance = resolved.instance();
+  if (!instance) {
+    subject = designName(top);
+    entries = objectSources(top);
+    return;
+  }
+  subject = at;
+  entries = objectSources(instance);
+  auto* modelInfos = design ? design->getRTLInfos() : nullptr;
+  if (modelInfos && modelInfos->getSourceDeclaration())
+    entries.push_back(sourceReferenceJson("model_declaration", *modelInfos->getSourceDeclaration()));
+}
 
-  std::ifstream ifs(file);
-  bool found = static_cast<bool>(ifs);
+// Addressing keys of a get_sources/load_source request, echoed in replies so
+// the viewer can name the same object again (load_source from the list).
+static const char* const kSourceAddressKeys[] = {"kind", "id_path", "path", "terminal", "net", "bit"};
+
+std::string LocalSNLProvider::buildSourcesResponse(const json& req) const {
+  std::string subject;
+  json entries;
+  requestSources(db_ ? db_->getTopDesign() : nullptr, req, subject, entries);
+  json reply = {
+    {"response", "sources_response"},
+    {"subject",  subject},
+    {"sources",  entries}
+  };
+  for (const char* key : kSourceAddressKeys)
+    if (req.contains(key)) reply[key] = req[key];
+  return reply.dump();
+}
+
+// A source file is sent whole up to this size; past it (a large gate-level
+// netlist, typically) only the lines around the reference are, so a click
+// doesn't copy hundreds of megabytes into the viewer. Same values as
+// protocol.py's MAX_SOURCE_BYTES/SOURCE_CONTEXT_LINES.
+static constexpr std::uintmax_t kMaxSourceBytes = 4 * 1024 * 1024;
+static constexpr std::uint64_t   kSourceContextLines = 500;
+
+void LocalSNLProvider::addSourceRoot(const std::string& dir) {
+  sourceRoots_.push_back(dir);
+}
+
+void LocalSNLProvider::addSourceMap(const std::string& from, const std::string& to) {
+  sourceMaps_.emplace_back(from, to);
+}
+
+// `file` with a leading `prefix` replaced, at a path boundary only (/a/syn
+// maps /a/syn/x.v, not /a/synth/x.v); nullopt if it doesn't start so.
+static std::optional<std::string> mapPrefix(const std::string& file, const std::string& prefix,
+                                            const std::string& replacement) {
+  if (prefix.empty() || file.compare(0, prefix.size(), prefix) != 0) return std::nullopt;
+  const std::string rest = file.substr(prefix.size());
+  const bool boundary = rest.empty() || prefix.back() == '/' || prefix.back() == '\\' ||
+                        rest.front() == '/' || rest.front() == '\\';
+  if (!boundary) return std::nullopt;
+  return replacement + rest;
+}
+
+// Where to read a referenced source file. First the path through each source
+// map whose prefix it starts with, in order, if a file is there; then an
+// absolute path as is; a relative one under the first source root holding
+// it, else relative to the current directory. "" if no file is there. Paths
+// are opaque producer strings (naja's contract): nothing is canonicalized,
+// prefixes compare as written. Mirrors protocol.py's resolve_source_file().
+std::string LocalSNLProvider::resolveSourceFile(const std::string& file) const {
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  if (file.empty()) return "";
+  for (const auto& [prefix, replacement] : sourceMaps_) {
+    auto mapped = mapPrefix(file, prefix, replacement);
+    if (mapped && fs::is_regular_file(*mapped, ec)) return *mapped;
+  }
+  fs::path p(file);
+  if (p.is_absolute()) return fs::is_regular_file(p, ec) ? file : "";
+  for (const auto& root : sourceRoots_) {
+    fs::path candidate = fs::path(root) / p;
+    if (fs::is_regular_file(candidate, ec)) return candidate.string();
+  }
+  return fs::is_regular_file(p, ec) ? file : "";
+}
+
+// The file of one source entry of a design object: the request names the
+// object as get_sources does, plus the entry's "role" (and "index" for an
+// origin). Only files the design references can be read this way -- the
+// viewer never names a path itself. The file goes through the provider (not
+// read by the viewer directly) because the WASM build has no filesystem.
+std::string LocalSNLProvider::buildSourceResponse(const json& req) const {
+  std::string subject;
+  json entries;
+  requestSources(db_ ? db_->getTopDesign() : nullptr, req, subject, entries);
+  const json role  = req.value("role", json());
+  const json index = req.value("index", json());
+  json reply = {
+    {"response",   "source_response"},
+    {"found",      false},
+    {"text",       ""},
+    {"first_line", 1},
+    {"truncated",  false}
+  };
+  const json* entry = nullptr;
+  for (const auto& e : entries) {
+    if (e["role"] == role && (role != "origin" || e.value("index", json()) == index)) {
+      entry = &e;
+      break;
+    }
+  }
+  if (!entry) {
+    Console::Error("load_source: no such source reference");
+    return reply.dump();
+  }
+  for (auto it = entry->begin(); it != entry->end(); ++it) reply[it.key()] = it.value();
+
+  const std::string file = (*entry)["file"].get<std::string>();
+  const std::string path = resolveSourceFile(file);
+  std::ifstream ifs(path, std::ios::binary);
+  if (path.empty() || !ifs) {
+    Console::Error("Source file not found: " + file);
+    return reply.dump();
+  }
+  std::error_code ec;
+  const auto size = std::filesystem::file_size(path, ec);
   std::string text;
-  if (found) {
+  std::uint64_t firstLine = 1;
+  bool truncated = false;
+  if (!ec && size <= kMaxSourceBytes) {
     std::ostringstream ss;
     ss << ifs.rdbuf();
     text = ss.str();
+  } else {
+    const std::uint64_t line    = (*entry)["line"].get<std::uint64_t>();
+    const std::uint64_t endLine = (*entry)["end_line"].get<std::uint64_t>();
+    firstLine = line > kSourceContextLines ? line - kSourceContextLines : 1;
+    const std::uint64_t lastLine = std::max(line, endLine) + kSourceContextLines;
+    std::string lineText;
+    for (std::uint64_t number = 1; number <= lastLine && std::getline(ifs, lineText); ++number) {
+      if (number < firstLine) continue;
+      text += lineText;
+      if (!ifs.eof()) text += '\n';
+    }
+    truncated = true;
   }
-
-  return json{
-    {"response", "source_response"},
-    {"file",     file},
-    {"line",     line},
-    {"found",    found},
-    {"text",     text}
-  }.dump();
+  reply["found"]      = true;
+  // Where the host read it, for a viewer on the same machine to open it in
+  // an editor. "stale": the file changed after the design was loaded, so the
+  // reference's lines may not match it any more.
+  reply["path"]       = std::filesystem::absolute(path).string();
+  const auto modified = std::filesystem::last_write_time(path, ec);
+  reply["stale"]      = !ec && modified > loadedAt_;
+  reply["text"]       = std::move(text);
+  reply["first_line"] = firstLine;
+  reply["truncated"]  = truncated;
+  // Undecodable bytes are replaced (as protocol.py does), not thrown on.
+  return reply.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
 // General name/value property inspector for whatever object the UI asks

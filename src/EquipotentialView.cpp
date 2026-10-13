@@ -72,7 +72,9 @@ static int                g_ctxInstanceId    = -1;
 // box the pin sits on. -1 = none.
 static int                g_ctxPortId        = -1;
 
-struct OccurrenceInfo { InstancePath path; DesignRef designRef; std::optional<SourceLoc> sourceLoc; };
+// What a box's context menu needs. `hasSources`: offer "Show Sources" --
+// a module frame always does (the provider sent no flag for it).
+struct OccurrenceInfo { InstancePath path; DesignRef designRef; bool hasSources = false; };
 struct PortEquiRequest {
     std::vector<unsigned> pathIds;
     unsigned              termId = 0;
@@ -293,7 +295,7 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         cs.hierExpanded  = c.hasInstances && g_hierExpanded.count(cs.path) > 0;
         cs.diagOutline   = DiagnosisStore::instanceColor(cs.path);
         childIdToShapeId[c.childId] = cs.id;
-        g_occInfoByShapeId[cs.id] = { cs.path, c.designRef };
+        g_occInfoByShapeId[cs.id] = { cs.path, c.designRef, c.hasSources };
         children.push_back(std::move(cs));
     }
 
@@ -473,12 +475,7 @@ EquipotentialView::startInstanceFromResolved(const json& reply) {
     if (inst.contains("design_ref")) start.designRef = inst["design_ref"].get<DesignRef>();
     start.primitiveType = primitiveTypeFromString(inst.value("primitive_type", std::string("unknown")));
     start.hasInstances = inst.value("has_instances", false);
-    if (inst.contains("source_loc") && inst["source_loc"].is_object()) {
-        const auto& loc = inst["source_loc"];
-        start.sourceLoc = SourceLoc{loc.value("file", std::string("")), loc.value("line", 0),
-                                    loc.value("end_line", 0), loc.value("column", 0),
-                                    loc.value("end_column", 0)};
-    }
+    start.hasSources = inst.value("has_sources", false);
     for (const auto& t : inst.value("terms", json::array())) {
         ExpandedPort ep;
         ep.name    = t.value("name", std::string(""));
@@ -630,15 +627,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (busIt != g_expandedBusGroupByPortId.end() && ImGui::MenuItem("Collapse Bus"))
                 g_expandedBuses.erase(busIt->second);
         } else if (occIt != g_occInfoByShapeId.end()) {
-            if (occIt->second.sourceLoc.has_value()) {
-                if (ImGui::MenuItem("Show RTL Source") && g_provider) {
-                    const auto& loc = *occIt->second.sourceLoc;
-                    json req;
-                    req["request"] = "load_source";
-                    req["file"]    = loc.file;
-                    req["line"]    = loc.line;
-                    g_provider->send(req.dump());
-                }
+            if (occIt->second.hasSources && ImGui::MenuItem("Show Sources") && g_provider) {
+                json req;
+                req["request"] = "get_sources";
+                req["kind"]    = "instance";
+                writePath(req, occIt->second.path);
+                g_provider->send(req.dump());
             }
             if (ImGui::MenuItem("Show Properties") && g_provider) {
                 json req;
@@ -778,7 +772,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         PrimitiveType         primitiveType = PrimitiveType::Unknown;
         bool                  hasInstances = false;
         std::optional<size_t> bitTermCount;
-        std::optional<SourceLoc> sourceLoc;
+        bool                     hasSources = false;
         InstancePath             path;
         std::vector<std::string> pathModels;
         std::vector<unsigned>    pathIds;   // pathIds(path), for pin requests
@@ -831,7 +825,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     mi.primitiveType = item.primitiveType;
                     mi.hasInstances  = item.hasInstances;
                     mi.bitTermCount  = item.bitTermCount;
-                    mi.sourceLoc     = item.sourceLoc;
+                    mi.hasSources    = item.hasSources;
                     mi.path          = item.path;
                     mi.pathModels    = item.pathModels;
                     mi.pathIds       = item.pathIds;
@@ -881,7 +875,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         mi.primitiveType = start.primitiveType;
         mi.hasInstances = start.hasInstances;
         mi.bitTermCount = start.ports.size();
-        mi.sourceLoc    = start.sourceLoc;
+        mi.hasSources   = start.hasSources;
         mi.path         = start.path;
         mi.pathModels   = start.pathModels;
         mi.pathIds      = start.pathIds;
@@ -909,7 +903,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         if (inst.diagOutline == 0 && traceIdsByInstance[key].size() >= 2)
             inst.diagOutline = TraceStore::convergenceColor();
         inst.selected    = SelectionStore::isSelected(key);
-        g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.sourceLoc };
+        g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.hasSources };
         pathToInstId[key] = inst.id;
 
         // Hierarchy embedding: this box's model has sub-instances, so it can
@@ -1150,7 +1144,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         for (auto& f : frames) {
             f.shape.diagOutline = DiagnosisStore::instanceColor(f.shape.path);
             f.shape.selected    = SelectionStore::isSelected(f.shape.path);
-            g_occInfoByShapeId[f.shape.id] = { f.shape.path, DesignRef{}, std::nullopt };
+            g_occInfoByShapeId[f.shape.id] = { f.shape.path, DesignRef{}, true };
             frameShapes.push_back(std::move(f.shape));
         }
         // Parent-first order at the front: drawn under everything, and reverse

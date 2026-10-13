@@ -30,8 +30,12 @@ class LocalSNLProvider : public INetlistProvider {
     void loadSNL(const std::string& path);
 
     // Load structural Verilog.  Liberty files define the primitive cell library.
+    // `yosysSourceAttributes` decodes Yosys (* src *) attributes into source
+    // origins (naja only does it when asked: nothing establishes Yosys
+    // provenance otherwise).
     void loadVerilog(const std::vector<std::string>& verilogFiles,
-                     const std::vector<std::string>& libertyFiles);
+                     const std::vector<std::string>& libertyFiles,
+                     bool yosysSourceAttributes = false);
 
     // Load SystemVerilog via slang.
     // Each entry in sources is either a .sv/.v file or a .f/.flist file;
@@ -51,9 +55,22 @@ class LocalSNLProvider : public INetlistProvider {
 
     std::optional<nlohmann::json> termRequest(const nlohmann::json& spec, std::string& error) const;
 
+    // A directory relative source file references are looked up in, after
+    // those added before and before the current directory (see
+    // resolveSourceFile()).
+    void addSourceRoot(const std::string& dir);
+    // A path prefix rewrite for source files recorded on another machine
+    // (a synthesis server's paths for a local checkout): a referenced path
+    // starting with `from`, at a path boundary, is tried with `to` instead,
+    // first (see resolveSourceFile()).
+    void addSourceMap(const std::string& from, const std::string& to);
+
     // Serve an already-built DB (e.g. one a test builds with the naja API);
     // its top design is the design shown.
-    void setDB(naja::NL::NLDB* db) { db_ = db; }
+    void setDB(naja::NL::NLDB* db) {
+      db_ = db;
+      loadedAt_ = std::filesystem::file_time_type::clock::now();
+    }
 
   private:
     std::function<void()>                   openCb_;
@@ -62,6 +79,11 @@ class LocalSNLProvider : public INetlistProvider {
     std::function<void(const std::string&)> errCb_;
 
     naja::NL::NLDB* db_ {nullptr};
+    std::vector<std::string> sourceRoots_;
+    // When the design was loaded (freshDB(), setDB()): naja recorded its
+    // source ranges then, so a source file modified later is "stale".
+    std::filesystem::file_time_type loadedAt_ {};
+    std::vector<std::pair<std::string, std::string>> sourceMaps_;
 
     // Reset the SNL universe to a clean state and return a fresh NLDB.
     naja::NL::NLDB* freshDB();
@@ -86,7 +108,9 @@ class LocalSNLProvider : public INetlistProvider {
     std::string buildTraceDriverResponse(const nlohmann::json& req) const;
     std::string buildExpandInstanceTermsResponse(const nlohmann::json& req) const;
     std::string buildInstanceInternalsResponse(const nlohmann::json& req) const;
+    std::string buildSourcesResponse(const nlohmann::json& req) const;
     std::string buildSourceResponse(const nlohmann::json& req) const;
+    std::string resolveSourceFile(const std::string& file) const;
     std::string buildPropertiesResponse(const nlohmann::json& req) const;
     std::string buildResolveInstanceResponse(const nlohmann::json& req) const;
 };
