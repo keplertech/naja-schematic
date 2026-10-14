@@ -229,6 +229,20 @@ TEST(NetlistTree, SendLoadEquipotentialCanKeepTheView) {
   TraceStore::clear();
 }
 
+// "Show in Schematic": resolve_instance by ids and names; the reply draws it.
+TEST(NetlistTree, SendShowInstanceRequestsResolveInstance) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+
+  tree.sendShowInstance(InstancePath{{1, "u1"}, {4, ""}});
+
+  ASSERT_EQ(provider.sent.size(), 1u);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["request"], "resolve_instance");
+  EXPECT_EQ(req["id_path"], (std::vector<unsigned>{1, 4}));
+  EXPECT_EQ(req["path"], (std::vector<std::string>{"u1", ""}));
+}
+
 TEST(NetlistTree, SendTraceDriverFormatsScalarRequestAndFiresCallback) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);

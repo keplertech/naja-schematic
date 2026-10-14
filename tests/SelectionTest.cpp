@@ -331,12 +331,12 @@ TEST_F(TreeReveal, ContextMenuClickDoesNotSelectTheRowUnderIt) {
   provider.sent.clear();
 
   click(at(4, 60.f), ImGuiMouseButton_Right);  // u0's context menu
-  // Its first entry ("Show Properties") lies over the next row, u1's.
+  // Its first entry ("Show in Schematic") lies over the next row, u1's.
   click(ImVec2(at(4, 60.f).x + 30.f, at(5, 0.f).y), ImGuiMouseButton_Left);
 
-  auto props = take("get_properties");
-  ASSERT_EQ(props.size(), 1u);
-  EXPECT_EQ(props[0]["id_path"], nlohmann::json::array({0}));  // u0's
+  auto resolve = take("resolve_instance");
+  ASSERT_EQ(resolve.size(), 1u);
+  EXPECT_EQ(resolve[0]["id_path"], nlohmann::json::array({0}));  // u0's
   EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{1, "u1"}}));
   EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{2, "u2"}}));
 

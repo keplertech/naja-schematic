@@ -51,6 +51,10 @@ class NetlistTree {
     void sendTraceDriver(const Path& path, unsigned termChildID,
                          const std::vector<int>& bits, const std::string& label,
                          bool clearView = true) const;
+    // Asks the provider to resolve the instance at `path`; its
+    // instance_resolved reply redraws the schematic with that instance
+    // alone, every pin open (same as a host focus_instance push).
+    void sendShowInstance(const InstancePath& path) const;
     INetlistProvider* getProvider() const { return ws_; }
 
     // Called before every tree-initiated equipotential request.
