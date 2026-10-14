@@ -274,6 +274,12 @@ void NetlistTreeNode::render() {
     }
   } else if (isInstanceNode()) {
     if (ImGui::BeginPopupContextItem()) {
+      // The top design has no box of its own to draw.
+      if (!isRoot()) {
+        bool clicked = ImGui::MenuItem("Show in Schematic (replace view)");
+        viewModeTooltip(true);
+        if (clicked) getTree()->sendShowInstance(getInstancePath());
+      }
       json req;
       req["kind"] = "instance";
       writePath(req, getInstancePath());
@@ -677,6 +683,13 @@ void NetlistTree::sendLoadEquipotential(const NetlistTree::Path& path, const Ter
   if (termID.isBusBit) req["bit"] = termID.busBit;
   if (!label.empty()) req["trace_id"] = TraceStore::begin(label);
   Console::Log("Sending load equipotential request: " + req.dump());
+  ws_->send(req.dump());
+}
+
+void NetlistTree::sendShowInstance(const InstancePath& path) const {
+  json req;
+  req["request"] = "resolve_instance";
+  writePath(req, path);
   ws_->send(req.dump());
 }
 

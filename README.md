@@ -59,8 +59,9 @@ your own tool).
 - **Trace to Driver**: the whole combinational fan-in cone of a pin, back
   to flip-flops and ports. Overlay several traces: each gets its own color,
   shared wires are striped and shared gates outlined.
-- **Grow the schematic by hand**: click an open pin to add its net,
-  double-click a box to show all of its pins.
+- **Grow the schematic by hand**: start from any instance (right-click it
+  in the design tree, then Show in Schematic), click an open pin to add its
+  net, double-click a box to show all of its pins.
 - **Design tree**, loaded lazily so large netlists open fast: instances,
   ports, nets and bus bits.
 - **Show Sources**: where an instance, pin or net is declared and, for
