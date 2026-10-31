@@ -127,8 +127,12 @@ path = [
   "tests/VerilogLanguageTest.cpp",
   "tests/data/anonymous_protocol_cases.json",
   "tests/data/source_protocol_cases.json",
+  "tests/data/sv/operators.sv",
+  "tests/data/sv/two_tops.sv",
   "tests/data/sources/gate/alu_syn.v",
   "tests/data/sources/rtl/alu.v",
+  "tests/data/vhdl/leaf.vhd",
+  "tests/data/vhdl/top.vhd",
   "tests/provider/LocalSNLProviderProtocolTest.cpp",
 ]
 SPDX-FileCopyrightText = "2026 najaeda contributors"

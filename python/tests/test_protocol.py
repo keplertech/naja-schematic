@@ -245,6 +245,7 @@ def test_get_primitive_type_of_word_level_operators():
 
 def test_get_primitive_type_of_vhdl():
     vhdl = [str(REPO_DATA / "vhdl" / f) for f in ("top.vhd", "leaf.vhd")]
-    types = _primitive_types_in_subprocess(f"loadVHDL({vhdl!r})")
+    types = _primitive_types_in_subprocess(
+        f"loadVHDL({vhdl!r}, diagnostics_report_path=None)")
     assert types["naja_mux2__w1"] == "mux"
     assert types["leaf"] == "unknown"  # hierarchical
