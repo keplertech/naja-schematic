@@ -19,7 +19,9 @@ log = logging.getLogger("naja_schematic")
 # 0.7.29: typed source references (getSourceDeclaration/getSourceOrigins).
 # 0.7.31: load_gate_level_verilog/GateLevelVerilogConfig (load_verilog and
 # VerilogConfig now warn).
-MIN_NAJAEDA_VERSION = (0, 7, 33)  # keep in step with pyproject.toml
+# 0.7.34: word-level operator checks (isAddSub, isMultiply, isShift, isDivMod,
+# ...) and loadSystemVerilog's frontend_options.
+MIN_NAJAEDA_VERSION = (0, 7, 34)  # keep in step with pyproject.toml
 
 
 def check_najaeda_version():

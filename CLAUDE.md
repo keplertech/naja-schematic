@@ -182,7 +182,7 @@ VHDL via `--vhdl <path>...` (`NLDB.loadVHDL()`, files in any order).
 `load_design()` uses najaeda's raw `naja` API only, like `protocol.py`
 (`NLDB.loadGateLevelVerilog()`/`loadSystemVerilog()`/`loadVHDL()`/
 `loadLibertyPrimitives()`); `--top` reaches slang as
-`frontend_options={"slang": ["--top", name]}` (najaeda after 0.7.33).
+`frontend_options={"slang": ["--top", name]}` (najaeda >= 0.7.34).
 `--top` applies to SystemVerilog and VHDL, `--define`/`-D` only to
 SystemVerilog, and `--liberty`/`--yosys-src` are rejected with SV and VHDL —
 same restriction as the native CLI, since those loaders have no liberty
