@@ -88,11 +88,17 @@ backend is chosen per-platform in `CMakeLists.txt`: `NativeFileDialog.mm`
 Windows has no backend and isn't a supported target.
 
 Run directly, optionally with a netlist to load (dispatched by extension —
-`.v` → Verilog, `.sv` → SystemVerilog via slang, otherwise treated as an SNL
-directory), `--liberty <path>` (repeatable, once per file — defines the
-primitive cell library for a `.v` design; not supported for `.sv`, since
-`LocalSNLProvider::loadSystemVerilog()`/`SNLSVConstructor` has no liberty
-hook, and the CLI fails loudly rather than silently ignoring it), a
+`.v` → Verilog, `.sv` → SystemVerilog via slang, `.vhd`/`.vhdl` → VHDL via
+naja's experimental frontend (`LocalSNLProvider::loadVHDL()`,
+`VHDLConstructor::constructFiles()`; the only kind that takes several
+positional files, in any order -- naja resolves the units across them),
+otherwise treated as an SNL directory), `--top <name>` (`.sv`/VHDL only:
+forces the top module/entity instead of inferring it), `--liberty <path>`
+(repeatable, once per file — defines the
+primitive cell library for a `.v` design; not supported for `.sv` or VHDL,
+since `LocalSNLProvider::loadSystemVerilog()`/`SNLSVConstructor` and
+`loadVHDL()` have no liberty hook, and the CLI fails loudly rather than
+silently ignoring it), a
 diagnosis JSON to pre-load (`--diagnosis <path>` — see
 `loadDiagnosisFile()` in `AppLogic.cpp`), and/or directories to look up
 relative source file references in (`--source-root <dir>`, repeatable; see
@@ -169,14 +175,19 @@ python3 scripts/najaeda_server.py --systemverilog a.sv b.sv --top top -D SYNTHES
 python3 scripts/najaeda_server.py --flist design.f --top top
 ```
 
-A design is required: either `--verilog`, or SystemVerilog via
+A design is required, exactly one of: `--verilog`; SystemVerilog via
 `--systemverilog`/`--sv <path>...` and/or `--flist`/`-f <file>` (the two SV
-inputs can be combined; `--flist` maps to `SystemVerilogConfig.flist`).
-Verilog and SV are mutually exclusive. `--top`/`--define`/`-D` apply only to
-SystemVerilog, and `--liberty` is rejected with SV — same restriction as the
-native CLI, since the SV loader has no liberty hook.
-`--allow_unknown_designs` maps to `SystemVerilogConfig.blackbox_unknown_modules`
-for SV.
+inputs can be combined; `--flist` is the raw loader's `flist`); or
+VHDL via `--vhdl <path>...` (`NLDB.loadVHDL()`, files in any order).
+`load_design()` uses najaeda's raw `naja` API only, like `protocol.py`
+(`NLDB.loadGateLevelVerilog()`/`loadSystemVerilog()`/`loadVHDL()`/
+`loadLibertyPrimitives()`); `--top` reaches slang as
+`frontend_options={"slang": ["--top", name]}` (najaeda after 0.7.33).
+`--top` applies to SystemVerilog and VHDL, `--define`/`-D` only to
+SystemVerilog, and `--liberty`/`--yosys-src` are rejected with SV and VHDL —
+same restriction as the native CLI, since those loaders have no liberty
+hook.
+`--allow_unknown_designs` maps to the loaders' `blackbox_unknown_modules`.
 
 Note the flag shapes are *not* symmetric with the native CLI above: the
 server takes `--verilog <path>` (singular) + `--liberty <path>...` (one flag,
@@ -210,7 +221,7 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   `--open`, `--diagnosis <json>`, `--stdio`, `--source-root <dir>`
   (repeatable; `source_roots=` on `ViewerSession`/`ViewerServer`/`show()`),
   `--source-map FROM=TO` (repeatable; `source_maps=` there too),
-  `--yosys-src` (with `--verilog`: `VerilogConfig.yosys_source_attributes`))
+  `--yosys-src` (with `--verilog`: `loadGateLevelVerilog(yosys_source_attributes=)`))
   and its two transports: a
   WebSocket server that also serves the viewer page on the same port
   (`static/index.html` sets `Module.najaWsUrl` from `location`, query
@@ -485,14 +496,24 @@ occurrence's enclosing modules.
 Instance entries (`instances_response`/`primitives_response` children,
 equipotential occurrences, `instance_resolved`'s `instance`) carry a
 `primitive_type` (`"and"`, `"nand"`, `"or"`, `"nor"`, `"xor"`, `"xnor"`,
-`"inv"`, `"buf"`, `"dff"`, `"assign"`, `"tie0"`, `"tie1"`, `"unknown"`) that picks the gate
+`"inv"`, `"buf"`, `"dff"`, `"assign"`, `"tie0"`, `"tie1"`, `"mux"`,
+`"add"`, `"sub"`, `"mul"`, `"shl"`, `"shr"`, `"ashr"`, `"divmod"`,
+`"unknown"`) that picks the gate
 symbol `SchematicView::drawInstance()` draws, and term entries carry
 `"clock": true` on a sequential cell's clock pin (the DFF clock notch).
 Both come from naja's modeling of the cell -- `SNLDesignModeling`'s
 truth-table checks (`isAnd`, ..., `isConst0`/`isConst1` for tie cells, whose
-Liberty `function` is `"0"`/`"1"`), `isSequential` and `isClock` -- and
+Liberty `function` is `"0"`/`"1"`; `isMux`, at any width, since a bus mux
+is one NLDB0 mux2), `isSequential` and `isClock` -- and
 **never from a cell or pin name**: a cell naja has no model for (e.g.
-gate-level Verilog without Liberty) is `"unknown"` and draws as a box.
+gate-level Verilog without Liberty) is `"unknown"` and draws as a box. A
+mux is a trapezoid (`SchematicLayout::muxSlant()`), the word-level
+operators SystemVerilog lowers to (`NLDB0::isAddSub()`/`isSubtract()`,
+`isMultiply()`, `isShift()` + `getShiftSignature()`, `isDivMod()`) are
+boxes with a circled operator glyph (`isOperatorSymbol()`,
+`kOperatorGlyphW`). `protocol.py` uses najaeda's bindings of the same
+checks (`SNLDesign.isAddSub()`, `isSubtract()`, `isMultiply()`,
+`isShift()`, `isShiftRight()`, `isShiftArithmetic()`, `isDivMod()`).
 
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*
@@ -524,15 +545,16 @@ all, so it gets diagnosis data via **File > Load Diagnosis JSON...**
 `DiagnosisItem` parser) instead. An item with `id_path` matches that
 instance only; one with only `path` matches by names, and never through
 an anonymous (`""`) level. In Python, an item's `path` may also be a
-najaeda `netlist.Instance`, turned into both by `diagnosis_response()`.
+naja `SNLPath` or a najaeda `netlist.Instance` (read through `pathIDs`,
+without calling `netlist`), turned into both by `diagnosis_response()`.
 
 Getting to one hierarchical instance works in both directions, keyed by
 the same `id_path`/`path` pair as diagnosis items:
 
 - **Host → viewer.** `focus_instance` is a server push,
   `{"response":"focus_instance","path":["u1","u2"],"id_path":[3,7]}`, from
-  `Schematic.show_instance()` / `show(instance=...)` (which take a najaeda
-  `Instance`, a list of ids, or a list of names), re-pushed after each
+  `Schematic.show_instance()` / `show(instance=...)` (which take a naja
+  `SNLPath` or najaeda `Instance`, a list of ids, or a list of names), re-pushed after each
   `root_response` like diagnoses. The viewer answers it with a
   `resolve_instance` request carrying the same `path`/`id_path`,
   which both providers implement (`protocol.py`
@@ -561,7 +583,8 @@ the same `id_path`/`path` pair as diagnosis items:
   `get_properties` for it. The notebook widget intercepts
   `instance_selected` into `Schematic.selected_id_path` (and
   `selected_path`, the names); `Schematic.selected` returns it as a
-  najaeda `netlist.Instance`, and `on_select()` gives a callback (it
+  naja `SNLPath` (raw API, like the whole package; empty for the top),
+  and `on_select()` gives a callback (it
   observes the ids, so moving between anonymous siblings fires it). The other hosts only log it (`protocol.py`) or ignore it
   (`LocalSNLProvider`).
 
@@ -663,7 +686,7 @@ offer a schematic-side "Show Properties" entry point (only terms/instances
 appear as boxes/pins there).
 
 **Source references** (full design: `docs/source_information.md`; needs
-najaeda >= 0.7.29). naja keeps, per object, an optional *declaration*
+najaeda >= 0.7.29; VHDL fills declarations since 0.7.32). naja keeps, per object, an optional *declaration*
 (where it's written in the loaded input: a gate's netlist line, an
 instance's instantiation, a design's definition) and ordered *origins*
 (upstream RTL, e.g. Yosys `src`), each qualified by provider/language/

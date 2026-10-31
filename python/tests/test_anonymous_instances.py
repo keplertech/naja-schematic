@@ -108,11 +108,14 @@ def play_viewer(v, focus):
     return resolved
 
 
+def snl_path(ids):
+    return protocol.get_path(naja.NLUniverse.get().getTopDesign(), ids)
+
+
 @pytest.mark.parametrize("ids", [[0], [1], [1, 0], [1, 1], [2, 1], []])
 def test_focus_selection_round_trip(view, ids):
-    from najaeda import netlist
     v, sent = view
-    target = netlist.Instance(ids)
+    target = snl_path(ids)
     v.show_instance(target)
     focus = json.loads(sent[-1]["json"])
     assert focus["id_path"] == ids
@@ -122,8 +125,15 @@ def test_focus_selection_round_trip(view, ids):
     assert v.selected == target
 
 
-def test_anonymous_siblings_are_distinct_selections(view):
+def test_show_instance_accepts_a_najaeda_instance(view):
+    # Read through its pathIDs: a host's own netlist.Instance still works.
     from najaeda import netlist
+    v, sent = view
+    v.show_instance(netlist.Instance([1, 0]))
+    assert json.loads(sent[-1]["json"])["id_path"] == [1, 0]
+
+
+def test_anonymous_siblings_are_distinct_selections(view):
     v, _ = view
     seen = []
     v.on_select(seen.append)
@@ -132,7 +142,7 @@ def test_anonymous_siblings_are_distinct_selections(view):
             {"request": "instance_selected", "path": [""], "id_path": ids})}, [])
     # Same name path each time, yet three selection changes.
     assert v.selected_path == [""]
-    assert seen == [netlist.Instance([0]), netlist.Instance([1]), netlist.Instance([0])]
+    assert seen == [snl_path([0]), snl_path([1]), snl_path([0])]
 
 
 def test_show_instance_accepts_an_id_path(view):
@@ -159,9 +169,8 @@ def test_show_instance_rejects_what_cannot_name_one_instance(view):
 
 
 def test_selection_from_a_names_only_viewer_still_resolves(view):
-    from najaeda import netlist
     v, _ = view
     v._on_viewer_message(v, {"json": json.dumps(
         {"request": "instance_selected", "path": ["u_mid", "u_leaf"]})}, [])
     assert v.selected_id_path == [3, 2]
-    assert v.selected == netlist.Instance([3, 2])
+    assert v.selected == snl_path([3, 2])

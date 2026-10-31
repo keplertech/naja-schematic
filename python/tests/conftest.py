@@ -10,4 +10,4 @@ DATA = Path(__file__).parent / "data"
 def top():
     # NLUniverse is process-global: load the test design once for all tests.
     netlist.load_primitives("xilinx")
-    return netlist.load_verilog(str(DATA / "design.v"))
+    return netlist.load_gate_level_verilog(str(DATA / "design.v"))

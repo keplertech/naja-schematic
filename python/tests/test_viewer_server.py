@@ -153,7 +153,7 @@ def test_selection_callback_gets_ids_and_names_and_may_take_the_lock(server):
         assert seen.wait(5)
     assert selections == [([0, 0], ["u_sub", "u_and"])]
     assert server.selected_id_path == [0, 0]
-    assert server.selected.get_model_name() == "LUT2"
+    assert server.selected.getModel().getName() == "LUT2"
 
 
 def test_stop_closes_viewers_and_frees_the_port(top, bundle):

@@ -72,27 +72,26 @@ def is_id(value):
 def instance_paths(target):
     """Normalize what show_instance() accepts to (names, ids): the instance's
     name path and id path, top excluded ([] = the top design). `target` is a
-    najaeda netlist.Instance, a list/tuple of instance ids (ints, as najaeda's
-    Instance.pathIDs), a list/tuple of names, or a single name for a child of
-    the top design. A string is one name, never split on "/": escaped names
+    naja SNLPath (or a najaeda netlist.Instance), a list/tuple of instance
+    ids (ints, as SNLPath.getInstanceIDs()), a list/tuple of names, or a
+    single name for a child of the top design. A string is one name, never split on "/": escaped names
     can contain it. Ids reach anonymous instances; names can't. Raises
     ValueError if the path doesn't resolve in the loaded design."""
-    if hasattr(target, "pathIDs"):  # najaeda.netlist.Instance
-        ids = list(target.pathIDs)
+    ids = protocol.instance_id_path(target)
+    if ids is not None:
+        names = None
     elif isinstance(target, str):
-        ids = None
         names = [target]
     elif isinstance(target, (list, tuple)):
         if target and all(is_id(seg) for seg in target):
             ids = list(target)
         elif all(isinstance(seg, str) for seg in target):
-            ids = None
             names = list(target)
         else:
             raise TypeError("expected a path of instance names (str) or of "
                             f"instance ids (int), got {list(target)!r}")
     else:
-        raise TypeError(f"expected a najaeda Instance, a list of names or ids, "
+        raise TypeError(f"expected an SNLPath, a najaeda Instance, a list of names or ids, "
                         f"or a name, got {type(target).__name__}")
     if ids is None:
         ids = names_to_ids(names)
@@ -111,9 +110,9 @@ def instance_path(target):
 
 
 def selected_instance(id_path, path):
-    """A selection (id path and/or name path) as a najaeda netlist.Instance
-    (the top design for []), or None if there is none or it no longer
-    exists in the netlist."""
+    """A selection (id path and/or name path) as a naja SNLPath (empty for
+    the top design), or None if there is none or it no longer exists in the
+    netlist."""
     if id_path is not None:
         ids = id_path
         if ids_to_names(ids) is None:
@@ -124,8 +123,7 @@ def selected_instance(id_path, path):
             return None
     else:
         return None
-    from najaeda import netlist
-    return netlist.Instance(ids)
+    return protocol.get_path(naja.NLUniverse.get().getTopDesign(), ids)
 
 
 def lock_runner(lock):
@@ -380,8 +378,8 @@ class ViewerSession:
 
     @property
     def selected(self):
-        """The viewer's selected instance as a najaeda netlist.Instance, or
-        None (see selected_instance())."""
+        """The viewer's selected instance as a naja SNLPath, or None (see
+        selected_instance())."""
         with self._state_lock:
             ids, path = self.selected_id_path, self.selected_path
         return selected_instance(ids, path)

@@ -72,6 +72,15 @@ enum class PrimitiveType {
   Assign,
   Tie0,    // constant-0 cell (Liberty function "0", e.g. TIEL)
   Tie1,    // constant-1 cell (Liberty function "1", e.g. TIEH)
+  Mux,     // 2:1 multiplexer (NLDB0 mux2, or a cell whose truth table is a mux)
+  // Word-level NLDB0 operators (SystemVerilog lowering), one box per word.
+  Add,
+  Sub,
+  Mul,
+  Shl,     // shift left
+  Shr,     // logical shift right
+  Ashr,    // arithmetic shift right
+  DivMod,  // quotient and remainder
 };
 
 inline const char* toString(PrimitiveType t) {
@@ -88,6 +97,14 @@ inline const char* toString(PrimitiveType t) {
     case PrimitiveType::Assign: return "assign";
     case PrimitiveType::Tie0:   return "tie0";
     case PrimitiveType::Tie1:   return "tie1";
+    case PrimitiveType::Mux:    return "mux";
+    case PrimitiveType::Add:    return "add";
+    case PrimitiveType::Sub:    return "sub";
+    case PrimitiveType::Mul:    return "mul";
+    case PrimitiveType::Shl:    return "shl";
+    case PrimitiveType::Shr:    return "shr";
+    case PrimitiveType::Ashr:   return "ashr";
+    case PrimitiveType::DivMod: return "divmod";
     default:                    return "unknown";
   }
 }
@@ -105,6 +122,14 @@ inline PrimitiveType primitiveTypeFromString(const std::string& s) {
   if (s == "assign") return PrimitiveType::Assign;
   if (s == "tie0")   return PrimitiveType::Tie0;
   if (s == "tie1")   return PrimitiveType::Tie1;
+  if (s == "mux")    return PrimitiveType::Mux;
+  if (s == "add")    return PrimitiveType::Add;
+  if (s == "sub")    return PrimitiveType::Sub;
+  if (s == "mul")    return PrimitiveType::Mul;
+  if (s == "shl")    return PrimitiveType::Shl;
+  if (s == "shr")    return PrimitiveType::Shr;
+  if (s == "ashr")   return PrimitiveType::Ashr;
+  if (s == "divmod") return PrimitiveType::DivMod;
   return PrimitiveType::Unknown;
 }
 

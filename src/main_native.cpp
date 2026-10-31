@@ -7,6 +7,7 @@
 #include <imgui.h>
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_opengl3.h>
+#include <algorithm>
 #include <iostream>
 #include <string>
 
@@ -17,15 +18,17 @@
 #include "Console.h"
 
 int main(int argc, char* argv[]) {
-  // CLI usage: naja-schematic-standalone [<design>] [--liberty <path>]... [--diagnosis <path>]
+  // CLI usage: naja-schematic-standalone [<design>...] [--liberty <path>]... [--diagnosis <path>]
   //                                     [--source-root <dir>]... [--source-map FROM=TO]...
-  //                                     [--yosys-src]
+  //                                     [--yosys-src] [--top <name>]
   //                                     [--export <out.svg> [--focus <json>]
   //                                      [--trace <json>]... [--equipotential <json>]...]
-  // <design> is loaded by extension (.sv/.v/otherwise-assumed-SNL-directory);
+  // <design> is loaded by extension (.sv/.v/.vhd/.vhdl/otherwise-assumed-SNL-directory);
+  // only VHDL takes several, all .vhd/.vhdl, in any order;
+  // --top (.sv and VHDL) forces the top module/entity instead of inferring it;
   // --liberty defines the primitive cell library for a .v design (repeatable,
-  // once per file) -- it is not supported for .sv, since loadSystemVerilog()/
-  // SNLSVConstructor has no liberty hook;
+  // once per file) -- it is not supported for .sv or VHDL, since loadSystemVerilog()/
+  // SNLSVConstructor and loadVHDL()/VHDLConstructor have no liberty hook;
   // --diagnosis pre-loads a diagnosis_response-shaped JSON so an external
   // caller (a script, or naja-agent's skill, after an edit-check cycle) can
   // open a fully annotated view in one command instead of requiring a human
@@ -41,7 +44,8 @@ int main(int argc, char* argv[]) {
   // (see HeadlessExport.h for what --focus/--trace/--equipotential take).
   auto* provider = new LocalSNLProvider();
 
-  std::string designPath;
+  std::vector<std::string> designPaths;
+  std::string top;
   std::string diagnosisPath;
   std::vector<std::string> libertyPaths;
   bool yosysSrc = false;
@@ -64,6 +68,8 @@ int main(int argc, char* argv[]) {
       diagnosisPath = argv[++i];
     } else if (arg == "--liberty" && i + 1 < argc) {
       libertyPaths.push_back(argv[++i]);
+    } else if (arg == "--top" && i + 1 < argc) {
+      top = argv[++i];
     } else if (arg == "--yosys-src") {
       yosysSrc = true;
     } else if (arg == "--source-map" && i + 1 < argc) {
@@ -76,13 +82,31 @@ int main(int argc, char* argv[]) {
       provider->addSourceMap(map.substr(0, eq), map.substr(eq + 1));
     } else if (arg == "--source-root" && i + 1 < argc) {
       provider->addSourceRoot(argv[++i]);
-    } else if (designPath.empty()) {
-      designPath = arg;
+    } else {
+      designPaths.push_back(arg);
     }
   }
 
+  auto extension = [](const std::string& path) {
+    const auto dot = path.rfind('.');
+    return dot == std::string::npos ? std::string() : path.substr(dot + 1);
+  };
+  auto isVHDL = [&](const std::string& path) {
+    const std::string ext = extension(path);
+    return ext == "vhd" || ext == "vhdl";
+  };
+  const std::string designPath = designPaths.empty() ? "" : designPaths.front();
+  if (designPaths.size() > 1 && !std::all_of(designPaths.begin(), designPaths.end(), isVHDL)) {
+    std::cerr << "only VHDL designs take several files (all .vhd/.vhdl)\n";
+    return 1;
+  }
+  if (!top.empty() && (designPath.empty() || (extension(designPath) != "sv" && !isVHDL(designPath)))) {
+    std::cerr << "--top only applies to .sv and VHDL designs\n";
+    return 1;
+  }
+
   if (!designPath.empty()) {
-    std::string ext = designPath.size() >= 3 ? designPath.substr(designPath.rfind('.') + 1) : "";
+    std::string ext = extension(designPath);
     if (ext == "sv") {
       if (!libertyPaths.empty()) {
         std::cerr << "--liberty is only supported for .v designs, not .sv\n";
@@ -92,7 +116,13 @@ int main(int argc, char* argv[]) {
         std::cerr << "--yosys-src is only supported for .v designs\n";
         return 1;
       }
-      provider->loadSystemVerilog({designPath});
+      provider->loadSystemVerilog({designPath}, top);
+    } else if (isVHDL(designPath)) {
+      if (!libertyPaths.empty() || yosysSrc) {
+        std::cerr << "--liberty and --yosys-src are only supported for .v designs, not VHDL\n";
+        return 1;
+      }
+      provider->loadVHDL(designPaths, top);
     } else if (ext == "v") {
       provider->loadVerilog({designPath}, libertyPaths, yosysSrc);
     } else {

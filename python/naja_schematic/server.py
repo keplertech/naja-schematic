@@ -128,7 +128,7 @@ class ViewerServer:
         server.annotate(items); server.show_instance(instance)
         server.on_select(lambda id_path, path: ...)
         with server.replacing_design():            # viewers reload the new design,
-            netlist.load_verilog(other)            # stale requests are dropped
+            netlist.load_gate_level_verilog(other)            # stale requests are dropped
         server.stop()
 
     It is also a context manager (start on enter, stop on exit).
@@ -258,14 +258,14 @@ class ViewerServer:
     def annotate(self, items):
         """Overlay diagnosis items on every connected viewer, and on any
         that (re)loads later (see naja_schematic.diagnosis_response() for
-        the item shape; an item's path may be a najaeda Instance). Pass []
+        the item shape; an item's path may be an SNLPath or a najaeda Instance). Pass []
         to clear."""
         self._session.annotate(items)
 
     def show_instance(self, target):
         """Reveal, select and draw one instance in every viewer, and in any
-        that (re)loads later. `target`: a najaeda netlist.Instance, a list
-        of instance ids or of instance names (top excluded; [] = top), or
+        that (re)loads later. `target`: a naja SNLPath (or a najaeda
+        netlist.Instance), a list of instance ids or of instance names (top excluded; [] = top), or
         one name for a child of the top."""
         self._session.show_instance(target)
 
@@ -298,7 +298,7 @@ class ViewerServer:
         under the lock (not if the block raises)::
 
             with server.replacing_design(diagnosis=items):
-                netlist.load_verilog(new_design)
+                netlist.load_gate_level_verilog(new_design)
 
         Only with `lock` (or the default one): with `run=`, swap on the
         thread `run` hops to and call design_changed() there."""
@@ -333,8 +333,8 @@ class ViewerServer:
 
     @property
     def selected(self):
-        """The last selected instance as a najaeda netlist.Instance, or
-        None if nothing is selected or it no longer exists."""
+        """The last selected instance as a naja SNLPath (empty for the top),
+        or None if nothing is selected or it no longer exists."""
         return self._session.selected
 
     # -- server thread -------------------------------------------------------
@@ -524,22 +524,40 @@ def build_arg_parser():
     parser.add_argument("--flist", "-f", type=str, metavar="FILE",
                         help="SystemVerilog command file (slang -f syntax: sources, "
                              "+incdir+, +define+, ...); may be combined with --systemverilog")
+    parser.add_argument("--vhdl", nargs="+", metavar="FILE",
+                        help="VHDL file(s) to load, in any order (naja's experimental "
+                             "VHDL frontend)")
     parser.add_argument("--top", type=str,
-                        help="SystemVerilog only: top module to elaborate")
+                        help="SystemVerilog/VHDL only: top module (entity) to elaborate")
     parser.add_argument("--define", "-D", action="append", metavar="NAME[=VALUE]",
                         help="SystemVerilog only: preprocessor define (repeatable)")
     return parser
 
 
-def load_design(args):
-    """Load the liberty files and the Verilog/SystemVerilog design named by
-    the parsed CLI arguments into the NLUniverse; returns the top."""
-    from najaeda import netlist
+def _top_db():
+    """The universe's top NLDB, creating the universe and the DB if needed."""
+    from najaeda import naja
 
+    universe = naja.NLUniverse.get() or naja.NLUniverse.create()
+    db = universe.getTopDB()
+    if db is None:
+        db = naja.NLDB.create(universe)
+        universe.setTopDB(db)
+    return db
+
+
+def load_design(args):
+    """Load the liberty files and the Verilog/SystemVerilog/VHDL design
+    named by the parsed CLI arguments into the NLUniverse, through najaeda's
+    raw naja API; returns the top SNLDesign."""
+    from najaeda import naja
+
+    db = _top_db()
     is_sv = bool(args.systemverilog or args.flist)
     if args.xilinx:
         log.info("Loading Xilinx primitives")
-        netlist.load_primitives('xilinx')
+        from najaeda.primitives import xilinx
+        xilinx.load(db)
 
     if args.liberty:
         # Expand wildcards ourselves, for shells that pass them through.
@@ -549,27 +567,30 @@ def load_design(args):
                 expanded_liberty_files.extend(glob(lib))
             else:
                 expanded_liberty_files.append(lib)
-        for lib in expanded_liberty_files:
-            log.info("Loading liberty file: %s", lib)
-            netlist.load_liberty(lib)
+        log.info("Loading liberty files: %s", ", ".join(expanded_liberty_files))
+        db.loadLibertyPrimitives(expanded_liberty_files)
 
-    if is_sv:
+    if args.vhdl:
+        log.info("Loading VHDL: %s", ", ".join(args.vhdl))
+        db.loadVHDL(args.vhdl, top=args.top,
+                    diagnostics_report_path="naja_vhdl_diagnostics.log")
+    elif is_sv:
         sv_files = args.systemverilog or []
         sources = sv_files + ([f"-f {args.flist}"] if args.flist else [])
         log.info("Loading SystemVerilog: %s", ", ".join(sources))
-        config = netlist.SystemVerilogConfig()
-        config.flist = args.flist
-        config.top = args.top
-        config.defines = args.define
-        config.blackbox_unknown_modules = args.allow_unknown_designs
-        top = netlist.load_system_verilog(sv_files, config=config)
+        db.loadSystemVerilog(
+            sv_files, flist=args.flist, defines=args.define,
+            diagnostics_report_path="naja_sv_diagnostics.log",
+            blackbox_unknown_modules=bool(args.allow_unknown_designs),
+            frontend_options={"slang": ["--top", args.top]} if args.top else None)
     else:
         log.info("Loading Verilog netlist: %s", args.verilog)
-        config = netlist.VerilogConfig()
-        config.allow_unknown_designs = args.allow_unknown_designs
-        config.yosys_source_attributes = args.yosys_src
-        top = netlist.load_verilog(args.verilog, config=config)
-    log.info("Design loaded: %s", top.get_name())
+        db.loadGateLevelVerilog(
+            [args.verilog],
+            blackbox_unknown_modules=bool(args.allow_unknown_designs),
+            yosys_source_attributes=args.yosys_src)
+    top = naja.NLUniverse.get().getTopDesign()
+    log.info("Design loaded: %s", top.getName() if top else None)
     return top
 
 
@@ -583,17 +604,19 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     is_sv = bool(args.systemverilog or args.flist)
-    if not args.verilog and not is_sv:
-        parser.error("provide a design: --verilog, or --systemverilog and/or --flist")
-    if args.verilog and is_sv:
-        parser.error("--verilog cannot be combined with --systemverilog/--flist")
-    if not is_sv and (args.top or args.define):
-        parser.error("--top/--define only apply to --systemverilog/--flist")
-    if is_sv and args.liberty:
-        # Same restriction as the native standalone: the SystemVerilog loader
-        # has no liberty hook, so fail loudly rather than silently ignore it.
-        parser.error("--liberty is not supported with --systemverilog/--flist")
-    if is_sv and args.yosys_src:
+    if sum(map(bool, (args.verilog, is_sv, args.vhdl))) != 1:
+        parser.error("provide one design: --verilog, --systemverilog and/or --flist, "
+                     "or --vhdl")
+    if args.top and not (is_sv or args.vhdl):
+        parser.error("--top only applies to --systemverilog/--flist/--vhdl")
+    if args.define and not is_sv:
+        parser.error("--define only applies to --systemverilog/--flist")
+    if (is_sv or args.vhdl) and args.liberty:
+        # Same restriction as the native standalone: the SystemVerilog and
+        # VHDL loaders have no liberty hook, so fail loudly rather than
+        # silently ignore it.
+        parser.error("--liberty only applies to --verilog")
+    if (is_sv or args.vhdl) and args.yosys_src:
         parser.error("--yosys-src only applies to --verilog")
     if args.stdio and args.open:
         parser.error("--open does not apply to --stdio")

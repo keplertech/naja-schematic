@@ -45,6 +45,11 @@ class LocalSNLProvider : public INetlistProvider {
     void loadSystemVerilog(const std::vector<std::string>& sources,
                            const std::string& topModule = "");
 
+    // Load VHDL (naja's experimental frontend; files in any order). If
+    // topEntity is empty, naja infers the unique uninstantiated entity.
+    void loadVHDL(const std::vector<std::string>& files,
+                  const std::string& topEntity = "");
+
     // A terminal named for a human or a script -- {"id_path"|"path": the
     // containing instance (root excluded, [] = a top-level port),
     // "terminal": its base name, "bit": optional bus bit} -- turned into the

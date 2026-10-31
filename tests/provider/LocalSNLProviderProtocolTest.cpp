@@ -366,3 +366,86 @@ TEST_F(SourceProtocol, SourceMapsMatchAtPathBoundaries) {
   EXPECT_TRUE(ask({{"/synth", "/nowhere"}, {"/synth/machine", sources}}));  // falls through
   EXPECT_FALSE(ask({}));
 }
+
+// ---------------------------------------------------------------------------
+// Loading from files: the provider's own loaders, then what the viewer is
+// told about the result.
+// ---------------------------------------------------------------------------
+namespace {
+
+struct LoadedProvider {
+  LocalSNLProvider provider;
+  json             replies = json::array();
+
+  LoadedProvider() {
+    if (!NLUniverse::get()) NLUniverse::create();
+    provider.on_message([this](const std::string& msg) { replies.push_back(json::parse(msg)); });
+  }
+
+  json ask(const json& request) {
+    replies = json::array();
+    provider.send(request.dump());
+    return replies.empty() ? json() : replies[0];
+  }
+
+  // name -> primitive_type of the primitives directly in `designRef`.
+  std::map<std::string, std::string> primitiveTypes(const json& designRef) {
+    std::map<std::string, std::string> types;
+    const json reply = ask({{"request", "load_primitives"}, {"design_ref", designRef}});
+    for (const auto& c : reply["children"])
+      types[c["model_name"].get<std::string>()] = c["primitive_type"].get<std::string>();
+    return types;
+  }
+};
+
+std::string testData(const std::string& rel) {
+  return std::string(NAJA_SCHEMATIC_TEST_DATA) + "/" + rel;
+}
+
+} // namespace
+
+TEST(ProviderLoading, LoadsVHDLInAnyFileOrder) {
+  LoadedProvider p;
+  p.provider.loadVHDL({testData("vhdl/top.vhd"), testData("vhdl/leaf.vhd")});
+  ASSERT_TRUE(p.provider.hasDesign());
+  json root = p.ask({{"request", "load_root"}})["root"];
+  EXPECT_EQ(root["name"], "top");
+  EXPECT_TRUE(root.value("has_sources", false));  // naja's VHDL frontend records declarations
+
+  json instances = p.ask({{"request", "load_instances"}, {"design_ref", root["design_ref"]}})["children"];
+  ASSERT_EQ(instances.size(), 1u);
+  EXPECT_EQ(instances[0]["name"], "u_leaf");
+  EXPECT_EQ(p.primitiveTypes(instances[0]["design_ref"])["naja_mux2__w1"], "mux");
+}
+
+TEST(ProviderLoading, VHDLTopEntityCanBeForced) {
+  LoadedProvider p;
+  p.provider.loadVHDL({testData("vhdl/top.vhd"), testData("vhdl/leaf.vhd")}, "leaf");
+  ASSERT_TRUE(p.provider.hasDesign());
+  EXPECT_EQ(p.ask({{"request", "load_root"}})["root"]["name"], "leaf");
+}
+
+TEST(ProviderLoading, BadVHDLLeavesNoDesign) {
+  LoadedProvider p;
+  p.provider.loadVHDL({testData("vhdl/missing.vhd")});
+  EXPECT_FALSE(p.provider.hasDesign());
+}
+
+// The word-level operators SystemVerilog lowers to are drawn as such, from
+// NLDB0's own identification of the model (never its name).
+TEST(ProviderLoading, WordLevelOperatorsGetTheirPrimitiveType) {
+  LoadedProvider p;
+  p.provider.loadSystemVerilog({testData("sv/operators.sv")});
+  ASSERT_TRUE(p.provider.hasDesign());
+  json root = p.ask({{"request", "load_root"}})["root"];
+  auto types = p.primitiveTypes(root["design_ref"]);
+  EXPECT_EQ(types["naja_add__w4"], "add");
+  EXPECT_EQ(types["naja_sub__w4"], "sub");
+  EXPECT_EQ(types["naja_mul__w4"], "mul");
+  EXPECT_EQ(types["naja_shift__w4_c2_r0_a0"], "shl");
+  EXPECT_EQ(types["naja_shift__w4_c2_r1_a0"], "shr");
+  EXPECT_EQ(types["naja_shift__w4_c2_r1_a1"], "ashr");
+  EXPECT_EQ(types["naja_divmod__u_w4"], "divmod");
+  EXPECT_EQ(types["naja_mux2__w4"], "mux");  // a bus mux: one model, 4 outputs
+  EXPECT_EQ(types["naja_mux2__w1"], "mux");
+}

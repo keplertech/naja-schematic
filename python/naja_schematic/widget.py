@@ -80,22 +80,22 @@ class Schematic(anywidget.AnyWidget):
 
         `items`: a list of diagnosis dicts -- kind ("instance"|"net"),
         id_path (instance ids, root excluded; preferred) and/or path
-        (instance names, root excluded; or a najaeda netlist.Instance,
-        turned into both), terminal (nets only), severity
+        (instance names, root excluded; or a naja SNLPath / najaeda
+        netlist.Instance, turned into both), terminal (nets only), severity
         ("info"|"warning"|"error"), message, source -- or a
         {"items": [...]} document, as File > Load Diagnosis JSON... reads.
         Anonymous instances can only be flagged by id_path (or an
-        Instance). Pass [] to clear.
+        SNLPath/Instance). Pass [] to clear.
         """
         self._session.annotate(items)
 
     def show_instance(self, target):
         """Bring one hierarchical instance into view.
 
-        `target`: a najaeda netlist.Instance, a list of instance ids or of
-        instance names (top excluded; [] = the top design), or one name for
-        a child of the top. Anonymous instances are reached by Instance or
-        ids. The viewer opens the tree down to it, selects it, shows its
+        `target`: a naja SNLPath (or a najaeda netlist.Instance), a list of
+        instance ids or of instance names (top excluded; [] = the top
+        design), or one name for a child of the top. Anonymous instances are
+        reached by path or ids. The viewer opens the tree down to it, selects it, shows its
         properties, and draws it alone in the schematic with all its pins,
         ready to be extended pin by pin. Kept across view reloads.
         """
@@ -132,9 +132,11 @@ class Schematic(anywidget.AnyWidget):
 
     @property
     def selected(self):
-        """The instance selected in the viewer, as a najaeda netlist.Instance
-        (the top design for a selected root), or None if nothing is selected
-        or it no longer exists in the netlist."""
+        """The instance selected in the viewer, as a naja SNLPath (empty for
+        a selected root; `getTailInstance()`/`getModel()` give the instance
+        and its model), or None if nothing is selected or it no longer
+        exists in the netlist. `selected_id_path` has the same selection as
+        ids (najaeda's `netlist.Instance(ids)` takes them)."""
         return selected_instance(self.selected_id_path, self.selected_path)
 
     def on_select(self, callback):

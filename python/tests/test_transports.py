@@ -2,7 +2,10 @@ import asyncio
 import io
 import json
 import socket
+import subprocess
+import sys
 import urllib.request
+from pathlib import Path
 
 import pytest
 
@@ -76,3 +79,38 @@ def test_websocket_server_serves_page_and_protocol(top, tmp_path, monkeypatch):
 def test_cli_rejects_liberty_with_systemverilog():
     with pytest.raises(SystemExit):
         server.main(["--sv", "a.sv", "--liberty", "x.lib"])
+
+
+@pytest.mark.parametrize("argv", [
+    ["--vhdl", "a.vhd", "--verilog", "b.v"],
+    ["--vhdl", "a.vhd", "--sv", "b.sv"],
+    ["--vhdl", "a.vhd", "--liberty", "cells.lib"],
+    ["--vhdl", "a.vhd", "--yosys-src"],
+    ["--vhdl", "a.vhd", "-D", "X"],
+    ["--verilog", "b.v", "--top", "t"],
+])
+def test_cli_rejects_flags_that_do_not_apply(argv, capsys):
+    with pytest.raises(SystemExit) as e:
+        server.main(argv)
+    assert e.value.code == 2
+
+
+@pytest.mark.parametrize("flag, files, top", [
+    ("--vhdl", ["vhdl/leaf.vhd", "vhdl/top.vhd"], "top"),
+    ("--sv", ["sv/operators.sv"], "ops"),
+    ("--sv", ["sv/two_tops.sv"], "second"),
+])
+def test_cli_loads_design(flag, files, top, tmp_path):
+    # In a subprocess: loading replaces the session's design. Run from
+    # tmp_path, where naja writes its diagnostics report.
+    data = Path(__file__).parents[2] / "tests" / "data"
+    argv = [flag, *(str(data / f) for f in files), "--top", top]
+    script = (
+        "import sys\n"
+        "from naja_schematic import server\n"
+        "args = server.build_arg_parser().parse_args(sys.argv[1:])\n"
+        "print(server.load_design(args).getName())\n")
+    run = subprocess.run([sys.executable, "-c", script, *argv], cwd=tmp_path,
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    assert run.stdout.strip().splitlines()[-1] == top

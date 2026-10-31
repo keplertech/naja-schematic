@@ -93,8 +93,7 @@ def test_focus_is_reapplied_after_each_root(top, view):
     assert sent_kinds(sent) == ["focus_instance", "root_response", "focus_instance"]
 
 
-def test_viewer_selection_is_a_najaeda_instance(top, view):
-    from najaeda import netlist
+def test_viewer_selection_is_an_snl_path(top, view):
     v, sent = view
     assert v.selected is None
     seen = []
@@ -104,12 +103,13 @@ def test_viewer_selection_is_a_najaeda_instance(top, view):
     v._on_viewer_message(v, {"json": json.dumps(select)}, [])
     assert sent == []  # a notification: nothing is sent back
     assert v.selected_path == ["u_sub", "u_and"]
-    assert v.selected == netlist.get_instance_by_path(["u_sub", "u_and"])
-    assert v.selected.get_model_name() == "LUT2"
+    assert v.selected.getInstanceIDs() == v.selected_id_path == [0, 0]
+    assert v.selected.getTailInstance().getName() == "u_and"
+    assert v.selected.getModel().getName() == "LUT2"
     assert seen == [v.selected]
 
     v._on_viewer_message(v, {"json": json.dumps({"request": "instance_selected", "path": []})}, [])
-    assert v.selected.is_top()
+    assert v.selected.empty()  # the top design
     assert len(seen) == 2
 
 
