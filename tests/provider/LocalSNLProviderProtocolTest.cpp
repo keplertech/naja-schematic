@@ -284,6 +284,7 @@ TEST_F(ProviderProtocol, ListsTheLegacyLocationWhenNoTypedReference) {
     "provider": "", "language": "", "representation": ""}])"));
   EXPECT_FALSE(nets["children"][0].contains("has_sources"));  // net i
   EXPECT_EQ(nets["children"][1]["has_sources"], true);         // net o
+  EXPECT_EQ(nets["children"][1]["net_id"], net->getID());     // what reviews anchor by
 }
 
 // A big file (a gate-level netlist) only sends the lines around the reference.

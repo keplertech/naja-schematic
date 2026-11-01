@@ -92,6 +92,8 @@ plus options, in any order. Their flags differ slightly:
 | `--yosys-src` | `--yosys-src` | Read Yosys `(* src *)` attributes, so Show Sources leads back to the RTL (Verilog only) |
 | `--source-root dir` | `--source-root dir` | Where to look for relative source paths (repeatable) |
 | `--source-map FROM=TO` | `--source-map FROM=TO` | Rewrite source paths recorded on another machine (repeatable) |
+| | `--review DIR`, `--author NAME` | Read and write review threads in DIR, a directory kept in git with the design ([format](docs/review_format.md)) |
+| | `--review DIR` alone, `--snapshot ID` | Open the netlist a review thread was written on, stored in the review |
 | | `--open` | Open the viewer in a browser |
 | | `--port N`, `--host H` | Where to serve (default `localhost:8081`) |
 
@@ -139,7 +141,13 @@ Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 | Click a box | Select the instance (also in the design tree) |
 | Click a wire | Select (highlight) its net |
 | Click a box's hierarchy glyph | Show / hide what is inside it |
-| Right-click | Menu: trace to driver, sources, properties, fit, clear |
+| Right-click | Menu: trace to driver, sources, properties, comment, fit, clear |
+
+In the design tree, right-click a row (an instance, a pin or a net) for its
+menu. With a review loaded (`--review DIR`), **Add Comment...** in these
+menus starts a review thread on that object; the **Review** tab lists the
+threads, to reply to them and resolve them. A tree row shows `[n]`, and a
+schematic box a numbered disc, for its open threads.
 
 | Keys (mouse over the schematic) | Action |
 |---|---|

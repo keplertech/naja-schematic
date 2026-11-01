@@ -343,6 +343,28 @@ float instanceNameWidth(const std::string& name) {
     return ImGui::GetFont()->CalcTextSizeA(kInstanceLabelBaseSize, FLT_MAX, 0.0f, name.c_str()).x;
 }
 
+// Open review threads on an instance: a disc with their count on the box's
+// top-right corner, in the worst open severity's color. Drawn through the
+// painter, so it reaches SVG exports; it hides with the labels when zoomed
+// too far out to read.
+static void drawReviewBadge(SchematicPainter* dl, const InstanceShape& inst,
+                            const SchematicView& sv,
+                            const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    if (inst.reviewOpen <= 0 || inst.w <= 0.0f || inst.h <= 0.0f) return;
+    float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
+    if (fontSize <= 0.0f) return;
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    const std::string count = std::to_string(inst.reviewOpen);
+    ImFont* font = ImGui::GetFont();
+    ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, count.c_str());
+    const float r = std::max(ts.x, ts.y) * 0.5f + 2.0f;
+    const ImVec2 c(rmax.x, rmin.y);
+    dl->AddCircleFilled(c, r, inst.reviewColor);
+    dl->AddText(font, fontSize, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f),
+                contrastingTextColor(inst.reviewColor), count.c_str());
+}
+
 // Instance name above its symbol: a box's inside holds its pin
 // names, and a gate symbol has no room for text. The layout reserved this
 // exact (possibly shortened) text's row, so it never overlaps anything.
@@ -1186,7 +1208,10 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
     // which module the traced leaves belong to, and are listed parent-first
     // so nested frames paint over their enclosing one.
     for (const auto& inst : instances) {
-        if (inst.isHierGroup) drawInstance(dl, inst, canvasPos, canvasSize);
+        if (inst.isHierGroup) {
+            drawInstance(dl, inst, canvasPos, canvasSize);
+            drawReviewBadge(dl, inst, *this, canvasPos, canvasSize);
+        }
     }
 
     // Top-level nets draw next (so top-level instances render on top), as
@@ -1203,6 +1228,7 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
     // wire under a box's fill or a child under its own internal wiring.
     std::function<void(const InstanceShape&)> drawSubtree = [&](const InstanceShape& inst) {
         drawInstance(dl, inst, canvasPos, canvasSize);
+        drawReviewBadge(dl, inst, *this, canvasPos, canvasSize);
         for (const auto& net : nets)
             if (net.containerShapeId == inst.id) drawNet(dl, net, canvasPos, canvasSize);
         for (const auto& child : instances)

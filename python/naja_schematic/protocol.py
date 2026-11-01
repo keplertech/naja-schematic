@@ -20,7 +20,8 @@ log = logging.getLogger("naja_schematic")
 # 0.7.31: load_gate_level_verilog/GateLevelVerilogConfig (load_verilog and
 # VerilogConfig now warn).
 # 0.7.34: word-level operator checks (isAddSub, isMultiply, isShift, isDivMod,
-# ...) and loadSystemVerilog's frontend_options.
+# ...) and loadSystemVerilog's frontend_options; nets by id
+# (SNLDesign.getNetByID, SNLNet.getID), for review anchors.
 MIN_NAJAEDA_VERSION = (0, 7, 34)  # keep in step with pyproject.toml
 
 
@@ -553,7 +554,7 @@ def _handle_design_request(u, request):
     for net in design.getNets():
         if is_anonymous_constant_net(net):
             continue
-        entry = {"name": net.getName()}
+        entry = {"name": net.getName(), "net_id": net.getID()}
         if isinstance(net, naja.SNLBusNet):
             entry["msb"] = net.getMSB()
             entry["lsb"] = net.getLSB()

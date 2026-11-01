@@ -47,6 +47,9 @@ def test_design_requests(top):
     assert "s" in names
     # The implicit 1'b0/1'b1 tie-offs on r.CE/r.R are filtered out.
     assert "" not in names
+    # Each net carries its id, what a review thread anchors it by.
+    design = naja.NLUniverse.get().getTopDesign()
+    assert all(n["net_id"] == design.getNet(n["name"]).getID() for n in nets["children"])
 
 
 def test_instance_requests_echo_the_instance_path(top):

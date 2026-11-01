@@ -32,6 +32,7 @@ from glob import glob
 
 from . import protocol
 from ._bundle import static_file
+from .review import Review, default_author
 from .session import ViewerSession, lock_runner
 
 log = logging.getLogger("naja_schematic")
@@ -75,13 +76,13 @@ def _static_response(connection, request):
 
 
 async def serve(host="localhost", port=DEFAULT_PORT, diagnosis=None, open_browser=False,
-                source_roots=(), source_maps=()):
+                source_roots=(), source_maps=(), review=None):
     """Serve the viewer page and its WebSocket on host:port, forever."""
     from websockets.asyncio.server import serve as ws_serve
     from websockets.exceptions import ConnectionClosed
 
     session = ViewerSession(diagnosis=diagnosis, source_roots=source_roots,
-                            source_maps=source_maps)
+                            source_maps=source_maps, review=review)
 
     async def handle_connection(websocket):
         log.info("Client connected")
@@ -154,12 +155,13 @@ class ViewerServer:
     The viewer can only read source files the design's source references
     name (Show Sources); relative ones are looked up in `source_roots`,
     then the current directory, and `source_maps` rewrites (FROM, TO) path
-    prefixes for files recorded on another machine.
+    prefixes for files recorded on another machine. `review`, a
+    review.Review, is shown to and written by every viewer.
     """
 
     def __init__(self, host="127.0.0.1", port=0, *, lock=None, run=None,
                  token=True, allowed_origins=(), diagnosis=None, source_roots=(),
-                 source_maps=()):
+                 source_maps=(), review=None):
         if lock is not None and run is not None:
             raise ValueError("pass lock or run, not both")
         if run is None:
@@ -177,7 +179,8 @@ class ViewerServer:
                                              thread_name_prefix="naja-schematic-callbacks")
         self._session = ViewerSession(push=self._broadcast, run=run, diagnosis=diagnosis,
                                       dispatch=self._dispatch_callback,
-                                      source_roots=source_roots, source_maps=source_maps)
+                                      source_roots=source_roots, source_maps=source_maps,
+                                      review=review)
         self._thread = None
         self._loop = None
         self._stopping = None
@@ -453,13 +456,14 @@ class ViewerServer:
 # stdio server
 # ---------------------------------------------------------------------------
 
-def serve_stdio(diagnosis=None, stdin=None, stdout=None, source_roots=(), source_maps=()):
+def serve_stdio(diagnosis=None, stdin=None, stdout=None, source_roots=(), source_maps=(),
+                review=None):
     """Answer one JSON request per stdin line with JSON lines on stdout,
     until stdin closes. Logging must not go to stdout in this mode."""
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     session = ViewerSession(diagnosis=diagnosis, source_roots=source_roots,
-                            source_maps=source_maps)
+                            source_maps=source_maps, review=review)
     for line in stdin:
         line = line.strip()
         if not line:
@@ -507,6 +511,16 @@ def build_arg_parser():
                         help="Rewrite source paths starting with FROM to start with TO "
                              "(repeatable): for files recorded on another machine, e.g. "
                              "Yosys src paths of a synthesis server")
+    parser.add_argument("--review", metavar="DIR",
+                        help="Review directory (threads and saved views, see "
+                             "docs/review_format.md) to show and write, e.g. .naja-review")
+    parser.add_argument("--author", metavar="NAME",
+                        help="Author of the review comments written (default: "
+                             "$NAJA_SCHEMATIC_AUTHOR, else git config user.name)")
+    parser.add_argument("--snapshot", metavar="ID",
+                        help="With --review and no design: open this snapshot of the "
+                             "review (default: the latest one a thread was written on)")
+
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Log every request (to stderr)")
     parser.add_argument("--xilinx", action="store_true",
@@ -594,6 +608,24 @@ def load_design(args):
     return top
 
 
+def load_review_snapshot(review, snapshot=None):
+    """Load one of the review's stored designs (by default the latest one a
+    thread was written on) into the NLUniverse; returns the top."""
+    from najaeda import netlist
+
+    from .review import is_snapshot_id
+
+    if snapshot is None:
+        snapshot = review.latest_snapshot()
+        if snapshot is None:
+            raise SystemExit(f"{review.directory}: no stored snapshot to open; "
+                             "give the design (--verilog, --systemverilog, ...)")
+    elif not is_snapshot_id(snapshot) or not review.snapshot_path(snapshot).is_dir():
+        raise SystemExit(f"{review.directory}: no snapshot {snapshot!r}")
+    log.info("Loading review snapshot %s", snapshot)
+    return netlist.load_naja_if(str(review.snapshot_path(snapshot)))
+
+
 def load_diagnosis_file(path):
     with open(path) as f:
         return json.load(f)
@@ -604,9 +636,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
 
     is_sv = bool(args.systemverilog or args.flist)
-    if sum(map(bool, (args.verilog, is_sv, args.vhdl))) != 1:
+    designs = sum(map(bool, (args.verilog, is_sv, args.vhdl)))
+    from_review = not designs and args.review is not None
+    if designs > 1 or not (designs or from_review):
         parser.error("provide one design: --verilog, --systemverilog and/or --flist, "
-                     "or --vhdl")
+                     "or --vhdl (or --review alone, to open its snapshot)")
+    if args.snapshot and not from_review:
+        parser.error("--snapshot only applies with --review and no design")
     if args.top and not (is_sv or args.vhdl):
         parser.error("--top only applies to --systemverilog/--flist/--vhdl")
     if args.define and not is_sv:
@@ -620,6 +656,8 @@ def main(argv=None):
         parser.error("--yosys-src only applies to --verilog")
     if args.stdio and args.open:
         parser.error("--open does not apply to --stdio")
+    if args.author and not args.review:
+        parser.error("--author only applies with --review")
 
     # stderr only: stdout is the protocol channel in --stdio mode.
     logging.basicConfig(stream=sys.stderr, format="%(message)s",
@@ -642,15 +680,25 @@ def main(argv=None):
         os.dup2(2, 1)
 
     diagnosis = load_diagnosis_file(args.diagnosis) if args.diagnosis else None
-    load_design(args)
+    review = None
+    if args.review:
+        author = default_author(args.review, args.author)
+        if author is None:
+            log.warning("No review author (--author, $NAJA_SCHEMATIC_AUTHOR or git "
+                        "user.name): the review is read-only")
+        review = Review(args.review, author)
+    if from_review:
+        load_review_snapshot(review, args.snapshot)
+    else:
+        load_design(args)
 
     if args.stdio:
         serve_stdio(diagnosis, stdout=protocol_out, source_roots=args.source_roots,
-                    source_maps=args.source_maps)
+                    source_maps=args.source_maps, review=review)
         return
     try:
         asyncio.run(serve(args.host, args.port, diagnosis, args.open, args.source_roots,
-                          args.source_maps))
+                          args.source_maps, review))
     except KeyboardInterrupt:
         pass
 

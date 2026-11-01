@@ -809,12 +809,13 @@ std::string LocalSNLProvider::buildNetsResponse(
         // itself and expands individual bits lazily.
         json n = {
           {"name", bn->getName().getString()},
+          {"net_id", bn->getID()},
           {"msb",  static_cast<int>(bn->getMSB())},
           {"lsb",  static_cast<int>(bn->getLSB())}
         };
         children.push_back(std::move(withSources(n, busHasSources(bn))));
       } else if (auto* bit = dynamic_cast<SNLBitNet*>(net)) {
-        json n = {{"name", bit->getName().getString()}};
+        json n = {{"name", bit->getName().getString()}, {"net_id", bit->getID()}};
         children.push_back(std::move(withSources(n, hasSources(bit))));
       }
     }

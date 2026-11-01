@@ -15,6 +15,8 @@
 #include "DiagnosisStore.h"
 #include "SchematicLayout.h"
 #include "SchematicInteraction.h"
+#include "ReviewStore.h"
+#include "ReviewView.h"
 #include "SelectionStore.h"
 #include "TraceStore.h"
 
@@ -71,6 +73,13 @@ static int                g_ctxInstanceId    = -1;
 // Which pin (if any) the popup targets; takes precedence over the instance
 // box the pin sits on. -1 = none.
 static int                g_ctxPortId        = -1;
+
+// The review badge of an instance box or module frame (ReviewStore).
+static void setReviewBadge(InstanceShape& shape) {
+    const auto threads = ReviewStore::instanceThreads(shape.path);
+    shape.reviewOpen  = int(ReviewStore::openCount(threads));
+    shape.reviewColor = ReviewStore::openColor(threads);
+}
 
 // What a box's context menu needs. `hasSources`: offer "Show Sources" --
 // a module frame always does (the provider sent no flag for it).
@@ -294,6 +303,7 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         cs.hasChildren   = c.hasInstances;
         cs.hierExpanded  = c.hasInstances && g_hierExpanded.count(cs.path) > 0;
         cs.diagOutline   = DiagnosisStore::instanceColor(cs.path);
+        setReviewBadge(cs);
         childIdToShapeId[c.childId] = cs.id;
         g_occInfoByShapeId[cs.id] = { cs.path, c.designRef, c.hasSources };
         children.push_back(std::move(cs));
@@ -623,6 +633,17 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 req["trace_id"] = TraceStore::begin(label);
                 g_provider->send(req.dump());
             }
+            // A pin's term, by its ids (a top-level port stub's path is {}).
+            for (auto& inst : g_schematic.instances) {
+                const Port* p = g_schematic.findPortById(inst, g_ctxPortId);
+                if (!p) continue;
+                const std::string label = inst.modelName == "port" ? p->name
+                                                                   : traceLabel(inst.path, p->name);
+                ReviewView::commentMenuItem(
+                    ReviewStore::termAnchor(inst.path, portIt->second.termId, p->name,
+                                            portIt->second.bit), label);
+                break;
+            }
             auto busIt = g_expandedBusGroupByPortId.find(g_ctxPortId);
             if (busIt != g_expandedBusGroupByPortId.end() && ImGui::MenuItem("Collapse Bus"))
                 g_expandedBuses.erase(busIt->second);
@@ -641,6 +662,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 writePath(req, occIt->second.path);
                 g_provider->send(req.dump());
             }
+            ReviewView::commentMenuItem(ReviewStore::instanceAnchor(occIt->second.path),
+                                        displayPath(occIt->second.path));
             // A module frame covers a lot of canvas, so right-clicking its
             // empty area also offers the canvas-level entries.
             auto* shape = g_schematic.findInstanceById(g_ctxInstanceId);
@@ -903,6 +926,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         if (inst.diagOutline == 0 && traceIdsByInstance[key].size() >= 2)
             inst.diagOutline = TraceStore::convergenceColor();
         inst.selected    = SelectionStore::isSelected(key);
+        setReviewBadge(inst);
         g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.hasSources };
         pathToInstId[key] = inst.id;
 
@@ -1144,6 +1168,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         for (auto& f : frames) {
             f.shape.diagOutline = DiagnosisStore::instanceColor(f.shape.path);
             f.shape.selected    = SelectionStore::isSelected(f.shape.path);
+            setReviewBadge(f.shape);
             g_occInfoByShapeId[f.shape.id] = { f.shape.path, DesignRef{}, true };
             frameShapes.push_back(std::move(f.shape));
         }

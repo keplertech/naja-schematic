@@ -113,7 +113,8 @@ class NetlistTreeNode {
       const std::string& name,
       std::optional<int> msb,
       std::optional<int> lsb,
-      bool hasSources = false);
+      bool hasSources = false,
+      std::optional<unsigned> netID = std::nullopt);
     void createInstanceNode(
       const std::string& name,
       const std::string& modelName,
@@ -168,6 +169,12 @@ class NetlistTreeNode {
     // used to build a get_properties request. Empty for non-net nodes.
     virtual std::string getNetBaseName() const {
       return std::string();
+    }
+    // SNLNet id in the containing instance's model, for net/bus-net-bit
+    // nodes whose host sent one (nets_response's net_id); what a review
+    // thread anchors a net by.
+    virtual std::optional<unsigned> getNetID() const {
+      return std::nullopt;
     }
     // True for a whole-bus term node (msb/lsb both set) — its menu has only
     // Show Properties; equipotentials and traces are per bit.
@@ -356,7 +363,8 @@ class NetlistTreeNetNode : public NetlistTreeNode {
                        const std::string& name,
                        std::optional<int> msb,
                        std::optional<int> lsb,
-                       bool hasSources = false);
+                       bool hasSources = false,
+                       std::optional<unsigned> netID = std::nullopt);
 
     virtual std::string getLabel() const override;
     virtual void expand() override;
@@ -371,13 +379,15 @@ class NetlistTreeNetNode : public NetlistTreeNode {
       return msb_.has_value() && lsb_.has_value();
     }
     virtual std::string getNetBaseName() const override { return name_; }
+    virtual std::optional<unsigned> getNetID() const override { return netID_; }
     size_t getWidth() const;
     virtual std::vector<int> busBits() const override;
   private:
-    std::string         name_;
-    std::optional<int>  msb_;
-    std::optional<int>  lsb_;
-    bool                hasSources_;
+    std::string             name_;
+    std::optional<int>      msb_;
+    std::optional<int>      lsb_;
+    bool                    hasSources_;
+    std::optional<unsigned> netID_;
 };
 
 class NetlistTreeBusNetBitNode : public NetlistTreeNode {
@@ -399,6 +409,9 @@ class NetlistTreeBusNetBitNode : public NetlistTreeNode {
     }
     virtual std::string getNetBaseName() const override {
       return getParent()->getNetBaseName();
+    }
+    virtual std::optional<unsigned> getNetID() const override {
+      return getParent()->getNetID();
     }
     virtual bool hasSources() const override { return getParent()->hasSources(); }
   private:
