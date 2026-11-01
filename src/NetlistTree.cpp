@@ -5,6 +5,8 @@
 #include "Console.h"
 #include "DiagnosisStore.h"
 #include "INetlistProvider.h"
+#include "ReviewStore.h"
+#include "ReviewView.h"
 #include "SelectionStore.h"
 #include "TraceStore.h"
 
@@ -31,7 +33,42 @@ void inspectMenuItems(INetlistProvider* provider, json address, bool hasSources)
   }
 }
 
+// What a review thread on this row anchors to, and the threads already on
+// it (ReviewStore, matched by ids). A net row whose host sent no net_id has
+// neither. `label` names the object in the Add Comment dialog.
+struct ReviewTarget {
+  std::optional<json> anchor;
+  std::vector<const ReviewThread*> threads;
+  std::string label;
+};
+
 }  // namespace
+
+static ReviewTarget reviewTarget(const NetlistTreeNode& node) {
+  ReviewTarget target;
+  const InstancePath path = node.getInstancePath();
+  const std::optional<int> bit = node.isBusBit() ? std::optional<int>(node.getBusBit())
+                                                 : std::nullopt;
+  if (node.isInstanceNode()) {
+    target.anchor = ReviewStore::instanceAnchor(path);
+    target.threads = ReviewStore::instanceThreads(path);
+    target.label = displayPath(path);
+  } else if (node.isBitTerm() || node.isBus()) {
+    target.anchor = ReviewStore::termAnchor(path, node.getChildID(), node.getTermBaseName(), bit);
+    target.threads = ReviewStore::termThreads(path, node.getChildID(), bit);
+    target.label = node.getLabel();
+  } else if ((node.isBitNet() || node.isBusNet()) && node.getNetID()) {
+    target.anchor = ReviewStore::netAnchor(path, *node.getNetID(), node.getNetBaseName(), bit);
+    target.threads = ReviewStore::netThreads(path, *node.getNetID(), bit);
+    target.label = node.getLabel();
+  }
+  if (target.anchor) {
+    std::string where = displayPath(path);
+    if (!node.isInstanceNode() && !where.empty()) target.label = where + "/" + target.label;
+    if (target.label.empty()) target.label = "the top design";
+  }
+  return target;
+}
 
 void NetlistTree::createRootNode(
   const std::string& name,
@@ -201,15 +238,17 @@ void NetlistTreeNode::render() {
   if (isInstanceNode() && ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
     SelectionStore::select(getInstancePath(), SelectionStore::Origin::Tree);
   }
+  const ReviewTarget review = reviewTarget(*this);
   if (ImGui::IsItemHovered()) {
     auto diagnostics = getDiagnostics();
-    if (!diagnostics.empty()) {
+    if (!diagnostics.empty() || !review.threads.empty()) {
       ImGui::BeginTooltip();
       for (const auto* d : diagnostics) {
         ImGui::TextColored(ImColor(DiagnosisStore::colorForSeverity(d->severity)).Value,
                            "[%s] %s", toString(d->severity), d->message.c_str());
         if (!d->source.empty()) ImGui::TextDisabled("source: %s", d->source.c_str());
       }
+      ReviewView::threadsTooltip(review.threads);
       ImGui::EndTooltip();
     }
   }
@@ -249,6 +288,7 @@ void NetlistTreeNode::render() {
       req["terminal"] = getTermBaseName();
       if (isBusBit()) req["bit"] = getBusBit();
       inspectMenuItems(getTree()->getProvider(), req, hasSources());
+      if (review.anchor) ReviewView::commentMenuItem(*review.anchor, review.label);
       ImGui::EndPopup();
     }
   } else if (isBus()) {
@@ -260,6 +300,7 @@ void NetlistTreeNode::render() {
       writePath(req, getInstancePath());
       req["terminal"] = getTermBaseName();
       inspectMenuItems(getTree()->getProvider(), req, hasSources());
+      if (review.anchor) ReviewView::commentMenuItem(*review.anchor, review.label);
       ImGui::EndPopup();
     }
   } else if (isBitNet() || isBusNet()) {
@@ -270,6 +311,7 @@ void NetlistTreeNode::render() {
       req["net"]  = getNetBaseName();
       if (isBusBit()) req["bit"] = getBusBit();
       inspectMenuItems(getTree()->getProvider(), req, hasSources());
+      if (review.anchor) ReviewView::commentMenuItem(*review.anchor, review.label);
       ImGui::EndPopup();
     }
   } else if (isInstanceNode()) {
@@ -284,8 +326,16 @@ void NetlistTreeNode::render() {
       req["kind"] = "instance";
       writePath(req, getInstancePath());
       inspectMenuItems(getTree()->getProvider(), req, hasSources());
+      if (review.anchor) ReviewView::commentMenuItem(*review.anchor, review.label);
       ImGui::EndPopup();
     }
+  }
+  // Open review threads on this object: their count, in the worst
+  // severity's color (the popups and tooltip above are other windows, so
+  // this still follows the row's label).
+  if (const size_t open = ReviewStore::openCount(review.threads)) {
+    ImGui::SameLine();
+    ImGui::TextColored(ImColor(ReviewStore::openColor(review.threads)).Value, "[%zu]", open);
   }
   if (isOpen and not isLeaf()) {
     if (children_ != nullptr) {
@@ -529,8 +579,10 @@ NetlistTreeNetNode::NetlistTreeNetNode(
   const std::string& name,
   std::optional<int> msb,
   std::optional<int> lsb,
-  bool hasSources):
-  NetlistTreeNode(parent), name_(name), msb_(msb), lsb_(lsb), hasSources_(hasSources) {
+  bool hasSources,
+  std::optional<unsigned> netID):
+  NetlistTreeNode(parent), name_(name), msb_(msb), lsb_(lsb), hasSources_(hasSources),
+  netID_(netID) {
   if (not msb_.has_value() or not lsb_.has_value()) { //scalar
     children_ = new Children();
   }
@@ -627,9 +679,10 @@ void NetlistTreeNode::createNetNode(
   const std::string& name,
   std::optional<int> msb,
   std::optional<int> lsb,
-  bool hasSources) {
+  bool hasSources,
+  std::optional<unsigned> netID) {
   //this should be a group node of type Nets
-  children_->push_back(new NetlistTreeNetNode(this, name, msb, lsb, hasSources));
+  children_->push_back(new NetlistTreeNetNode(this, name, msb, lsb, hasSources, netID));
 }
 
 void NetlistTreeNode::createInstanceNode(

@@ -179,6 +179,30 @@ TEST(NetlistTree, ScalarNetIsBitNetNotBus) {
   EXPECT_TRUE(net->busBits().empty());
 }
 
+// nets_response's net_id, what a review thread anchors a net by; a bit row
+// has its bus's. An older host sends none.
+TEST(NetlistTree, NetNodesKeepTheHostsNetId) {
+  FakeNetlistProvider provider;
+  NetlistTree tree(&provider);
+  tree.createRootNode("top", someDesign(), false, false, false, true);
+  auto* root = tree.getRoot();
+
+  root->createChildren();
+  root->createNetNode("bus", 1, 0, false, 5u);
+  root->createNetNode("old", std::nullopt, std::nullopt);
+  auto* bus = tree.getNode(1);
+  auto* old = tree.getNode(2);
+  ASSERT_NE(bus, nullptr);
+  ASSERT_NE(old, nullptr);
+  EXPECT_EQ(bus->getNetID(), 5u);
+  EXPECT_FALSE(old->getNetID());
+  bus->expand();
+  auto* bit = tree.getNode(3);
+  ASSERT_NE(bit, nullptr);
+  EXPECT_TRUE(bit->isBusBit());
+  EXPECT_EQ(bit->getNetID(), 5u);
+}
+
 TEST(NetlistTree, SendLoadEquipotentialFormatsRequestAndFiresCallback) {
   FakeNetlistProvider provider;
   NetlistTree tree(&provider);

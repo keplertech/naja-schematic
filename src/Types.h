@@ -294,6 +294,7 @@ struct TermsResponseJson {
 // NetlistTreeNetNode -- nets don't offer a "Show Equipotential" action).
 struct NetResponseJson {
   std::string name;
+  std::optional<unsigned> net_id;  // SNLNet id in its design; absent from older hosts
   std::optional<int> msb;
   std::optional<int> lsb;
   bool has_sources = false;  // the net, or any bit of a bus net
@@ -482,6 +483,11 @@ struct InstanceShape {
     // The instance (or module frame) selected in the viewer -- see
     // SelectionStore. Drawn with a selection outline.
     bool selected = false;
+    // Open review threads on this instance (ReviewStore), drawn as a
+    // numbered badge on the box's top-right corner in `reviewColor` (the
+    // worst open severity's color). 0 = no badge.
+    int   reviewOpen = 0;
+    ImU32 reviewColor = 0;
 };
 
 // A net in the schematic (one routed wire tree), named by the pin its wires

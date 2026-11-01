@@ -103,6 +103,8 @@ set(CORE_SOURCES
   src/SelectionStore.cpp
   src/TraceStore.cpp
   src/TraceView.cpp
+  src/ReviewStore.cpp
+  src/ReviewView.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
   # Read-only code view of the Source tab (SourceView).
@@ -265,6 +267,8 @@ if(NOT EMSCRIPTEN_BUILD)
       src/PropertiesStore.cpp
       src/SelectionStore.cpp
       src/TraceStore.cpp
+      src/ReviewStore.cpp
+      src/ReviewView.cpp
       src/GenerationProvider.cpp
       src/SchematicLayout.cpp
       src/SchematicInteraction.cpp

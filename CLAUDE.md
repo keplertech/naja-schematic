@@ -382,7 +382,9 @@ next to `Terms` under an instance node) with one deliberate asymmetry: a net
 entry carries no `child_id` and offers no "Show Equipotential" action — a
 net has no direction, and get_properties identifies it by name (`"net"`
 field) rather than by the provider-specific numeric id a term's
-`load_equipotential` request needs. See `NetlistTreeNetNode`/
+`load_equipotential` request needs. It does carry its `net_id`
+(`SNLNet::getID()`), only to anchor review threads (`getNetID()`; absent
+from older hosts). See `NetlistTreeNetNode`/
 `NetlistTreeBusNetBitNode` in `NetlistTree.h/.cpp`.
 
 Both `nets_response` and the `has_nets` flag filter out anonymous scalar
@@ -646,6 +648,19 @@ covers delayed selections, requests queued behind the swap and several
 viewers deterministically; the netlist there is "replaced" by itself, the
 worst case where every stale id still resolves.
 
+**Reviews** (full design: `docs/review_format.md`): threads on netlist
+objects, shared asynchronously through a directory committed with the
+design. The host owns the files (Python: `review.py`, `--review DIR`,
+`review=`; not yet `LocalSNLProvider`) and pushes `review_response` after
+each `root_response` and every write; the viewer sends `review_add_thread`
+(an anchor by ids: instance `id_path`, `term_id`, `net_id` from
+`nets_response`, optional `bit`) and `review_add_event` (reply, status), and
+a refused write comes back as `{"response":"error","request":"review_..."}`.
+Objects are identified by naja ids only, never by names: a thread is pinned
+to the netlist it was written on, stored in the review as a naja-if
+snapshot, and only drawn when the host resolves it `exact` on the loaded
+design (`other_snapshot` threads are listed, not drawn).
+
 `get_properties`/`properties_response` is a general name/value inspector for
 whatever object the UI asks about — an instance (including the top design
 itself), a term/pin, or a net — answered by both `LocalSNLProvider`
@@ -792,6 +807,25 @@ path the host read, used by the native "Open in Editor".
   `TraceStore::setColor()` refuses a near-black one (the convergence
   color, so shared gates stay unambiguous) and a near-white one (invisible
   on the white canvas).
+- **`ReviewStore`** — global static store (same pattern) for the review
+  threads the host last pushed (`review_response`; see "Reviews" under Wire
+  protocol): parsed threads, `writable`/`author`, the last refused write.
+  `instanceThreads()`/`termThreads()`/`netThreads()` match an object by
+  ids only (`id_path` + term/net id, optional bit), and only threads the
+  host resolved `exact`; `openCount()`/`openColor()` give the badges.
+  Builds the `review_add_thread`/`review_add_event` requests and their
+  anchors. Cleared on every fresh `root_response`/`root_loaded` (the host
+  pushes the review again after it).
+- **`ReviewView`** — the "Review" bottom-panel tab (open/all filter; a
+  thread's comments, Reply, Resolve/Won't Fix/Reopen, Select and Show in
+  Schematic for an exact one, the snapshot id for one on another netlist)
+  and the modal Add Comment dialog (`openComposer()`, drawn by
+  `renderComposer()` at the top level each frame), opened by
+  `commentMenuItem()` from the tree's instance/term/net menus and the
+  schematic's box and pin menus -- only shown when the host is writable.
+  The tree shows `[n]` open threads after a row, the schematic a numbered
+  disc on a box's corner (`InstanceShape::reviewOpen`, drawn through the
+  painter); hovering a tree row lists them.
 - **`SelectionStore`** — global static store (same pattern) for the one
   selection: an instance, by `InstancePath` (`{}` = top), or a schematic
   net, by `SchematicNetRef` (the pin its wire tree starts from: instance

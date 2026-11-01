@@ -24,6 +24,10 @@ struct AppState {
   bool              growSourcePanel    {false};
   bool              focusDiagnosisTab  {false};
   bool              focusPropertiesTab {false};
+  // The Review tab is the one shown: selecting a thread selects its
+  // instance, whose properties_response then doesn't take the panel away
+  // from the thread being read.
+  bool              reviewTabShown     {false};
   // How many of the most recently added equipotentials the bottom
   // "Equipotential" table lists: 1 after a single load_equipotential, every
   // net of the cone after a trace_driver_response.

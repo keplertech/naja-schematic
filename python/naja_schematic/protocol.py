@@ -554,7 +554,7 @@ def _handle_design_request(u, request):
     for net in design.getNets():
         if is_anonymous_constant_net(net):
             continue
-        entry = {"name": net.getName()}
+        entry = {"name": net.getName(), "net_id": net.getID()}
         if isinstance(net, naja.SNLBusNet):
             entry["msb"] = net.getMSB()
             entry["lsb"] = net.getLSB()

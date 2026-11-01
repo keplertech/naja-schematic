@@ -27,6 +27,8 @@ using json = nlohmann::json;
 #include "TraceStore.h"
 #include "TraceView.h"
 #include "PropertiesView.h"
+#include "ReviewStore.h"
+#include "ReviewView.h"
 #include "CousineFont.h"
 #include "DroidSansFont.h"
 
@@ -157,7 +159,8 @@ static void renderShortcutsWindow(bool& open) {
     {"Click a box",                  "Select the instance (also in the tree)"},
     {"Click a wire",                 "Select (highlight) its net"},
     {"Click a box's hierarchy glyph","Show / hide what is inside it"},
-    {"Right-click",                  "Context menu: trace, sources, properties, fit, clear"},
+    {"Right-click",                  "Context menu: trace, sources, properties, comment, fit, clear"},
+    {"Right-click a tree row",       "Its menu; Add Comment... starts a review thread (with --review)"},
   };
   auto table = [](const char* id, const Row* rows, size_t n) {
     if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) return;
@@ -270,6 +273,7 @@ void setupProvider(AppState& state) {
       PropertiesStore::clear(); // stale properties reference the old design
       SourceStore::clear();     // so do source references
       SelectionStore::clear();  // so does a stale selection
+      ReviewStore::clear();     // the host pushes the review again for this design
       const auto& root = j["root"];
       if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
         InstanceResponseJson data = root.get<InstanceResponseJson>();
@@ -358,7 +362,7 @@ void setupProvider(AppState& state) {
       }
       parent->createChildren();
       for (auto& net : data.children) {
-        parent->createNetNode(net.name, net.msb, net.lsb, net.has_sources);
+        parent->createNetNode(net.name, net.msb, net.lsb, net.has_sources, net.net_id);
       }
     } else if (resp == "equipotential_response") {
       // A trace_id (echoed from a tree "Show Equipotential") makes the net a
@@ -495,7 +499,7 @@ void setupProvider(AppState& state) {
       std::string subject = j.value("subject", std::string(""));
       Console::Log("Properties received: " + std::to_string(data.properties.size()) + " item(s)");
       PropertiesStore::setProperties(subject, std::move(data.properties));
-      state.focusPropertiesTab = true;
+      state.focusPropertiesTab = !state.reviewTabShown;
     } else if (resp == "diagnosis_response") {
       std::vector<DiagnosisItem> items;
       if (j.contains("items") && j["items"].is_array()) {
@@ -506,6 +510,8 @@ void setupProvider(AppState& state) {
       Console::Log("Diagnosis received: " + std::to_string(items.size()) + " item(s)");
       DiagnosisStore::setDiagnostics(std::move(items));
       state.focusDiagnosisTab = true;
+    } else if (resp == "review_response") {
+      ReviewStore::setResponse(j);
     } else if (resp == "export_svg") {
       state.svgExportRequested = true;
     } else if (resp == "focus_instance") {
@@ -541,6 +547,13 @@ void setupProvider(AppState& state) {
       SelectionStore::select(*path, SelectionStore::Origin::Host);
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
+      // A refused review write: shown in the Review tab.
+      const std::string request = j.value("request", std::string());
+      if (request.rfind("review_", 0) == 0) {
+        const std::string message = j.value("message", std::string("refused"));
+        Console::Error(request + ": " + message);
+        ReviewStore::setError(message);
+      }
     }
   });
 
@@ -947,6 +960,17 @@ bool appFrame(AppState& state) {
           //   DiagnosisView::render();
           //   ImGui::EndTabItem();
           // }
+          // "Review (3)": the open threads. A fixed ID, so the tab stays put
+          // as the count changes.
+          size_t open = 0;
+          for (const auto& t : ReviewStore::threads()) open += t.isOpen();
+          std::string reviewTab = open ? "Review (" + std::to_string(open) + ")###Review"
+                                       : std::string("Review###Review");
+          state.reviewTabShown = ImGui::BeginTabItem(reviewTab.c_str());
+          if (state.reviewTabShown) {
+            ReviewView::render(state.provider);
+            ImGui::EndTabItem();
+          }
           ImGuiTabItemFlags srcFlags = state.focusSourceTab ? ImGuiTabItemFlags_SetSelected : 0;
           if (ImGui::BeginTabItem("Source", nullptr, srcFlags)) {
             SourceView::render(state.provider);
@@ -970,6 +994,7 @@ bool appFrame(AppState& state) {
   ImGui::End();
 
   renderShortcutsWindow(shortcutsOpen);
+  ReviewView::renderComposer(state.provider);
 
   // === About modal ===
   if (aboutOpen) { ImGui::OpenPopup("About naja-schematic"); aboutOpen = false; }

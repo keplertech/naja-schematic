@@ -121,6 +121,9 @@ void from_json(const json& j, NetsResponseJson& n) {
       if (child.contains("name") && !child["name"].is_null()) {
         net.name = child["name"].get<std::string>();
       }
+      if (child.contains("net_id") && child["net_id"].is_number_unsigned()) {
+        net.net_id = child["net_id"].get<unsigned>();
+      }
 
       if (child.contains("msb") && !child["msb"].is_null()) {
         net.msb = child["msb"].get<int>();

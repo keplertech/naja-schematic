@@ -2,8 +2,10 @@
 
 How people (and agents) leave findings on a netlist and pass them to each
 other, asynchronously, through git. Status: threads are implemented in the
-Python host (`python/naja_schematic/review.py`, najaeda >= 0.7.34 for net ids); the C++ viewer and native
-provider, and saved views, are not yet. This document is the contract the two backends
+Python host (`python/naja_schematic/review.py`, najaeda >= 0.7.34 for net ids)
+and the viewer (`src/ReviewStore.cpp`, `src/ReviewView.cpp`), so the browser
+and notebook viewers read and write reviews; the native provider (desktop
+app) and saved views are not yet. This document is the contract the two backends
 (`src/LocalSNLProvider.cpp`, `python/naja_schematic/protocol.py`) and any
 external writer (scripts, naja-agent) follow.
 
@@ -267,10 +269,11 @@ disk).
 - Without a review directory, or without an author, write requests fail and
   the viewer hides its write actions.
 
-The viewer anchors by ids it already has: instance `id_path`s everywhere,
-and a term's `child_id` (`terms_response`, `expand_instance_terms`). Nets
-carry no id on the wire yet: `nets_response` entries need a `net_id`
-(both backends) before the tree can open a thread on a net.
+The viewer anchors by ids it already has: instance `id_path`s everywhere, a
+term's `child_id` (`terms_response`, `expand_instance_terms`) and a net's
+`net_id` (`nets_response`, both backends; a net row from an older host has
+none and offers no comment). It matches threads to tree rows and schematic
+boxes the same way, by ids, and only `exact` ones.
 
 Shared cases for both backends: `tests/data/review_protocol_cases.json`.
 
