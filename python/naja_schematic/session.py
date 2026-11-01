@@ -30,6 +30,7 @@ import time
 from najaeda import naja
 
 from . import protocol
+from .review import ReviewError
 
 log = logging.getLogger("naja_schematic")
 
@@ -135,6 +136,9 @@ def lock_runner(lock):
     return run
 
 
+_REVIEW_WRITES = ("review_add_thread", "review_add_event")
+
+
 class ViewerSession:
     """The Python side of one viewer (or of several showing the same view).
 
@@ -147,6 +151,8 @@ class ViewerSession:
     `source_roots` lists the directories relative source file references
     are looked up in, `source_maps` (FROM, TO) path prefixes to rewrite for
     files recorded on another machine (see protocol.resolve_source_file()).
+    `review`, a review.Review, is sent to the viewer after every root load
+    and written by its review_* requests (see docs/review_format.md).
 
     Design generations: the session numbers the designs it has shown,
     starting at 0; design_changed() moves to the next one. Every message to
@@ -162,8 +168,9 @@ class ViewerSession:
     """
 
     def __init__(self, push=None, run=None, diagnosis=None, dispatch=None, source_roots=(),
-                 source_maps=()):
+                 source_maps=(), review=None):
         self._push = push
+        self.review = review
         # Stamped now and at each design_changed(): the design the viewer
         # shows was loaded by then, so a source file modified later is stale.
         self._source_paths = protocol.SourcePaths(
@@ -228,7 +235,16 @@ class ViewerSession:
             if kind == "svg_exported":
                 svg = request.get("svg")
                 return generation, svg if isinstance(svg, str) else "", pushes
-            return generation, protocol.handle_request(request, self._source_paths), pushes
+            if kind in _REVIEW_WRITES:
+                return generation, self._review_write(kind, request), pushes
+            replies = protocol.handle_request(request, self._source_paths)
+            if self.review is not None and any(r.get("response") == "root_response"
+                                               for r in replies):
+                # Under `run`: anchors resolve against the universe. A root
+                # load is where an edited design shows: identify it afresh.
+                self.review.design_changed()
+                pushes = pushes + [self._review_response()]
+            return generation, replies, pushes
 
         generation, result, pushes = self._run(handle)
         if result is None:
@@ -240,6 +256,11 @@ class ViewerSession:
         if kind == "svg_exported":
             self._commit_svg(generation, result)
             return []
+        if kind in _REVIEW_WRITES and self._push is not None and result[0].get(
+                "response") == "review_response":
+            # Every viewer shows the review, not just the one that wrote.
+            self._send(self._stamp(result[0], generation))
+            return []
         replies = []
         for reply in result:
             replies.append(self._stamp(reply, generation))
@@ -248,6 +269,32 @@ class ViewerSession:
             if reply.get("response") == "root_response":
                 replies.extend(self._stamp(p, generation) for p in pushes)
         return replies
+
+    def _review_response(self):
+        return self.review.response(naja.NLUniverse.get().getTopDesign()
+                                    if naja.NLUniverse.get() else None)
+
+    def _review_write(self, kind, request):
+        # Under `run`. A refused write is an error reply to that viewer only.
+        if self.review is None:
+            return [{"response": "error", "request": kind,
+                     "message": "no review directory: start with --review DIR"}]
+        try:
+            if kind == "review_add_thread":
+                u = naja.NLUniverse.get()
+                self.review.add_thread(
+                    u.getTopDesign() if u else None, request.get("anchor"), request.get("text"),
+                    severity=request.get("severity", "info"), labels=request.get("labels"),
+                    title=request.get("title", ""), view=request.get("view"))
+            else:
+                self.review.add_event(request.get("thread"), text=request.get("text"),
+                                      status=request.get("status"),
+                                      severity=request.get("severity"),
+                                      labels=request.get("labels"))
+        except (ReviewError, OSError) as e:
+            log.warning("%s refused: %s", kind, e)
+            return [{"response": "error", "request": kind, "message": str(e)}]
+        return [self._review_response()]
 
     @staticmethod
     def _resolve_selection(request):
@@ -364,6 +411,8 @@ class ViewerSession:
         if instance is not None:
             names, ids = instance_paths(instance)
             focus_push = protocol.focus_instance(names, ids)
+        if self.review is not None:
+            self.review.design_changed()
         with self._state_lock:
             self._generation += 1
             generation = self._generation

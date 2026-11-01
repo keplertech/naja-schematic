@@ -46,7 +46,7 @@ class Schematic(anywidget.AnyWidget):
     # Kernel-side only, like the selection.
     svg = traitlets.Unicode(default_value=None, allow_none=True)
 
-    def __init__(self, source_roots=(), source_maps=(), **kwargs):
+    def __init__(self, source_roots=(), source_maps=(), review=None, **kwargs):
         # Read before AnyWidget.__init__, which turns it into a synced trait.
         # Not a class attribute: that would read the bundle at import time
         # and fail the import when no bundle is installed.
@@ -55,7 +55,7 @@ class Schematic(anywidget.AnyWidget):
         # Requests are answered on the kernel thread, like the cells that
         # edit the design, so the session's default runner is enough.
         self._session = ViewerSession(push=self._send_json, source_roots=source_roots,
-                                      source_maps=source_maps)
+                                      source_maps=source_maps, review=review)
         self._session.on_select(self._on_viewer_selection)
         self.on_msg(self._on_viewer_message)
 
@@ -149,7 +149,8 @@ class Schematic(anywidget.AnyWidget):
         return handler
 
 
-def show(instance=None, *, height=600, diagnosis=None, source_roots=(), source_maps=()):
+def show(instance=None, *, height=600, diagnosis=None, source_roots=(), source_maps=(),
+         review=None):
     """Display a view of the design currently loaded with najaeda.
 
     Evaluate it as the last expression of a cell (or pass it to
@@ -160,10 +161,12 @@ def show(instance=None, *, height=600, diagnosis=None, source_roots=(), source_m
     `source_roots` lists the directories relative source file references
     (Show Sources) are looked up in, before the current directory;
     `source_maps`, (FROM, TO) path prefixes to rewrite for files recorded on
-    another machine, e.g. [("/home/ci/flow", "/work/flow")].
+    another machine, e.g. [("/home/ci/flow", "/work/flow")]. `review`, a
+    naja_schematic.Review, shows its threads and lets the viewer add to it.
     """
     # (anywidget itself turns on Colab's custom widget manager.)
-    view = Schematic(height=height, source_roots=source_roots, source_maps=source_maps)
+    view = Schematic(height=height, source_roots=source_roots, source_maps=source_maps,
+                     review=review)
     if diagnosis is not None:
         view.annotate(diagnosis)
     if instance is not None:
