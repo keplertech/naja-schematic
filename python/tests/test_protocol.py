@@ -1,6 +1,8 @@
+import ast
 import json
 import subprocess
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 from najaeda import naja
@@ -164,8 +166,10 @@ def test_focus_instance_message():
 
 
 def test_get_primitive_type_uses_naja_modeling_not_names():
-    checks = ("isAssign", "isSequential", "isInv", "isBuf", "isAnd", "isNand",
-              "isOr", "isNor", "isXor", "isXnor", "isConst0", "isConst1")
+    checks = ("isAssign", "isSequential", "isAddSub", "isSubtract", "isMultiply",
+              "isShift", "isShiftRight", "isShiftArithmetic", "isDivMod", "isMux",
+              "isInv", "isBuf", "isAnd", "isNand", "isOr", "isNor", "isXor", "isXnor",
+              "isConst0", "isConst1")
 
     output = SimpleNamespace(getDirection=lambda: naja.SNLTerm.Direction.Output)
 
@@ -185,22 +189,63 @@ def test_get_primitive_type_uses_naja_modeling_not_names():
     # A multi-output cell never reaches the truth-table checks (naja throws).
     assert protocol.get_primitive_type(model("FA", "isXor", outputs=2)) == "unknown"
     assert protocol.get_primitive_type(model("DFF2", "isSequential", outputs=2)) == "dff"
+    # A mux at any width: a bus mux is one model with an output per bit.
+    assert protocol.get_primitive_type(model("MX2", "isMux")) == "mux"
+    assert protocol.get_primitive_type(model("MX2_W4", "isMux", outputs=4)) == "mux"
+    # Word-level operators, at any width too.
+    assert protocol.get_primitive_type(model("ADD", "isAddSub", outputs=4)) == "add"
+    assert protocol.get_primitive_type(model("SUB", "isAddSub", "isSubtract", outputs=4)) == "sub"
+    assert protocol.get_primitive_type(model("MUL", "isMultiply", outputs=4)) == "mul"
+    assert protocol.get_primitive_type(model("SHL", "isShift", outputs=4)) == "shl"
+    assert protocol.get_primitive_type(model("SHR", "isShift", "isShiftRight", outputs=4)) == "shr"
+    assert protocol.get_primitive_type(
+        model("SRA", "isShift", "isShiftRight", "isShiftArithmetic", outputs=4)) == "ashr"
+    assert protocol.get_primitive_type(model("DIV", "isDivMod", outputs=8)) == "divmod"
 
 
-def test_get_primitive_type_of_full_adder(tmp_path):
-    # SystemVerilog `a + b` elaborates to NLDB0 full adders (two outputs),
-    # whose truth-table checks abort the process inside najaeda: run it in a
-    # subprocess, which also keeps this design out of the session's universe.
-    (tmp_path / "add.sv").write_text(
-        "module top(input [1:0] a, b, output [1:0] y); assign y = a + b; endmodule\n")
+REPO_DATA = Path(__file__).parents[2] / "tests" / "data"
+
+
+def _primitive_types_in_subprocess(load):
+    # Run in a subprocess, which keeps this design out of the session's
+    # universe. `load` is an NLDB method call on `db`. Returns
+    # {model name: primitive_type} over the whole hierarchy.
     script = (
-        "from najaeda import netlist, naja\n"
+        "from najaeda import naja\n"
         "from naja_schematic import protocol\n"
-        "netlist.load_system_verilog(['add.sv'])\n"
-        "top = naja.NLUniverse.get().getTopDesign()\n"
-        "print(sorted({protocol.get_primitive_type(i.getModel())\n"
-        "              for i in top.getInstances()}))\n")
-    run = subprocess.run([sys.executable, "-c", script], cwd=tmp_path,
+        "db = naja.NLDB.create(naja.NLUniverse.create())\n"
+        "naja.NLUniverse.get().setTopDB(db)\n"
+        f"db.{load}\n"
+        "types = {}\n"
+        "def walk(d):\n"
+        "    for i in d.getInstances():\n"
+        "        m = i.getModel()\n"
+        "        types[m.getName()] = protocol.get_primitive_type(m)\n"
+        "        if not m.isPrimitive(): walk(m)\n"
+        "walk(naja.NLUniverse.get().getTopDesign())\n"
+        "print(sorted(types.items()))\n")
+    run = subprocess.run([sys.executable, "-c", script],
                          capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
-    assert run.stdout.strip().splitlines()[-1] == "['unknown']"
+    return dict(ast.literal_eval(run.stdout.strip().splitlines()[-1]))
+
+
+def test_get_primitive_type_of_word_level_operators():
+    # The same SystemVerilog, and answers, as LocalSNLProvider's
+    # WordLevelOperatorsGetTheirPrimitiveType test.
+    types = _primitive_types_in_subprocess(
+        f"loadSystemVerilog([{str(REPO_DATA / 'sv' / 'operators.sv')!r}])")
+    assert types == {
+        "naja_add__w4": "add", "naja_sub__w4": "sub", "naja_mul__w4": "mul",
+        "naja_shift__w4_c2_r0_a0": "shl", "naja_shift__w4_c2_r1_a0": "shr",
+        "naja_shift__w4_c2_r1_a1": "ashr", "naja_divmod__u_w4": "divmod",
+        "naja_mux2__w4": "mux", "naja_mux2__w1": "mux",
+    }
+
+
+def test_get_primitive_type_of_vhdl():
+    vhdl = [str(REPO_DATA / "vhdl" / f) for f in ("top.vhd", "leaf.vhd")]
+    types = _primitive_types_in_subprocess(
+        f"loadVHDL({vhdl!r}, diagnostics_report_path=None)")
+    assert types["naja_mux2__w1"] == "mux"
+    assert types["leaf"] == "unknown"  # hierarchical

@@ -69,7 +69,8 @@ float footprintWidth(const InstanceShape& s, const NameWidthFn& width);
 
 // ---------------------------------------------------------------------------
 // Symbols. A gate (AND/OR/XOR families, INV/BUF, assign, tie cells) is drawn as its
-// standard symbol, sized by its input count; anything else is a box sized to
+// standard symbol, sized by its input count; anything else (including a mux
+// and a word-level operator, see below) is a box sized to
 // fit its pin names, which are drawn inside it. Pins sit on the kPinPitch
 // grid: a gate's inputs are centered on its single output, a box's pins run
 // down from the top on each side. Pin offsets are from the symbol's top edge.
@@ -88,6 +89,18 @@ bool isGateSymbol(PrimitiveType type);
 SymbolGeometry symbolGeometry(PrimitiveType type,
                               const std::vector<std::string>& leftNames,
                               const std::vector<std::string>& rightNames);
+
+// A mux is a box whose right side is narrowed to a trapezoid: its inputs run
+// down from the top (the select pin, last, at the bottom), its outputs are
+// centered on the right. muxSlant() is how far the right edge's ends are
+// pulled in, top and bottom, for a mux `h` high with `rightPins` outputs --
+// always short of the outermost output, so every pin touches the body.
+float muxSlant(float h, size_t rightPins);
+
+// Word-level operators (add, sub, mul, shifts, divmod) are boxes with room
+// for their operator glyph between the two columns of pin names.
+bool isOperatorSymbol(PrimitiveType type);
+inline constexpr float kOperatorGlyphW = 2.f * kPinPitch;
 
 // ---------------------------------------------------------------------------
 // Layered placement (Sugiyama-style):

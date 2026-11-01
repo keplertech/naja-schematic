@@ -132,9 +132,34 @@ SymbolGeometry symbolGeometry(PrimitiveType type,
     const size_t rows = std::max(nL, nR);
     g.h = std::max(2.f * kPinPitch, kPinPitch * float(rows + 1));
     for (size_t i = 0; i < nL; ++i) g.leftY.push_back(kPinPitch * float(i + 1));
-    for (size_t i = 0; i < nR; ++i) g.rightY.push_back(kPinPitch * float(i + 1));
-    g.w = snapUp(std::max(6.f * kGrid, labelWidth(leftNames) + labelWidth(rightNames) + 3.f * kGrid), kGrid);
+    if (type == PrimitiveType::Mux) {
+        // Outputs centered: h is a kPinPitch multiple, so h/2 (and every
+        // pin a pitch from it) is on the grid.
+        for (size_t i = 0; i < nR; ++i)
+            g.rightY.push_back(0.5f * g.h + kPinPitch * (float(i) - 0.5f * float(nR - 1)));
+    } else {
+        for (size_t i = 0; i < nR; ++i) g.rightY.push_back(kPinPitch * float(i + 1));
+    }
+    const float glyph = isOperatorSymbol(type) ? kOperatorGlyphW : 0.f;
+    g.w = snapUp(std::max(6.f * kGrid, labelWidth(leftNames) + labelWidth(rightNames) + glyph + 3.f * kGrid), kGrid);
     return g;
+}
+
+float muxSlant(float h, size_t rightPins) {
+    const float outerPin = 0.5f * h - 0.5f * kPinPitch * float(rightPins ? rightPins - 1 : 0);
+    return std::max(0.f, std::min(0.25f * h, outerPin - 0.5f * kPinPitch));
+}
+
+bool isOperatorSymbol(PrimitiveType type) {
+    switch (type) {
+        case PrimitiveType::Add:  case PrimitiveType::Sub:
+        case PrimitiveType::Mul:  case PrimitiveType::DivMod:
+        case PrimitiveType::Shl:  case PrimitiveType::Shr:
+        case PrimitiveType::Ashr:
+            return true;
+        default:
+            return false;
+    }
 }
 
 // ---------------------------------------------------------------------------

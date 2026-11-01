@@ -17,7 +17,11 @@ from najaeda import naja
 log = logging.getLogger("naja_schematic")
 
 # 0.7.29: typed source references (getSourceDeclaration/getSourceOrigins).
-MIN_NAJAEDA_VERSION = (0, 7, 29)  # keep in step with pyproject.toml
+# 0.7.31: load_gate_level_verilog/GateLevelVerilogConfig (load_verilog and
+# VerilogConfig now warn).
+# 0.7.34: word-level operator checks (isAddSub, isMultiply, isShift, isDivMod,
+# ...) and loadSystemVerilog's frontend_options.
+MIN_NAJAEDA_VERSION = (0, 7, 34)  # keep in step with pyproject.toml
 
 
 def check_najaeda_version():
@@ -64,10 +68,10 @@ def has_visible_primitive_instances(design):
 # sequential model) -- never from its name. A cell naja has no model for is
 # "unknown" and draws as the generic box. LocalSNLProvider.cpp's
 # getPrimitiveType() mirrors this, same as the rest of the wire protocol.
-# The truth-table checks are only asked of a cell with exactly one output
-# bit: on a multi-output cell (NLDB0's full adder, a multi-output Liberty
-# cell) naja's getTruthTable() throws, and najaeda doesn't translate that
-# exception -- it aborts the process.
+# The gate checks are only asked of a cell with exactly one output bit: a
+# multi-output cell (NLDB0's full adder, a multi-output Liberty cell) is
+# never drawn as a gate. A mux and the NLDB0 word-level operators are
+# recognized at any width (a bus mux is one NLDB0 mux2 with bus pins).
 _PRIMITIVE_TYPE_CHECKS = (
     ("isConst0", "tie0"),
     ("isConst1", "tie1"),
@@ -88,6 +92,18 @@ def get_primitive_type(model):
         return "assign"
     if model.isSequential():
         return "dff"
+    if model.isAddSub():
+        return "sub" if model.isSubtract() else "add"
+    if model.isMultiply():
+        return "mul"
+    if model.isShift():
+        if not model.isShiftRight():
+            return "shl"
+        return "ashr" if model.isShiftArithmetic() else "shr"
+    if model.isDivMod():
+        return "divmod"
+    if model.isMux():
+        return "mux"
     if output_bit_count(model) != 1:
         return "unknown"
     for check, ptype in _PRIMITIVE_TYPE_CHECKS:
@@ -1051,8 +1067,12 @@ def handle_message(message):
     return [json.dumps(r) for r in handle_request(json.loads(message))]
 
 
-def _instance_id_path(instance):
-    # A najaeda netlist.Instance's id path (top excluded); None for anything else.
+def instance_id_path(instance):
+    # The id path (top excluded) of a naja SNLPath, or of a najaeda
+    # netlist.Instance (read through its pathIDs, without using netlist);
+    # None for anything else.
+    if isinstance(instance, naja.SNLPath):
+        return list(instance.getInstanceIDs())
     ids = getattr(instance, "pathIDs", None)
     return list(ids) if ids is not None else None
 
@@ -1072,9 +1092,10 @@ def _instance_name_path(ids):
 
 
 def _diagnosis_item(item):
-    # An item whose "path" is a najaeda netlist.Instance gets its id_path
-    # (what the viewer matches first) and the matching name path.
-    ids = _instance_id_path(item.get("path"))
+    # An item whose "path" is a naja SNLPath (or a najaeda netlist.Instance)
+    # gets its id_path (what the viewer matches first) and the matching name
+    # path.
+    ids = instance_id_path(item.get("path"))
     if ids is None:
         return item
     return {**item, "path": _instance_name_path(ids), "id_path": ids}
@@ -1085,8 +1106,8 @@ def diagnosis_response(items):
     items (dicts with kind/path/id_path/terminal/severity/message/source),
     or from a {"items": [...]} document as File > Load Diagnosis JSON...
     accepts. An item names its instance by "id_path" (instance ids,
-    preferred) and/or "path" (instance names); "path" may also be a najaeda
-    netlist.Instance, turned into both here."""
+    preferred) and/or "path" (instance names); "path" may also be a naja
+    SNLPath or a najaeda netlist.Instance, turned into both here."""
     if isinstance(items, dict):
         items = items.get("items", [])
     return {"response": "diagnosis_response", "items": [_diagnosis_item(i) for i in items]}

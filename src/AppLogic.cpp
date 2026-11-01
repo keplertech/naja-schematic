@@ -616,6 +616,9 @@ bool appFrame(AppState& state) {
   static bool vrlYosysSrc         = false;
   static char svFilesBuf[8192]    = {};
   static char svTopBuf[256]       = {};
+  static bool vhdlDialogOpen      = false;
+  static char vhdlFilesBuf[8192]  = {};
+  static char vhdlTopBuf[256]     = {};
 #endif
 
   handleShortcuts(state);
@@ -626,6 +629,7 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Open naja-if...",        "")) { snlDialogOpen = true; snlPathBuf[0] = '\0'; }
       if (ImGui::MenuItem("Open Verilog...",        "")) { vrlDialogOpen = true; vrlFilesBuf[0] = '\0'; vrlLibertyBuf[0] = '\0'; }
       if (ImGui::MenuItem("Open SystemVerilog...",  "")) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; svTopBuf[0] = '\0'; }
+      if (ImGui::MenuItem("Open VHDL...",           "")) { vhdlDialogOpen = true; vhdlFilesBuf[0] = '\0'; vhdlTopBuf[0] = '\0'; }
       ImGui::Separator();
       // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
       // if (ImGui::MenuItem("Load Diagnosis JSON...", "")) {
@@ -778,6 +782,35 @@ bool appFrame(AppState& state) {
     if (ImGui::Button("Open", ImVec2(120,0)) && svFilesBuf[0]) {
       if (localProvider) {
         localProvider->loadSystemVerilog(splitLines(svFilesBuf), svTopBuf);
+        reloadNetlist(state);
+      }
+      ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+  }
+
+  // ==== Open VHDL dialog ====
+  if (vhdlDialogOpen) { ImGui::OpenPopup("Open VHDL"); vhdlDialogOpen = false; }
+  ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Always);
+  if (ImGui::BeginPopupModal("Open VHDL", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+    ImGui::Text("VHDL files, in any order (one per line):");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Browse...")) {
+      auto files = NativeFileDialog::pickFiles("Select VHDL Files", {"vhd", "vhdl"});
+      appendPaths(vhdlFilesBuf, sizeof(vhdlFilesBuf), files);
+    }
+    ImGui::InputTextMultiline("##vhdlfiles", vhdlFilesBuf, sizeof(vhdlFilesBuf), ImVec2(-1, 140));
+    ImGui::Spacing();
+    ImGui::Text("Top entity (optional -- else the unique uninstantiated one):");
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputText("##vhdltop", vhdlTopBuf, sizeof(vhdlTopBuf));
+    ImGui::TextDisabled("naja's VHDL frontend is experimental (bit/bit_vector subset).");
+    ImGui::Spacing();
+    if (ImGui::Button("Open", ImVec2(120,0)) && vhdlFilesBuf[0]) {
+      if (localProvider) {
+        localProvider->loadVHDL(splitLines(vhdlFilesBuf), vhdlTopBuf);
         reloadNetlist(state);
       }
       ImGui::CloseCurrentPopup();

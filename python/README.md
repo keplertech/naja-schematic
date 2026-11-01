@@ -25,7 +25,7 @@ from najaeda import netlist
 import naja_schematic
 
 netlist.load_primitives("xilinx")
-top = netlist.load_verilog("design.v")
+top = netlist.load_gate_level_verilog("design.v")
 
 naja_schematic.show()          # interactive view in the cell output
 ```
@@ -43,23 +43,25 @@ view
 ```
 
 The view and your najaeda code can point each other at instances.
-`show_instance()` takes a najaeda `Instance`, a list of instance ids (as
-`Instance.pathIDs`) or a list of instance names (a plain string is one
+`show_instance()` takes a najaeda `Instance` or a naja `SNLPath`, a list
+of instance ids (as `Instance.pathIDs`) or a list of instance names (a plain string is one
 name, never split on `/`, since escaped names can contain it). Anonymous
 instances have no name to go by: reach them with an `Instance` or ids. The viewer opens its tree down to that instance, selects it, and
 draws it alone in the schematic. Each pin there is open, so you can click
 one to add its net and grow the schematic from the instance. In the other
 direction, the instance selected in the viewer (click it in the tree or the
-schematic) is available as a najaeda `Instance`:
+schematic) is available as a naja `SNLPath` (najaeda's raw API), and its
+ids, which give the najaeda `Instance`, as `selected_id_path`:
 
 ```python
 view.show_instance(netlist.get_instance_by_path(["u_sub", "u_and"]))
 view.show_instance(["u_sub", "u_and"]) # same thing
 
-inst = view.selected                   # what the user clicked, or None
-inst.get_model_name()
+path = view.selected                   # what the user clicked (an SNLPath), or None
+path.getModel().getName()
+inst = netlist.Instance(view.selected_id_path)
 
-view.on_select(lambda inst: print("selected", inst))
+view.on_select(lambda path: print("selected", path))
 ```
 
 `naja_schematic.show(inst)` (or `show(["u_sub", "u_and"])`) starts a new
@@ -95,7 +97,7 @@ server.annotate(items)            # diagnosis overlay, kept across reloads
 server.show_instance([3, 7])      # instance ids, names, or a najaeda Instance
 server.on_select(lambda id_path, path: print("selected", path))
 with server.replacing_design():   # holds design_lock, then viewers reload
-    netlist.load_verilog("other.v")
+    netlist.load_gate_level_verilog("other.v")
 server.stop()
 ```
 

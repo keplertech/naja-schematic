@@ -10,6 +10,7 @@ imgui.ini
 # Private, local-only working notes (never shared/committed).
 notes/
 naja_sv_diagnostics.log
+naja_vhdl_diagnostics.log
 
 # Viewer bundle: built by CI (-DNAJA_SCHEMATIC_WASM_MODULE=ON), shipped in the wheel.
 python/naja_schematic/static/naja-schematic.js

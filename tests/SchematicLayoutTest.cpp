@@ -217,6 +217,42 @@ TEST(Symbols, GateWithSeveralOutputsIsDrawnAsABox) {
   EXPECT_EQ(g.rightY, (std::vector<float>{20.f, 40.f}));
 }
 
+TEST(Symbols, MuxInputsRunDownFromTheTopAndItsOutputIsCentered) {
+  auto g = symbolGeometry(PrimitiveType::Mux, {"A", "B", "S"}, {"Y"});
+  EXPECT_FALSE(isGateSymbol(PrimitiveType::Mux));
+  EXPECT_EQ(g.leftY, (std::vector<float>{20.f, 40.f, 60.f}));
+  EXPECT_EQ(g.rightY, (std::vector<float>{0.5f * g.h}));
+}
+
+TEST(Symbols, MuxSlantStopsShortOfItsOutermostOutput) {
+  for (size_t nL = 1; nL <= 6; ++nL)
+    for (size_t nR = 1; nR <= nL; ++nR) {
+      auto g = symbolGeometry(PrimitiveType::Mux, std::vector<std::string>(nL, "A"),
+                              std::vector<std::string>(nR, "Y"));
+      EXPECT_TRUE(onGrid(g.w) && onGrid(g.h)) << nL << "x" << nR;
+      for (float y : g.rightY) EXPECT_TRUE(onGrid(y)) << nL << "x" << nR;
+      const float slant = muxSlant(g.h, nR);
+      EXPECT_GT(slant, 0.f) << nL << "x" << nR;
+      EXPECT_LT(slant, g.rightY.front()) << nL << "x" << nR;
+      EXPECT_GT(g.h - slant, g.rightY.back()) << nL << "x" << nR;
+    }
+}
+
+TEST(Symbols, OperatorBoxHasRoomForItsGlyph) {
+  for (auto type : {PrimitiveType::Add, PrimitiveType::Sub, PrimitiveType::Mul,
+                    PrimitiveType::Shl, PrimitiveType::Shr, PrimitiveType::Ashr,
+                    PrimitiveType::DivMod}) {
+    EXPECT_TRUE(isOperatorSymbol(type));
+    EXPECT_FALSE(isGateSymbol(type));
+    auto op  = symbolGeometry(type, {"A", "B"}, {"Y"});
+    auto box = symbolGeometry(PrimitiveType::Unknown, {"A", "B"}, {"Y"});
+    EXPECT_GE(op.w, box.w + kOperatorGlyphW - kGrid) << int(type);
+    EXPECT_TRUE(onGrid(op.w)) << int(type);
+    EXPECT_EQ(op.leftY, box.leftY);
+  }
+  EXPECT_FALSE(isOperatorSymbol(PrimitiveType::Mux));
+}
+
 // ---------------------------------------------------------------------------
 // layeredPlacement
 // ---------------------------------------------------------------------------

@@ -31,7 +31,7 @@ from najaeda import netlist
 import naja_schematic
 
 netlist.load_liberty("cells.lib")
-netlist.load_verilog("design.v")
+netlist.load_gate_level_verilog("design.v")
 naja_schematic.show()          # the viewer, in the cell output
 ```
 
@@ -71,8 +71,9 @@ your own tool).
   nets from a JSON report, e.g. from a formal equivalence check.
 - **SVG export** of the schematic, from the File menu or headless from the
   command line.
-- Loads gate-level Verilog (with Liberty), SystemVerilog, or naja SNL
-  netlists.
+- Loads gate-level Verilog (with Liberty), SystemVerilog, VHDL
+  (experimental) or naja SNL netlists. Muxes are drawn as muxes, and the
+  adders, multipliers and shifters SystemVerilog becomes as operator boxes.
 
 ## Command-line options
 
@@ -82,8 +83,9 @@ plus options, in any order. Their flags differ slightly:
 | Desktop app (`naja-schematic-standalone`) | Browser server (`naja-schematic`) | What it does |
 |---|---|---|
 | `design.v` | `--verilog design.v` | Load a gate-level Verilog netlist |
-| `design.sv` | `--sv a.sv b.sv --top top` | Load SystemVerilog (elaborated with slang) |
+| `design.sv --top top` | `--sv a.sv b.sv --top top` | Load SystemVerilog (elaborated with slang) |
 | | `--flist design.f`, `-D NAME=VALUE` | SystemVerilog command file, defines |
+| `a.vhd b.vhd --top top` | `--vhdl a.vhd b.vhd --top top` | Load VHDL, files in any order (naja's experimental frontend) |
 | `snl_dir/` | | Load a naja-if (SNL) netlist directory |
 | `--liberty a.lib --liberty b.lib` | `--liberty a.lib b.lib` | Liberty cell libraries (Verilog only) |
 | `--diagnosis report.json` | `--diagnosis report.json` | Show a diagnosis report on the design |
@@ -93,7 +95,7 @@ plus options, in any order. Their flags differ slightly:
 | | `--open` | Open the viewer in a browser |
 | | `--port N`, `--host H` | Where to serve (default `localhost:8081`) |
 
-Without a design, the desktop app starts empty: use the **File** menu (Open Verilog..., Open SystemVerilog..., Open naja-if...). A
+Without a design, the desktop app starts empty: use the **File** menu (Open Verilog..., Open SystemVerilog..., Open VHDL..., Open naja-if...). A
 diagnosis report can also be loaded later with **File > Load Diagnosis
 JSON...**. `naja-schematic --help` lists every server option.
 

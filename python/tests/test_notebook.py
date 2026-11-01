@@ -60,7 +60,7 @@ assert {"name": "Model", "value": "pwm_channel"} in props["properties"], props
 
 assert _ask({"request": "instance_selected", "path": ["u_green"]}) == []
 assert view.selected_path == ["u_green"]
-assert view.selected.get_name() == "u_green"
+assert netlist.Instance(view.selected_id_path).get_name() == "u_green"
 
 # Show Sources, in packages that have it (from 0.2.0; the colab job plays
 # the current PyPI release, which may predate it): u_red's instantiation

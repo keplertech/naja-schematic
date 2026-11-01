@@ -216,6 +216,7 @@ else()
     naja_snl_verilog
     naja_snl_liberty
     naja_snl_systemverilog
+    naja_snl_vhdl
     naja_nl_dump
     ${PLATFORM_FILE_DIALOG_LIBS}
   )
@@ -296,6 +297,7 @@ if(NOT EMSCRIPTEN_BUILD)
       naja_snl_verilog
       naja_snl_liberty
       naja_snl_systemverilog
+      naja_snl_vhdl
       naja_nl_dump
     )
     target_compile_definitions(naja-schematic-provider-tests PRIVATE

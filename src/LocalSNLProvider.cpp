@@ -41,6 +41,7 @@
 // naja formats
 #include "SNLVRLConstructor.h"
 #include "SNLSVConstructor.h"
+#include "VHDLConstructor.h"
 #include "SNLLibertyConstructor.h"
 // naja serialization
 #include "SNLCapnP.h"
@@ -136,9 +137,10 @@ static std::string displayChain(const std::vector<SNLInstance*>& chain) {
 // (e.g. gate-level Verilog loaded without Liberty) is Unknown and draws as
 // the generic box. protocol.py's get_primitive_type() mirrors this, same as
 // the rest of the wire protocol (see CLAUDE.md).
-// The truth-table checks are only asked of a cell with exactly one output
-// bit: on a multi-output cell (NLDB0's full adder, a multi-output Liberty
-// cell) naja's getTruthTable() throws from isConst0()/isInv()/...
+// The gate checks are only asked of a cell with exactly one output bit: a
+// multi-output cell (NLDB0's full adder, a multi-output Liberty cell) is
+// never drawn as a gate. A mux and the NLDB0 word-level operators are
+// recognized at any width (a bus mux is one NLDB0 mux2 with bus pins).
 static size_t outputBitCount(const SNLDesign* model) {
   size_t count = 0;
   for (auto* term : model->getBitTerms()) {
@@ -151,6 +153,16 @@ static PrimitiveType getPrimitiveType(const SNLDesign* model) {
   if (!model) return PrimitiveType::Unknown;
   if (NLDB0::isAssign(model)) return PrimitiveType::Assign;
   if (SNLDesignModeling::isSequential(model)) return PrimitiveType::Dff;
+  if (NLDB0::isAddSub(model))
+    return NLDB0::isSubtract(model) ? PrimitiveType::Sub : PrimitiveType::Add;
+  if (NLDB0::isMultiply(model)) return PrimitiveType::Mul;
+  if (NLDB0::isShift(model)) {
+    const auto shift = NLDB0::getShiftSignature(model);
+    if (!shift.right) return PrimitiveType::Shl;
+    return shift.arithmetic ? PrimitiveType::Ashr : PrimitiveType::Shr;
+  }
+  if (NLDB0::isDivMod(model)) return PrimitiveType::DivMod;
+  if (SNLDesignModeling::isMux(model)) return PrimitiveType::Mux;
   if (outputBitCount(model) != 1) return PrimitiveType::Unknown;
   if (SNLDesignModeling::isConst0(model)) return PrimitiveType::Tie0;
   if (SNLDesignModeling::isConst1(model)) return PrimitiveType::Tie1;
@@ -562,6 +574,26 @@ void LocalSNLProvider::loadSystemVerilog(const std::vector<std::string>& sources
                  std::to_string(paths.size()) + " files)");
   } catch (const std::exception& e) {
     Console::Error("loadSystemVerilog failed: " + std::string(e.what()));
+    db_ = nullptr;
+  }
+}
+
+void LocalSNLProvider::loadVHDL(const std::vector<std::string>& files,
+                                const std::string& topEntity) {
+  Console::Log("LocalSNLProvider: loading VHDL (" + std::to_string(files.size()) + " files)");
+  try {
+    db_ = freshDB();
+    std::vector<std::filesystem::path> paths(files.begin(), files.end());
+    auto* userLib = NLLibrary::create(db_, NLName("work"));
+    VHDLConstructor vhdlCtor(userLib);
+    if (auto* top = vhdlCtor.constructFiles(paths, topEntity)) {
+      db_->setTopDesign(top);
+      Console::Log("Top design: " + designName(top));
+    } else {
+      findAndSetTop();
+    }
+  } catch (const std::exception& e) {
+    Console::Error("loadVHDL failed: " + std::string(e.what()));
     db_ = nullptr;
   }
 }

@@ -189,11 +189,11 @@ void drawNegationBubble(SchematicPainter* dl, ImVec2 tip, float radius, ImU32 fi
     dl->AddCircle(center, radius, kInstanceLineColor, 16, 1.25f);
 }
 
-// Draws a dashed rectangle in screen space (no corner rounding).
+// Draws a dashed closed polygon in screen space.
 // dashPx / gapPx are in screen pixels so they stay legible at any zoom.
-void addDashedRect(SchematicPainter* dl, ImVec2 rmin, ImVec2 rmax,
-                   ImU32 col, float thickness,
-                   float dashPx = 6.0f, float gapPx = 4.0f) {
+void addDashedPolygon(SchematicPainter* dl, const std::vector<ImVec2>& pts,
+                      ImU32 col, float thickness,
+                      float dashPx = 6.0f, float gapPx = 4.0f) {
     auto seg = [&](float ax, float ay, float bx, float by) {
         float dx = bx - ax, dy = by - ay;
         float len = sqrtf(dx * dx + dy * dy);
@@ -210,10 +210,17 @@ void addDashedRect(SchematicPainter* dl, ImVec2 rmin, ImVec2 rmax,
             on = !on;
         }
     };
-    seg(rmin.x, rmin.y, rmax.x, rmin.y); // top
-    seg(rmax.x, rmin.y, rmax.x, rmax.y); // right
-    seg(rmax.x, rmax.y, rmin.x, rmax.y); // bottom
-    seg(rmin.x, rmax.y, rmin.x, rmin.y); // left
+    for (size_t i = 0; i < pts.size(); ++i) {
+        const ImVec2 a = pts[i], b = pts[(i + 1) % pts.size()];
+        seg(a.x, a.y, b.x, b.y);
+    }
+}
+
+// Draws a dashed rectangle in screen space (no corner rounding).
+void addDashedRect(SchematicPainter* dl, ImVec2 rmin, ImVec2 rmax,
+                   ImU32 col, float thickness) {
+    addDashedPolygon(dl, { rmin, ImVec2(rmax.x, rmin.y), rmax, ImVec2(rmin.x, rmax.y) },
+                     col, thickness);
 }
 } // namespace
 
@@ -595,6 +602,69 @@ static void drawDffInstance(SchematicPainter* dl, const InstanceShape& inst,
 }
 
 // ---------------------------------------------------------------------------
+// Mux — a trapezoid: full height on the input side, its right edge pulled
+// in by SchematicLayout::muxSlant() top and bottom, short of the centered
+// outputs (see symbolGeometry()). Pin names inside, as in a box.
+// ---------------------------------------------------------------------------
+static void drawMuxInstance(SchematicPainter* dl, const InstanceShape& inst,
+                            const SchematicView& sv,
+                            const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    size_t rightPins = 0;
+    for (const auto& p : inst.ports) if (p.lx >= 0.0f) ++rightPins;
+    const float slant = SchematicLayout::muxSlant(inst.h, rightPins) * sv.transform.scale;
+    std::vector<ImVec2> pts = {
+        rmin, ImVec2(rmax.x, rmin.y + slant), ImVec2(rmax.x, rmax.y - slant), ImVec2(rmin.x, rmax.y),
+    };
+    dl->AddConvexPolyFilled(pts.data(), int(pts.size()), kInstanceFillColor);
+    if (inst.partialInterface)
+        addDashedPolygon(dl, pts, kInstanceLineColor, 1.25f);
+    else
+        dl->AddPolyline(pts.data(), int(pts.size()), kInstanceLineColor, 1.25f, ImDrawFlags_Closed);
+    if (inst.diagOutline != 0)
+        dl->AddPolyline(pts.data(), int(pts.size()), inst.diagOutline, 3.5f, ImDrawFlags_Closed);
+    if (inst.selected) addSelectionOutline(dl, rmin, rmax);
+    drawInstanceName(dl, inst, sv, rmin);
+    drawPorts(dl, inst, sv, canvasPos, canvasSize, /*namesInside=*/true);
+}
+
+// ---------------------------------------------------------------------------
+// Word-level operator (add, sub, mul, shifts, divmod) — a box, with its
+// operator in a circle between the two columns of pin names, in the room
+// symbolGeometry() left for it (kOperatorGlyphW).
+// ---------------------------------------------------------------------------
+static const char* operatorGlyph(PrimitiveType type) {
+    switch (type) {
+        case PrimitiveType::Add:    return "+";
+        case PrimitiveType::Sub:    return "-";
+        case PrimitiveType::Mul:    return "*";
+        case PrimitiveType::Shl:    return "<<";
+        case PrimitiveType::Shr:    return ">>";
+        case PrimitiveType::Ashr:   return ">>>";
+        case PrimitiveType::DivMod: return "/%";
+        default:                    return "";
+    }
+}
+
+static void drawOperatorInstance(SchematicPainter* dl, const InstanceShape& inst,
+                                 const SchematicView& sv,
+                                 const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    drawGenericInstance(dl, inst, sv, canvasPos, canvasSize);
+    float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
+    if (fontSize <= 0.0f) return;
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    const ImVec2 c((rmin.x + rmax.x) * 0.5f, (rmin.y + rmax.y) * 0.5f);
+    const float r = 0.5f * SchematicLayout::kOperatorGlyphW * 0.8f * sv.transform.scale;
+    dl->AddCircle(c, r, kInstanceLineColor, 24, 1.25f);
+    const char* glyph = operatorGlyph(inst.primitiveType);
+    ImFont* font = ImGui::GetFont();
+    ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, glyph);
+    dl->AddText(font, fontSize, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), kPinLabelColor, glyph);
+}
+
+// ---------------------------------------------------------------------------
 // Top-level design port — a "flag": a small pentagon sized to its
 // name, pointing the way the signal flows. The wire attaches at the
 // pseudo-instance's own x/y (the zero-size term box built in
@@ -750,6 +820,15 @@ void SchematicView::drawInstance(SchematicPainter* dl, const InstanceShape& inst
             break;
         case PrimitiveType::Dff:
             drawDffInstance(dl, inst, *this, canvasPos, canvasSize);
+            break;
+        case PrimitiveType::Mux:
+            drawMuxInstance(dl, inst, *this, canvasPos, canvasSize);
+            break;
+        case PrimitiveType::Add:  case PrimitiveType::Sub:
+        case PrimitiveType::Mul:  case PrimitiveType::DivMod:
+        case PrimitiveType::Shl:  case PrimitiveType::Shr:
+        case PrimitiveType::Ashr:
+            drawOperatorInstance(dl, inst, *this, canvasPos, canvasSize);
             break;
         default:
             drawGenericInstance(dl, inst, *this, canvasPos, canvasSize);

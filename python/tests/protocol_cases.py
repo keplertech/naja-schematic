@@ -75,7 +75,7 @@ def load_verilog_design(spec, root):
     previous = os.getcwd()
     os.chdir(root)
     try:
-        db.loadVerilog([spec["verilog"]], yosys_source_attributes=True)
+        db.loadGateLevelVerilog([spec["verilog"]], yosys_source_attributes=True)
     finally:
         os.chdir(previous)
     top = next(d for lib in db.getLibraries() for d in lib.getSNLDesigns()

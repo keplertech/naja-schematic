@@ -25,6 +25,9 @@ What fills them in najaeda 0.7.29:
   named nets and instantiations; origins for lowered logic. Provider
   `slang`, language `systemverilog`, representation `rtl`. The legacy slot
   is still written too, and the viewer hides it when typed references exist.
+- **VHDL** (since najaeda 0.7.32): declarations for entities, ports,
+  signals and instantiations (provider `naja-vhdl`, language `vhdl`,
+  representation `rtl`).
 - **Gate-level Verilog**: every design, instance, term and declared net
   gets its netlist declaration (provider `naja-verilog`, language
   `verilog`). The spans are partial: a module's keyword and name, an
