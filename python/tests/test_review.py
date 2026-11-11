@@ -1,11 +1,13 @@
 """Netlist reviews (docs/review_format.md): the directory format, anchor
 resolution and the viewer's review_* requests."""
 import json
+import subprocess
+import sys
 
 import pytest
 from najaeda import naja
 
-from naja_schematic.review import Review, ReviewError, resolve_anchor, snapshot_hash
+from naja_schematic.review import Review, ReviewError, resolve_anchor
 from naja_schematic.session import ViewerSession
 
 # What a viewer sends: ids, plus names it happens to know.
@@ -91,7 +93,8 @@ def test_stored_anchor_is_ids_with_name_labels(review):
     assert stored["anchor"] == {"kind": "term", "id_path": [0], "path": ["u_sub"],
                                 "term_id": sub().getTerm("a").getID(), "terminal": "a"}
     snapshot = stored["snapshot"]
-    assert snapshot == snapshot_hash(review.snapshot_path(snapshot))
+    assert snapshot == naja.NLUniverse.get().getContentHash()
+    assert review.snapshot_path(snapshot).is_dir()
     assert review.latest_snapshot() == snapshot
 
 
@@ -199,7 +202,7 @@ def test_thread_on_another_snapshot(review):
 def test_snapshot_identifies_the_netlist(review):
     first = review.design_snapshot(design())
     review.design_changed()
-    assert review.design_snapshot(design()) == first  # deterministic dump
+    assert review.design_snapshot(design()) == first  # deterministic hash
     top = design()
     net = naja.SNLScalarNet.create(top, "review_test_extra")
     try:
@@ -208,6 +211,42 @@ def test_snapshot_identifies_the_netlist(review):
     finally:
         net.destroy()
         review.design_changed()
+
+
+def test_stored_snapshot_reopens_with_its_threads_exact(review, tmp_path):
+    # The point of a snapshot: whoever opens it gets the netlist the thread's
+    # ids were written on. In a subprocess, a fresh universe holding only it.
+    tid = review.add_thread(design(), PIN_A, "x")
+    script = (
+        "import json, sys\n"
+        "from najaeda import naja\n"
+        "from naja_schematic import server\n"
+        "from naja_schematic.review import Review\n"
+        "review = Review(sys.argv[1])\n"
+        "top = server.load_review_snapshot(review)\n"
+        "threads = review.response(top)['threads']\n"
+        "print(json.dumps([naja.NLUniverse.get().getContentHash(),\n"
+        "                  [(t['id'], t['resolution']) for t in threads]]))\n")
+    run = subprocess.run([sys.executable, "-c", script, str(review.directory)],
+                         cwd=tmp_path, capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    content_hash, threads = json.loads(run.stdout.strip().splitlines()[-1])
+    assert content_hash == review.design_snapshot(design())
+    [(thread_id, resolution)] = threads
+    assert thread_id == tid
+    assert resolution["state"] == "exact"
+    assert resolution["id_path"] == [0]
+
+
+def test_no_thread_on_a_universe_with_several_design_dbs(review):
+    # Its snapshot holds only the top DB: it couldn't reload as this universe.
+    extra = naja.NLDB.create(naja.NLUniverse.get())
+    try:
+        with pytest.raises(ReviewError, match="several design databases"):
+            review.add_thread(design(), U_AND, "x")
+    finally:
+        extra.destroy()
+    review.add_thread(design(), U_AND, "x")
 
 
 def test_malformed_files_are_skipped(review):

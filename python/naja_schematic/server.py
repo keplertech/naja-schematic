@@ -611,7 +611,7 @@ def load_design(args):
 def load_review_snapshot(review, snapshot=None):
     """Load one of the review's stored designs (by default the latest one a
     thread was written on) into the NLUniverse; returns the top."""
-    from najaeda import netlist
+    from najaeda import naja, netlist
 
     from .review import is_snapshot_id
 
@@ -623,7 +623,13 @@ def load_review_snapshot(review, snapshot=None):
     elif not is_snapshot_id(snapshot) or not review.snapshot_path(snapshot).is_dir():
         raise SystemExit(f"{review.directory}: no snapshot {snapshot!r}")
     log.info("Loading review snapshot %s", snapshot)
-    return netlist.load_naja_if(str(review.snapshot_path(snapshot)))
+    netlist.load_naja_if(str(review.snapshot_path(snapshot)))
+    top = naja.NLUniverse.get().getTopDesign()
+    if naja.NLUniverse.get().getContentHash() != snapshot:
+        # Its threads will show as written on another netlist.
+        log.warning("Snapshot %s doesn't hash to its name: not stored by this "
+                    "review format, or edited", snapshot)
+    return top
 
 
 def load_diagnosis_file(path):

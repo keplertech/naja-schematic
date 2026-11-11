@@ -6,13 +6,11 @@ without conflicts. This module reads and writes that directory and resolves
 anchors against the loaded design; ViewerSession wires it to the viewer.
 """
 
-import hashlib
 import json
 import logging
 import os
 import shutil
 import subprocess
-import tempfile
 import threading
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -78,24 +76,6 @@ def _load(path):
         log.warning("Skipping review file %s: not an object", path)
         return None
     return document
-
-
-def file_sha256(path):
-    digest = hashlib.sha256()
-    with open(path, "rb") as f:
-        for block in iter(lambda: f.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
-def snapshot_hash(directory):
-    """The id of a naja-if dump (see "Snapshots" in docs/review_format.md):
-    a sha256 over its files' relative paths and contents. naja-if dumps are
-    deterministic, so the same netlist always gets the same id."""
-    directory = Path(directory)
-    lines = [f"{p.relative_to(directory).as_posix()} {file_sha256(p)}"
-             for p in sorted(directory.rglob("*")) if p.is_file()]
-    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
 def is_snapshot_id(value):
@@ -275,21 +255,21 @@ class Thread:
 
 class Review:
     """One review directory. `author` writes new threads and events (None:
-    read-only). The loaded design is dumped as naja-if to identify it, and
-    stored in the review the first time a thread is opened on it, so the
-    review carries every netlist its threads' ids refer to.
+    read-only). The loaded design is identified by naja's content hash, and
+    dumped as naja-if into the review the first time a thread is opened on
+    it, so the review carries every netlist its threads' ids refer to.
     Reads always come from disk, so files pulled from git while the viewer
     runs show at the next load.
 
     The universe must not change between two calls without
-    design_changed() (ViewerSession calls it on every root load): the dump
+    design_changed() (ViewerSession calls it on every root load): the hash
     is reused until then."""
 
     def __init__(self, directory, author=None):
         self.directory = Path(directory)
         self.author = author
         self._lock = threading.Lock()
-        self._snapshot = None  # (id, TemporaryDirectory holding its dump)
+        self._snapshot = None  # the loaded design's id
         self._last_write = None
 
     def _now(self):
@@ -303,47 +283,41 @@ class Review:
             return when
 
     def design_changed(self):
-        """Forget the loaded design's snapshot: the next call dumps it again."""
+        """Forget the loaded design's snapshot id: the next call hashes it again."""
         with self._lock:
-            self._drop_snapshot()
-
-    def _drop_snapshot(self):
-        if self._snapshot is not None:
-            self._snapshot[1].cleanup()
             self._snapshot = None
 
     def design_snapshot(self, top):
-        """The loaded design's snapshot id (None: no design). Dumps the
-        universe once per design (see the class docstring); call with
-        exclusive access to it."""
+        """The loaded design's snapshot id (None: no design): naja's content
+        hash of the universe, once per design (see the class docstring);
+        call with exclusive access to it."""
         if top is None:
             return None
         with self._lock:
             if self._snapshot is None:
-                scratch = tempfile.TemporaryDirectory(prefix="naja-review-")
-                dump_dir = Path(scratch.name) / "snapshot"
-                netlist.dump_naja_if(str(dump_dir))
-                self._snapshot = (snapshot_hash(dump_dir), scratch)
-            return self._snapshot[0]
+                self._snapshot = naja.NLUniverse.get().getContentHash()
+            return self._snapshot
 
     def snapshot_path(self, snapshot):
         return self.directory / "snapshots" / snapshot
 
     def _store_snapshot(self, snapshot):
+        """Dump the loaded design into the review as `snapshot`, unless it's
+        there already; call with exclusive access to the universe."""
         target = self.snapshot_path(snapshot)
         with self._lock:
-            if target.is_dir() or self._snapshot is None or self._snapshot[0] != snapshot:
+            if target.is_dir() or self._snapshot != snapshot:
                 return
-            dump_dir = Path(self._snapshot[1].name) / "snapshot"
             staging = target.with_name(f".{snapshot}-{new_id()}")
             target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(dump_dir, staging)
             try:
+                netlist.dump_naja_if(str(staging))
                 staging.rename(target)  # atomic: never a half-written snapshot
             except OSError:
-                shutil.rmtree(staging, ignore_errors=True)  # another writer stored it
-                if not target.is_dir():
+                if not target.is_dir():  # else another writer stored it first
                     raise
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
 
     def _is_stored(self, snapshot):
         return is_snapshot_id(snapshot) and self.snapshot_path(snapshot).is_dir()
@@ -481,6 +455,11 @@ class Review:
             if found is None:
                 raise ReviewError("anchor: no such object in the loaded design")
             anchor = found
+            if sum(1 for _ in naja.NLUniverse.get().getUserDBs()) != 1:
+                # The snapshot (the top DB's dump) wouldn't reload as the
+                # universe the id hashes.
+                raise ReviewError("the universe holds several design databases: "
+                                  "a review snapshot stores only the top one")
         snapshot = self.design_snapshot(top) if anchor["kind"] != "view" else None
         when = self._now()
         thread_id = new_id()

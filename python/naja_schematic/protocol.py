@@ -22,7 +22,8 @@ log = logging.getLogger("naja_schematic")
 # 0.7.34: word-level operator checks (isAddSub, isMultiply, isShift, isDivMod,
 # ...) and loadSystemVerilog's frontend_options; nets by id
 # (SNLDesign.getNetByID, SNLNet.getID), for review anchors.
-MIN_NAJAEDA_VERSION = (0, 7, 34)  # keep in step with pyproject.toml
+# 0.7.35: content hashes (NLUniverse.getContentHash), review snapshot ids.
+MIN_NAJAEDA_VERSION = (0, 7, 35)  # keep in step with pyproject.toml
 
 
 def check_najaeda_version():
