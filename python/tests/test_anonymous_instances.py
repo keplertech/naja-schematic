@@ -27,6 +27,8 @@ def anon(top):
     u.setTopDesign(designs[SPEC["design"]["top"]])
     yield designs
     u.setTopDesign(previous)
+    # Leave the universe with one design DB, as the review tests expect.
+    designs[SPEC["design"]["top"]].getDB().destroy()
 
 
 @pytest.mark.parametrize("case", SPEC["cases"], ids=[c["name"] for c in SPEC["cases"]])

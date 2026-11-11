@@ -2,7 +2,7 @@
 
 How people (and agents) leave findings on a netlist and pass them to each
 other, asynchronously, through git. Status: threads are implemented in the
-Python host (`python/naja_schematic/review.py`, najaeda >= 0.7.34 for net ids)
+Python host (`python/naja_schematic/review.py`, najaeda >= 0.7.35 for net ids and content hashes)
 and the viewer (`src/ReviewStore.cpp`, `src/ReviewView.cpp`), so the browser
 and notebook viewers read and write reviews; the native provider (desktop
 app) and saved views are not yet. This document is the contract the two backends
@@ -108,24 +108,35 @@ use the labels to locate anything.
 
 ## Snapshots
 
-The host identifies the loaded design by dumping the whole universe as
-naja-if (`netlist.dump_naja_if()`, `SNLCapnP::dump()`) and hashing the dump:
+The host identifies the loaded design by naja's content hash of the
+universe (`NLUniverse.getContentHash()`, najaeda >= 0.7.35; the encoding is
+specified in naja's `docs/content_hash.md`). It's a SHA-256 tree over the
+netlist itself -- ids, names, models, parameters, connectivity and a few
+registered attributes -- not over files, so it doesn't depend on the naja
+build or on how a dump is laid out.
 
-```
-sha256( join(sorted(relative_posix_path + " " + sha256_hex(file) for file in dump), "\n") )
-```
+The guarantee is the snapshot's: a stored snapshot reloads with the same
+hash, so its threads resolve `exact` whenever it's opened, on any machine.
+A fresh load of the sources gets the same id only if naja assigns the same
+ids, which depends on the input files and their order (Verilog files,
+Liberty files): load them the same way and threads written on one load
+show on the next; otherwise they're listed as written on another netlist,
+and their snapshot shows them.
 
-naja-if dumps are deterministic and keep instance ids, so the same netlist
-gets the same id wherever and however it was loaded (Verilog, SystemVerilog,
-VHDL, naja-if, or built in a notebook), and a reloaded snapshot answers the
-same `id_path`s. The id covers everything naja built -- `--top`, defines,
-Liberty cells, and the naja version's id assignment -- not the input files.
-
-- The dump is made once per loaded design (again after each root load or
-  `design_changed`), and stored as `snapshots/<id>/` the first time a thread
-  is opened on it, before the thread file naming it. It's staged under a
-  dot-name and renamed into place, so a snapshot directory is always
-  complete; two writers storing the same id write the same bytes.
+- Primitive cell *definitions* aren't part of the id, only which cell an
+  instance uses (naja's rule: cell libraries can be loaded separately). A
+  netlist re-loaded with an edited Liberty file keeps its id.
+- The id is computed once per loaded design (again after each root load or
+  `design_changed`). The design is dumped as naja-if and stored as
+  `snapshots/<id>/` the first time a thread is opened on it, before the
+  thread file naming it. It's dumped under a dot-name and renamed into
+  place, so a snapshot directory is always complete; when two writers store
+  the same id, the first one stays.
+- A naja-if dump holds the top design's database only, so the host refuses
+  to open a thread while the universe holds several design databases: the
+  snapshot couldn't reload as the netlist the id names. A snapshot that
+  doesn't hash to its directory name when opened is reported (its threads
+  show as written on another netlist).
 - `naja-schematic --review DIR` with no design opens the latest snapshot a
   thread was written on (`--snapshot ID` picks one).
 - A snapshot is required: a thread's ids mean nothing without it. A thread

@@ -658,8 +658,12 @@ each `root_response` and every write; the viewer sends `review_add_thread`
 a refused write comes back as `{"response":"error","request":"review_..."}`.
 Objects are identified by naja ids only, never by names: a thread is pinned
 to the netlist it was written on, stored in the review as a naja-if
-snapshot, and only drawn when the host resolves it `exact` on the loaded
-design (`other_snapshot` threads are listed, not drawn).
+snapshot named by naja's content hash (`NLUniverse.getContentHash()`,
+najaeda >= 0.7.35: a reloaded snapshot keeps it, a fresh load of the
+sources keeps it only if naja assigns the same ids), and only drawn when the
+host resolves it `exact` on the loaded design (`other_snapshot` threads are
+listed, not drawn). A thread can't be opened while the universe holds
+several design DBs (a snapshot is the top DB's dump).
 
 `get_properties`/`properties_response` is a general name/value inspector for
 whatever object the UI asks about — an instance (including the top design
