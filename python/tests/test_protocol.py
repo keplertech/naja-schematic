@@ -92,6 +92,23 @@ def test_equipotential_and_trace(top):
     assert trace["trace_id"] == 7
 
 
+def test_occurrence_names_its_pin_by_child_id(top):
+    # The viewer reads an occurrence's term id from "child_id" (as
+    # LocalSNLProvider sends it) and sends it back to name the pin: a pin
+    # click, a trace from the pin, a review anchor on it. clk's reader is the
+    # flop's C, which isn't its term 0 (a missing id read as 0).
+    clk = top_terms(top)["clk"]
+    (eq,) = handle_request({"request": "load_equipotential", "path": [], "term_id": clk["child_id"]})
+    (occ,) = eq["occurrences"]
+    flop = naja.NLUniverse.get().getTopDesign().getInstance("r")
+    assert occ["name"] == "C" and "term_id" not in occ
+    assert occ["child_id"] == flop.getModel().getTerm("C").getID() != 0
+    ids = [level[1] for level in occ["path"]]
+    (again,) = handle_request({"request": "load_equipotential", "path": ids,
+                               "term_id": occ["child_id"]})
+    assert again["terms"] == eq["terms"]
+
+
 def test_get_properties(top):
     (reply,) = handle_request({"request": "get_properties", "kind": "instance", "path": ["u_sub"]})
     assert reply["subject"] == "u_sub"

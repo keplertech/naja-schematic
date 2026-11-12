@@ -372,7 +372,10 @@ def equipotential_to_json(equipotential, sinks=None):
                          has_visible_primitive_instances(inst_model))
         occurrences.append(with_sources(with_clock({
             "path": path,
-            "term_id": term.getID(),
+            # "child_id", like every other term entry and LocalSNLProvider:
+            # the viewer sends it back to name this pin (pin clicks, traces,
+            # review anchors).
+            "child_id": term.getID(),
             "name": term.getName(),
             "direction": direction_to_int(term.getDirection()),
             "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
