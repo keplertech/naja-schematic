@@ -37,16 +37,6 @@ endif()
 message(STATUS "naja-schematic version: ${NAJA_SCHEMATIC_VERSION}")
 
 # ------------------------------------------------------------
-# naja version (read from the submodule's literal, not built — needed on
-# both targets since both interface with naja: native links it directly,
-# WASM talks to najaeda_server.py, which wraps the same naja/najaeda code)
-# ------------------------------------------------------------
-file(STRINGS ${CMAKE_SOURCE_DIR}/thirdparty/naja/src/core/NajaVersion.h.in
-  NAJA_VERSION_LINE REGEX "NAJA_VERSION \\{ \"[^\"]*\" \\}")
-string(REGEX REPLACE ".*\"([^\"]*)\".*" "\\1" NAJA_VERSION "${NAJA_VERSION_LINE}")
-message(STATUS "naja version: ${NAJA_VERSION}")
-
-# ------------------------------------------------------------
 # Detect Emscripten
 # ------------------------------------------------------------
 if("${CMAKE_CXX_COMPILER}" MATCHES "em\\+\\+")
@@ -174,7 +164,6 @@ if(EMSCRIPTEN_BUILD)
   target_compile_definitions(naja-schematic PRIVATE
     NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
     NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
-    NAJA_VERSION_STRING="${NAJA_VERSION}"
   )
 
 # ============================================================
@@ -226,7 +215,6 @@ else()
   target_compile_definitions(naja-schematic-standalone PRIVATE
     NAJA_SCHEMATIC_GIT_HASH="${NAJA_SCHEMATIC_GIT_HASH}"
     NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
-    NAJA_VERSION_STRING="${NAJA_VERSION}"
   )
 
   # Enable compile_commands.json for clangd / VS Code IntelliSense
@@ -306,6 +294,7 @@ if(NOT EMSCRIPTEN_BUILD)
     )
     target_compile_definitions(naja-schematic-provider-tests PRIVATE
       NAJA_SCHEMATIC_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+      NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
     )
 
     enable_testing()

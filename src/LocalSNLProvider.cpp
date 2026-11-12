@@ -45,6 +45,7 @@
 #include "SNLLibertyConstructor.h"
 // naja serialization
 #include "SNLCapnP.h"
+#include "NajaVersion.h"
 
 using json = nlohmann::json;
 using namespace naja::NL;
@@ -697,7 +698,15 @@ std::string LocalSNLProvider::buildRootResponse() const {
     };
     withSources(root, hasSources(top));
   }
-  return json{{"response", "root_response"}, {"root", root}}.dump();
+  // What answers the viewer, for its About dialog (protocol.py
+  // server_info() sends the same keys): here, the app itself.
+  const json server = {
+    {"name", "naja-schematic (native)"},
+    {"version", NAJA_SCHEMATIC_VERSION_STRING},
+    {"naja", naja::NAJA_VERSION},
+    {"naja_git", naja::NAJA_GIT_HASH}
+  };
+  return json{{"response", "root_response"}, {"root", root}, {"server", server}}.dump();
 }
 
 std::string LocalSNLProvider::buildInstancesResponse(

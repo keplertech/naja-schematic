@@ -375,6 +375,16 @@ Requests/responses are JSON with a `"request"`/`"response"` type field (e.g.
 `python/naja_schematic/protocol.py` (WASM/browser/notebook) must independently implement this same
 protocol — when changing one side, check the other.
 
+`root_response` also carries `"server"`, what answers the viewer:
+`{"name", "version", "naja", "naja_git"}` -- `server_info()` in
+`protocol.py` (this package's `__version__`, `naja.getVersion()`,
+`najaeda.git_hash()`; also logged at server start), and in
+`LocalSNLProvider::buildRootResponse()` the app itself
+(`NAJA_SCHEMATIC_VERSION_STRING`, `naja::NAJA_VERSION`/`NAJA_GIT_HASH` from
+the linked naja). Help > About shows it under "Server" (`AppState::serverInfo`);
+the viewer's own section has only its version and commit, since a browser
+viewer contains no naja.
+
 `load_nets`/`nets_response` mirrors `load_terms`/`terms_response` exactly
 (same `gui_id`/`design_ref` request shape, same bus-vs-scalar `msb`/`lsb`
 response shape, lazily populating a `NetlistTreeGroupNode::Type::Nets` group
