@@ -159,6 +159,7 @@ static void renderShortcutsWindow(bool& open) {
     {"Click a box",                  "Select the instance (also in the tree)"},
     {"Click a wire",                 "Select (highlight) its net"},
     {"Click a box's hierarchy glyph","Show / hide what is inside it"},
+    {"Click a review badge",         "Open its thread in the Review tab"},
     {"Right-click",                  "Context menu: trace, sources, properties, comment, fit, clear"},
     {"Right-click a tree row",       "Its menu; Add Comment... starts a review thread (with --review)"},
   };
@@ -966,7 +967,9 @@ bool appFrame(AppState& state) {
           for (const auto& t : ReviewStore::threads()) open += t.isOpen();
           std::string reviewTab = open ? "Review (" + std::to_string(open) + ")###Review"
                                        : std::string("Review###Review");
-          state.reviewTabShown = ImGui::BeginTabItem(reviewTab.c_str());
+          ImGuiTabItemFlags reviewFlags =
+              ReviewView::takeFocusRequest() ? ImGuiTabItemFlags_SetSelected : 0;
+          state.reviewTabShown = ImGui::BeginTabItem(reviewTab.c_str(), nullptr, reviewFlags);
           if (state.reviewTabShown) {
             ReviewView::render(state.provider);
             ImGui::EndTabItem();

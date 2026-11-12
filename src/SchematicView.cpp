@@ -6,6 +6,7 @@
 #include <cfloat>
 #include <cmath>
 #include <functional>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -343,26 +344,89 @@ float instanceNameWidth(const std::string& name) {
     return ImGui::GetFont()->CalcTextSizeA(kInstanceLabelBaseSize, FLT_MAX, 0.0f, name.c_str()).x;
 }
 
-// Open review threads on an instance: a disc with their count on the box's
-// top-right corner, in the worst open severity's color. Drawn through the
-// painter, so it reaches SVG exports; it hides with the labels when zoomed
-// too far out to read.
+// Review badges: a disc with the count of open threads, in the worst open
+// severity's color -- on an instance box's (or module frame's) top-right
+// corner, and next to a pin with threads on its term: above the end of its
+// tick, or on the top of a top-level port's flag. Drawn through the painter,
+// so they reach SVG exports; they hide with the labels when zoomed too far
+// out to read. reviewBadges() hit-tests the same geometry.
+namespace {
+struct BadgeGeom {
+    ImVec2      center;
+    float       radius = 0.0f;
+    float       fontSize = 0.0f;
+    std::string count;
+    ImVec2      textSize;
+};
+
+std::optional<BadgeGeom> badgeText(int open, float fontSize) {
+    if (open <= 0 || fontSize <= 0.0f) return std::nullopt;
+    BadgeGeom g;
+    g.fontSize = fontSize;
+    g.count    = std::to_string(open);
+    g.textSize = ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, g.count.c_str());
+    g.radius   = std::max(g.textSize.x, g.textSize.y) * 0.5f + 2.0f;
+    return g;
+}
+
+std::optional<BadgeGeom> instanceBadge(const InstanceShape& inst, const SchematicView& sv,
+                                       const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    if (inst.w <= 0.0f || inst.h <= 0.0f) return std::nullopt;
+    auto g = badgeText(inst.reviewOpen, labelFontSize(kInstanceLabelBaseSize, sv.transform.scale));
+    if (!g) return std::nullopt;
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    g->center = ImVec2(rmax.x, rmin.y);
+    return g;
+}
+
+std::optional<BadgeGeom> pinBadge(const InstanceShape& inst, const Port& p, const SchematicView& sv,
+                                  const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    auto g = badgeText(p.reviewOpen, labelFontSize(kPortLabelBaseSize, sv.transform.scale));
+    if (!g) return std::nullopt;
+    if (inst.modelName == "port") {
+        // The flag's top edge, at its wire end (see drawBoundaryPortInstance).
+        const float halfH = std::max(kBoundaryPortHalfHBase * sv.transform.scale, kMinBoundaryPortHalfH);
+        const ImVec2 anchor = sv.worldToScreen(ImVec2(inst.x, inst.y), canvasPos, canvasSize);
+        g->center = ImVec2(anchor.x, anchor.y - halfH);
+        return g;
+    }
+    // Above the outer end of the tick (see drawPorts), clear of the wire.
+    const float tickLen = zoomedSizeOrHidden(kPortTickBaseLen, sv.transform.scale, kMinPortTickLen);
+    if (tickLen <= 0.0f) return std::nullopt;
+    const ImVec2 screenP = sv.worldToScreen(sv.portWorldPos(inst, p), canvasPos, canvasSize);
+    const float side = p.lx < 0.0f ? -1.0f : 1.0f;
+    g->center = ImVec2(screenP.x + side * (tickLen + g->radius), screenP.y - g->radius - 1.0f);
+    return g;
+}
+
+void paintBadge(SchematicPainter* dl, const BadgeGeom& g, ImU32 color) {
+    dl->AddCircleFilled(g.center, g.radius, color);
+    dl->AddText(ImGui::GetFont(), g.fontSize,
+                ImVec2(g.center.x - g.textSize.x * 0.5f, g.center.y - g.textSize.y * 0.5f),
+                contrastingTextColor(color), g.count.c_str());
+}
+}  // namespace
+
 static void drawReviewBadge(SchematicPainter* dl, const InstanceShape& inst,
                             const SchematicView& sv,
                             const ImVec2& canvasPos, const ImVec2& canvasSize) {
-    if (inst.reviewOpen <= 0 || inst.w <= 0.0f || inst.h <= 0.0f) return;
-    float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
-    if (fontSize <= 0.0f) return;
-    ImVec2 rmin, rmax;
-    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
-    const std::string count = std::to_string(inst.reviewOpen);
-    ImFont* font = ImGui::GetFont();
-    ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, count.c_str());
-    const float r = std::max(ts.x, ts.y) * 0.5f + 2.0f;
-    const ImVec2 c(rmax.x, rmin.y);
-    dl->AddCircleFilled(c, r, inst.reviewColor);
-    dl->AddText(font, fontSize, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f),
-                contrastingTextColor(inst.reviewColor), count.c_str());
+    if (auto g = instanceBadge(inst, sv, canvasPos, canvasSize)) paintBadge(dl, *g, inst.reviewColor);
+    for (const auto& p : inst.ports)
+        if (auto g = pinBadge(inst, p, sv, canvasPos, canvasSize)) paintBadge(dl, *g, p.reviewColor);
+}
+
+std::vector<SchematicView::ReviewBadge> SchematicView::reviewBadges(const ImVec2& canvasPos,
+                                                                    const ImVec2& canvasSize) const {
+    std::vector<ReviewBadge> badges;
+    for (const auto& inst : instances) {
+        if (auto g = instanceBadge(inst, *this, canvasPos, canvasSize))
+            badges.push_back({inst.id, -1, g->center, g->radius});
+        for (const auto& p : inst.ports)
+            if (auto g = pinBadge(inst, p, *this, canvasPos, canvasSize))
+                badges.push_back({inst.id, p.id, g->center, g->radius});
+    }
+    return badges;
 }
 
 // Instance name above its symbol: a box's inside holds its pin

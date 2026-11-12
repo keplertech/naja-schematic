@@ -165,6 +165,18 @@ std::vector<const ReviewThread*> ReviewStore::netThreads(const InstancePath& pat
   return find(ReviewAnchorKind::Net, path, netId, bit);
 }
 
+std::vector<const ReviewThread*> ReviewStore::pinThreads(const std::vector<unsigned>& idPath,
+                                                         unsigned termId, std::optional<int> bit) {
+  std::vector<const ReviewThread*> found;
+  for (const auto& t : g_threads) {
+    if (t.state != ReviewState::Exact || t.anchor.kind != ReviewAnchorKind::Term) continue;
+    if (t.anchor.idPath != idPath || t.anchor.termId != termId) continue;
+    if (bit && t.anchor.bit && t.anchor.bit != bit) continue;
+    found.push_back(&t);
+  }
+  return found;
+}
+
 size_t ReviewStore::openCount(const std::vector<const ReviewThread*>& threads) {
   size_t n = 0;
   for (const auto* t : threads)

@@ -12,6 +12,7 @@ namespace {
 enum class Filter { Open, All };
 Filter g_filter = Filter::Open;
 std::string g_selected;     // thread id
+bool g_focusRequested = false;
 std::string g_replyFor;     // thread the reply box was typed for
 char g_reply[4096] = "";
 
@@ -232,4 +233,22 @@ void ReviewView::threadsTooltip(const std::vector<const ReviewThread*>& threads)
                        summary(*t).c_str());
     ImGui::TextDisabled("%s, %zu comment(s)", t->author.c_str(), t->comments.size());
   }
+}
+
+void ReviewView::showThreads(const std::vector<const ReviewThread*>& threads) {
+  if (threads.empty()) return;
+  const ReviewThread* shown = threads.front();
+  for (const auto* t : threads)
+    if (t->isOpen()) { shown = t; break; }
+  g_selected = shown->id;
+  if (!shown->isOpen()) g_filter = Filter::All;
+  g_focusRequested = true;
+}
+
+const std::string& ReviewView::selectedThread() { return g_selected; }
+
+bool ReviewView::takeFocusRequest() {
+  const bool requested = g_focusRequested;
+  g_focusRequested = false;
+  return requested;
 }

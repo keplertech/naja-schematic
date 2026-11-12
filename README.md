@@ -141,13 +141,15 @@ Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 | Click a box | Select the instance (also in the design tree) |
 | Click a wire | Select (highlight) its net |
 | Click a box's hierarchy glyph | Show / hide what is inside it |
+| Click a review badge (numbered disc) | Open its thread in the Review tab |
 | Right-click | Menu: trace to driver, sources, properties, comment, fit, clear |
 
 In the design tree, right-click a row (an instance, a pin or a net) for its
 menu. With a review loaded (`--review DIR`), **Add Comment...** in these
 menus starts a review thread on that object; the **Review** tab lists the
-threads, to reply to them and resolve them. A tree row shows `[n]`, and a
-schematic box a numbered disc, for its open threads.
+threads, to reply to them and resolve them. A tree row shows `[n]` for its
+open threads; on the schematic, a box, a pin or a top-level port shows a
+numbered disc, which lists them when hovered.
 
 | Keys (mouse over the schematic) | Action |
 |---|---|

@@ -89,6 +89,11 @@ class ReviewStore {
                                                         std::optional<int> bit = std::nullopt);
     static std::vector<const ReviewThread*> netThreads(const InstancePath& path, unsigned netId,
                                                        std::optional<int> bit = std::nullopt);
+    // Exact term threads a schematic pin shows: on its bit `bit`, or on the
+    // whole term (a thread with no bit). nullopt (a merged bus pin): every
+    // thread on the term. `idPath`: the instance's ids ({} = a top-level port).
+    static std::vector<const ReviewThread*> pinThreads(const std::vector<unsigned>& idPath,
+                                                       unsigned termId, std::optional<int> bit);
 
     // Severity color of the worst open thread, 0 when none is open.
     static ImU32 openColor(const std::vector<const ReviewThread*>& threads);

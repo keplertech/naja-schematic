@@ -79,6 +79,21 @@ TEST_F(Review, MatchesObjectsByIdsOnlyAndOnlyExactThreads) {
   EXPECT_TRUE(ReviewStore::netThreads({}, 5).empty());
 }
 
+TEST_F(Review, APinShowsThreadsOnItsBitOrOnTheWholeTerm) {
+  // t2 is on d[1]: shown on that bit's pin and on the merged bus pin.
+  EXPECT_EQ(ReviewStore::pinThreads({}, 2, 1).size(), 1u);
+  EXPECT_TRUE(ReviewStore::pinThreads({}, 2, 0).empty());
+  EXPECT_EQ(ReviewStore::pinThreads({}, 2, std::nullopt).size(), 1u);
+  EXPECT_TRUE(ReviewStore::pinThreads({0}, 2, 1).empty());
+
+  // A thread on the whole bus is on every bit's pin.
+  json response = json::parse(kResponse);
+  response["threads"][1]["anchor"].erase("bit");
+  ReviewStore::setResponse(response);
+  EXPECT_EQ(ReviewStore::pinThreads({}, 2, 0).size(), 1u);
+  EXPECT_EQ(ReviewStore::pinThreads({}, 2, 1).size(), 1u);
+}
+
 TEST_F(Review, BadgesCountOpenThreadsInTheWorstSeverityColor) {
   auto net = ReviewStore::netThreads({{0, "u_sub"}}, 5);
   EXPECT_EQ(ReviewStore::openCount(net), 0u);  // resolved
