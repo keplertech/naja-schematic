@@ -480,6 +480,19 @@ def _error(response_type, gui_id=0):
     return [{"response": response_type, "gui_id": gui_id}]
 
 
+def server_info():
+    """What answers the viewer, for its About dialog: this package and the
+    naja it runs on (LocalSNLProvider sends the same keys)."""
+    import najaeda
+    from . import __version__
+    return {
+        "name": "naja-schematic (Python)",
+        "version": __version__,
+        "naja": naja.getVersion(),
+        "naja_git": najaeda.git_hash(),
+    }
+
+
 def _handle_load_root(u, request):
     log.debug("load_root request")
     top = u.getTopDesign()
@@ -487,7 +500,8 @@ def _handle_load_root(u, request):
         return _error("root_response")
     return [{
         "response": "root_response",
-        "root": serialize_model(top, 0, top.getName())
+        "root": serialize_model(top, 0, top.getName()),
+        "server": server_info(),
     }]
 
 

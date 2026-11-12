@@ -29,6 +29,20 @@ def test_load_root(top):
     assert r["has_instances"] and r["has_primitives"] and r["has_terms"] and r["has_nets"]
 
 
+def test_root_reply_names_the_server(top):
+    # For the viewer's About dialog: this package and the naja it runs on
+    # (LocalSNLProvider sends the same keys).
+    import najaeda
+    import naja_schematic
+    (reply,) = handle_request({"request": "load_root"})
+    assert reply["server"] == {
+        "name": "naja-schematic (Python)",
+        "version": naja_schematic.__version__,
+        "naja": naja.getVersion(),
+        "naja_git": najaeda.git_hash(),
+    }
+
+
 def test_design_requests(top):
     ref = root(top)["design_ref"]
     (inst,) = handle_request({"request": "load_instances", "design_ref": ref, "gui_id": 7})

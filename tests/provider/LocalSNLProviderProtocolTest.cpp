@@ -30,6 +30,7 @@
 #include "SNLScalarNet.h"
 #include "SNLScalarTerm.h"
 #include "SNLVRLConstructor.h"
+#include "NajaVersion.h"
 
 using json = nlohmann::json;
 using namespace naja::NL;
@@ -417,6 +418,18 @@ TEST(ProviderLoading, LoadsVHDLInAnyFileOrder) {
   ASSERT_EQ(instances.size(), 1u);
   EXPECT_EQ(instances[0]["name"], "u_leaf");
   EXPECT_EQ(p.primitiveTypes(instances[0]["design_ref"])["naja_mux2__w1"], "mux");
+}
+
+// The root reply says what answers the viewer, for its About dialog: the
+// app itself, and the naja it's built with (protocol.py sends the same keys).
+TEST(ProviderLoading, RootReplyNamesTheServer) {
+  LoadedProvider p;
+  p.provider.loadVHDL({testData("vhdl/top.vhd"), testData("vhdl/leaf.vhd")});
+  json server = p.ask({{"request", "load_root"}})["server"];
+  EXPECT_EQ(server["name"], "naja-schematic (native)");
+  EXPECT_EQ(server["version"], NAJA_SCHEMATIC_VERSION_STRING);
+  EXPECT_EQ(server["naja"], naja::NAJA_VERSION);
+  EXPECT_EQ(server["naja_git"], naja::NAJA_GIT_HASH);
 }
 
 TEST(ProviderLoading, VHDLTopEntityCanBeForced) {

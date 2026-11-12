@@ -4,6 +4,8 @@
 #include <SDL_opengl.h>
 #include <string>
 
+#include <nlohmann/json.hpp>
+
 class INetlistProvider;
 class GUIData;
 
@@ -37,6 +39,9 @@ struct AppState {
   // shows something, so a request sent while the view is still loading
   // waits for its first drawing.
   bool              svgExportRequested {false};
+  // The root_response's "server": what answers the viewer (name, version,
+  // naja, naja_git), shown in Help > About.
+  nlohmann::json    serverInfo;
 };
 
 // Wire all provider callbacks (on_open, on_message, on_close, on_error)
