@@ -831,8 +831,19 @@ path the host read, used by the native "Open in Editor".
   anchors. Cleared on every fresh `root_response`/`root_loaded` (the host
   pushes the review again after it).
 - **`ReviewView`** — the "Review" bottom-panel tab (open/all filter; a
-  thread's comments, Reply, Resolve/Won't Fix/Reopen, Select and Show in
-  Schematic for an exact one, the snapshot id for one on another netlist)
+  thread's comments, Reply, Resolve/Won't Fix/Reopen, Go To for an exact
+  one, the snapshot id for one on another netlist). Clicking an exact
+  thread (or Go To) runs `ReviewView::goTo()`: it selects the thread's
+  instance and leaves a `GoTo` that `appFrame()` takes next frame, to
+  `NetlistTree::reveal()` the object with a `RevealLeaf` (on into the
+  instance's Terms/Nets group to the term, bus bit or net row, highlighted)
+  and `EquipotentialView::focusObject()` it: pan to the box or pin if
+  drawn (a pin flashes), else add it without clearing the view -- a pin
+  with a bit by `load_equipotential`, an instance (or an instance's term
+  with no bit, maybe a whole bus) by `resolve_instance`, whose
+  `instance_resolved` `takeAddOnResolve()` marks as added rather than
+  replacing the view -- then pan once it's drawn. Net threads go to the
+  tree only.
   and the modal Add Comment dialog (`openComposer()`, drawn by
   `renderComposer()` at the top level each frame), opened by
   `commentMenuItem()` from the tree's instance/term/net menus and the

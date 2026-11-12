@@ -13,6 +13,7 @@ enum class Filter { Open, All };
 Filter g_filter = Filter::Open;
 std::string g_selected;     // thread id
 bool g_focusRequested = false;
+std::optional<ReviewView::GoTo> g_goTo;
 std::string g_replyFor;     // thread the reply box was typed for
 char g_reply[4096] = "";
 
@@ -72,16 +73,9 @@ void renderDetail(INetlistProvider* provider, const ReviewThread& t) {
   } else if (t.state == ReviewState::Unresolved) {
     ImGui::TextWrapped("Its ids don't resolve in this netlist (an edited review file?).");
   } else if (t.resolvedPath && t.anchor.kind != ReviewAnchorKind::View) {
-    if (ImGui::SmallButton("Select")) SelectionStore::select(*t.resolvedPath,
-                                                             SelectionStore::Origin::Host);
-    if (!t.resolvedPath->empty()) {
-      ImGui::SameLine();
-      if (ImGui::SmallButton("Show in Schematic")) {
-        json req = {{"request", "resolve_instance"}};
-        writePath(req, *t.resolvedPath);
-        provider->send(req.dump());
-      }
-    }
+    if (ImGui::SmallButton("Go To")) ReviewView::goTo(t);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Show it in the design tree and the schematic (as clicking the thread does)");
   }
 
   for (const auto& c : t.comments) {
@@ -157,7 +151,7 @@ void ReviewView::render(INetlistProvider* provider) {
       if (ImGui::Selectable("##row", g_selected == t.id,
                             ImGuiSelectableFlags_SpanAllColumns)) {
         g_selected = t.id;
-        if (t.resolvedPath) SelectionStore::select(*t.resolvedPath, SelectionStore::Origin::Host);
+        goTo(t);
       }
       ImGui::PopID();
       ImGui::SameLine();
@@ -251,4 +245,17 @@ bool ReviewView::takeFocusRequest() {
   const bool requested = g_focusRequested;
   g_focusRequested = false;
   return requested;
+}
+
+void ReviewView::goTo(const ReviewThread& t) {
+  if (t.state != ReviewState::Exact || !t.resolvedPath || t.anchor.kind == ReviewAnchorKind::View)
+    return;
+  SelectionStore::select(*t.resolvedPath, SelectionStore::Origin::Host);
+  g_goTo = GoTo{*t.resolvedPath, t.anchor};
+}
+
+std::optional<ReviewView::GoTo> ReviewView::takeGoTo() {
+  auto goTo = std::move(g_goTo);
+  g_goTo.reset();
+  return goTo;
 }

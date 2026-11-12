@@ -39,6 +39,18 @@ class ReviewView {
     // True once after showThreads(): the Review tab should be selected.
     static bool takeFocusRequest();
 
+    // Clicking a thread in the tab (or its Go To button) goes to its object:
+    // the thread's instance is selected now, and the object -- the
+    // instance, or its term/net -- is left here for AppLogic to reveal in
+    // the tree and bring into the schematic. Only an exact thread has one.
+    struct GoTo {
+      InstancePath path;    // the instance, or the one holding the term/net
+      ReviewAnchor anchor;  // its kind, term/net id and bit
+    };
+    static void goTo(const ReviewThread& thread);
+    // The pending go-to, once.
+    static std::optional<GoTo> takeGoTo();
+
     // Screen center of the dialog's Comment button in the last frame drawn
     // (tests click it), or nullopt while the dialog is closed.
     static std::optional<ImVec2> commentButtonForTesting();
