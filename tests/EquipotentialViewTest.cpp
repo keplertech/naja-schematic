@@ -3,6 +3,9 @@
 // EquipotentialView::renderSchematic() -- asserting on the requests it sends
 // through a FakeNetlistProvider and on the geometry it builds.
 #include "EquipotentialView.h"
+#include "DiagnosisStore.h"
+#include "ReviewStore.h"
+#include "ReviewView.h"
 #include "SchematicView.h"
 #include "SelectionStore.h"
 #include "TraceStore.h"
@@ -48,6 +51,7 @@ class SchematicClicks : public ::testing::Test {
     EquipotentialView::setProvider(nullptr);
     EquipotentialView::resetLayout();
     SelectionStore::clear();
+    ReviewStore::clear();
     for (auto* eq : eqs) delete eq;
     ImGui::DestroyContext();
   }
@@ -56,6 +60,10 @@ class SchematicClicks : public ::testing::Test {
 
   void frame(int n = 1) {
     for (int i = 0; i < n; ++i) {
+      // What a renderer backend does: text at a size not drawn before adds
+      // glyphs to the atlas, which must be rebuilt before the next frame.
+      unsigned char* px; int w, h;
+      ImGui::GetIO().Fonts->GetTexDataAsRGBA32(&px, &w, &h);
       ImGui::NewFrame();
       ImGui::SetNextWindowPos(ImVec2(0.f, 0.f));
       ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
@@ -946,4 +954,60 @@ TEST_F(SchematicClicks, BareKeyZoomIgnoresCtrlChords) {
   frame();
 
   EXPECT_EQ(sv().transform.scale, scaleBefore);
+}
+
+namespace {
+// One open thread on the term `termId` of the instance `idPath` ({} = a
+// top-level port), as the host pushes it.
+void reviewOnTerm(std::vector<unsigned> idPath, unsigned termId, const std::string& terminal) {
+  nlohmann::json thread = {
+      {"id", "t1"}, {"author", "Jane"}, {"status", "open"}, {"severity", "error"},
+      {"anchor", {{"kind", "term"}, {"id_path", idPath}, {"term_id", termId},
+                  {"terminal", terminal}}},
+      {"resolution", {{"state", "exact"}, {"id_path", idPath}}},
+      {"comments", nlohmann::json::array({{{"author", "Jane"}, {"text", "glitch here"}}})}};
+  ReviewStore::setResponse({{"response", "review_response"}, {"writable", true},
+                            {"threads", nlohmann::json::array({thread})}});
+}
+}  // namespace
+
+TEST_F(SchematicClicks, APinWithAnOpenThreadHasABadgeThatOpensIt) {
+  reviewOnTerm({2}, 20, "A");
+  showFirstNet();
+  const Port* a = pin({{2, "u2"}}, "A");
+  ASSERT_NE(a, nullptr);
+  EXPECT_EQ(a->reviewOpen, 1);
+  EXPECT_EQ(a->reviewColor, DiagnosisStore::colorForSeverity(DiagnosisSeverity::Error));
+  EXPECT_EQ(pin({{1, "u1"}}, "Q")->reviewOpen, 0);
+
+  const auto badges = sv().reviewBadges(EquipotentialView::canvasOriginForTesting(), ImVec2());
+  ASSERT_EQ(badges.size(), 1u);
+  EXPECT_EQ(badges[0].portId, a->id);
+
+  // Clicking it opens the thread in the Review tab, and does nothing else.
+  ReviewView::takeFocusRequest();
+  moveTo(badges[0].center);
+  click();
+  EXPECT_EQ(ReviewView::selectedThread(), "t1");
+  EXPECT_TRUE(ReviewView::takeFocusRequest());
+  EXPECT_TRUE(provider.sent.empty());
+  EXPECT_FALSE(SelectionStore::hasSelection());
+
+  // It's in the export too.
+  EXPECT_NE(EquipotentialView::exportSvg().find(">1</text>"), std::string::npos);
+}
+
+TEST_F(SchematicClicks, ATopLevelPortWithAnOpenThreadHasABadge) {
+  reviewOnTerm({}, 5, "q");
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u1", 1, "Q", 10, Direction::Output, 1));
+  e.terms.push_back(BitTerm{"q", 5, Direction::Output, std::nullopt});
+  add(e);
+  frame(3);
+  const auto badges = sv().reviewBadges(EquipotentialView::canvasOriginForTesting(), ImVec2());
+  ASSERT_EQ(badges.size(), 1u);
+  const InstanceShape* flag = sv().findInstanceById(badges[0].instanceId);
+  ASSERT_NE(flag, nullptr);
+  EXPECT_EQ(flag->modelName, "port");
+  EXPECT_EQ(badges[0].portId, flag->ports[0].id);
 }

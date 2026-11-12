@@ -99,6 +99,18 @@ public:
 
     bool computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const;
 
+    // A review badge as drawn, in screen coordinates: an instance box's or
+    // module frame's (portId -1), or a pin's (a top-level port's flag
+    // included). What the view hit-tests to show and open the threads.
+    struct ReviewBadge {
+        int    instanceId = -1;
+        int    portId = -1;
+        ImVec2 center;
+        float  radius = 0.0f;
+    };
+    // Every badge shown at the current zoom (hidden with the labels).
+    std::vector<ReviewBadge> reviewBadges(const ImVec2& canvasPos, const ImVec2& canvasSize) const;
+
 private:
     bool needsFit_ = true;
     bool hasUserInteraction_ = false;

@@ -424,6 +424,10 @@ struct Port {
     // A sequential cell's clock pin, as naja models it (never guessed from
     // the pin name) -- drawDffInstance() marks it with the clock notch.
     bool clock = false;
+    // Open review threads on this pin's term (ReviewStore::pinThreads):
+    // a numbered disc by the pin, in `reviewColor`, like a box's badge.
+    int   reviewOpen = 0;
+    ImU32 reviewColor = 0;
 };
 
 struct InstanceShape {

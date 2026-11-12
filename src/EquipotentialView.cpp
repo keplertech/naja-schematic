@@ -91,6 +91,38 @@ struct PortEquiRequest {
 };
 static std::map<int, OccurrenceInfo>  g_occInfoByShapeId;
 static std::map<int, PortEquiRequest> g_portEquiByPortId;
+// The term a merged bus pin stands for (no bit: the whole bus), for its
+// review threads. Rebuilt every frame.
+static std::map<int, PortEquiRequest> g_busTermByPortId;
+
+// The review threads a pin's badge counts (ReviewStore::pinThreads).
+static std::vector<const ReviewThread*> pinReviewThreads(int portId) {
+    auto bus = g_busTermByPortId.find(portId);
+    if (bus != g_busTermByPortId.end())
+        return ReviewStore::pinThreads(bus->second.pathIds, bus->second.termId, std::nullopt);
+    auto it = g_portEquiByPortId.find(portId);
+    if (it == g_portEquiByPortId.end()) return {};
+    return ReviewStore::pinThreads(it->second.pathIds, it->second.termId, it->second.bit);
+}
+
+// The review badge under the cursor (screen position), if any: the threads
+// it counts, for its tooltip and click.
+static std::optional<SchematicView::ReviewBadge> pickReviewBadge(ImVec2 mouse) {
+    std::optional<SchematicView::ReviewBadge> best;
+    float bestD = 0.0f;
+    for (const auto& b : g_schematic.reviewBadges(g_canvasOrigin, g_canvasSize)) {
+        const float dx = mouse.x - b.center.x, dy = mouse.y - b.center.y;
+        const float d = dx * dx + dy * dy;
+        if (d <= b.radius * b.radius && (!best || d < bestD)) { best = b; bestD = d; }
+    }
+    return best;
+}
+
+static std::vector<const ReviewThread*> badgeThreads(const SchematicView::ReviewBadge& b) {
+    if (b.portId >= 0) return pinReviewThreads(b.portId);
+    const InstanceShape* shape = g_schematic.findInstanceById(b.instanceId);
+    return shape ? ReviewStore::instanceThreads(shape->path) : std::vector<const ReviewThread*>{};
+}
 // One bus pin group: (instance, bus base name, is input).
 using BusGroupKey = std::tuple<InstancePath, std::string, bool>;
 // Merged bus-pin port id -> the bus group it expands on click.
@@ -678,7 +710,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         ImGui::EndPopup();
     }
 
-    // Single click: an instance's hierarchy glyph expands/collapses its
+    // Single click: a review badge opens its thread in the Review tab; an
+    // instance's hierarchy glyph expands/collapses its
     // sub-instances nested inside its box; otherwise a pin runs its click
     // action (see clickPin), a wire selects its net and a box body its
     // instance. The glyph is checked first since it's a small,
@@ -689,8 +722,15 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         ImGui::GetMouseClickedCount(ImGuiMouseButton_Left) == 1) {
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
+        bool badgeHit = false;
+        if (auto badge = pickReviewBadge(ImGui::GetMousePos())) {
+            const auto threads = badgeThreads(*badge);
+            badgeHit = !threads.empty();
+            ReviewView::showThreads(threads);
+        }
         bool glyphHit = false;
         for (const auto& inst : g_schematic.instances) {
+            if (badgeHit) break;
             if (!canShowHierToggle(inst)) continue;
             float gx0, gy0, gx1, gy1;
             hierToggleGlyphRect(inst, gx0, gy0, gx1, gy1);
@@ -714,7 +754,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
             break;
         }
-        if (glyphHit || clickPin(wp)) {
+        if (badgeHit || glyphHit || clickPin(wp)) {
             // handled
         } else if (auto wire = pickRoute(wp)) {
             // On a wire (routes avoid boxes, but cross module frames): select
@@ -743,7 +783,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
         const float wx = wp.x, wy = wp.y;
         const bool hit = SchematicInteraction::pickPin(g_schematic.instances, wp,
-                                                       g_schematic.transform.scale).has_value();
+                                                       g_schematic.transform.scale).has_value() ||
+                         pickReviewBadge(ImGui::GetMousePos()).has_value();
         if (!hit) {
             // A hierarchy-expanded box's nested children sit *inside* its
             // own bounding rect, so a forward scan would always match the
@@ -776,6 +817,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     g_portEquiByPortId.clear();
     g_busGroupByPortId.clear();
     g_expandedBusGroupByPortId.clear();
+    g_busTermByPortId.clear();
 
     int nextInstId = 1, nextPortId = 1, totalItems = 0;
 
@@ -1277,6 +1319,22 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         }
     }
 
+    // Review badges on pins: the open threads on each pin's term (its bit,
+    // or the whole term; a merged bus pin, every bit of the bus).
+    for (const auto& [logical, rendered] : logicalToRenderedPortId) {
+        auto it = g_portEquiByPortId.find(logical);
+        if (logical == rendered || !g_busGroupByPortId.count(rendered) ||
+            it == g_portEquiByPortId.end()) continue;
+        g_busTermByPortId[rendered] = { it->second.pathIds, it->second.termId, std::nullopt };
+    }
+    for (auto& inst : g_schematic.instances) {
+        for (auto& p : inst.ports) {
+            const auto threads = pinReviewThreads(p.id);
+            p.reviewOpen  = int(ReviewStore::openCount(threads));
+            p.reviewColor = ReviewStore::openColor(threads);
+        }
+    }
+
     // Pass 4: wires per equip
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         const auto& ends = equiEnds[ei];
@@ -1492,8 +1550,23 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         ImGui::IsMouseHoveringRect(cpos, ImVec2(cpos.x + inner.x, cpos.y + inner.y)) &&
         !ImGui::IsPopupOpen("##ctx") && !ImGui::IsMouseDragging(ImGuiMouseButton_Right) &&
         !ImGui::IsMouseDragging(ImGuiMouseButton_Middle);
-    bool pinHovered = false;
+    // A review badge first: it sits over a pin's or box's corner.
+    bool badgeHovered = false;
     if (canvasHovered) {
+        if (auto badge = pickReviewBadge(ImGui::GetMousePos())) {
+            const auto threads = badgeThreads(*badge);
+            if (!threads.empty()) {
+                badgeHovered = true;
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                ImGui::BeginTooltip();
+                ReviewView::threadsTooltip(threads);
+                ImGui::TextDisabled("Click: open in the Review tab");
+                ImGui::EndTooltip();
+            }
+        }
+    }
+    bool pinHovered = badgeHovered;
+    if (canvasHovered && !badgeHovered) {
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
         auto hit = SchematicInteraction::pickPin(g_schematic.instances, wp, g_schematic.transform.scale);
         InstanceShape* inst = hit ? g_schematic.findInstanceById(hit->instanceId) : nullptr;

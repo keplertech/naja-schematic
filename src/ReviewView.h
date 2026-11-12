@@ -30,6 +30,15 @@ class ReviewView {
     // Hover tooltip listing these threads (their first comment each).
     static void threadsTooltip(const std::vector<const ReviewThread*>& threads);
 
+    // Opens one of these threads in the Review tab (the first open one, else
+    // the first): selects it, lists every thread if it isn't open, and asks
+    // for the tab to be brought forward (takeFocusRequest()).
+    static void showThreads(const std::vector<const ReviewThread*>& threads);
+    // The thread selected in the tab ("" for none).
+    static const std::string& selectedThread();
+    // True once after showThreads(): the Review tab should be selected.
+    static bool takeFocusRequest();
+
     // Screen center of the dialog's Comment button in the last frame drawn
     // (tests click it), or nullopt while the dialog is closed.
     static std::optional<ImVec2> commentButtonForTesting();

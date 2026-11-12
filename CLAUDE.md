@@ -828,8 +828,14 @@ path the host read, used by the native "Open in Editor".
   `commentMenuItem()` from the tree's instance/term/net menus and the
   schematic's box and pin menus -- only shown when the host is writable.
   The tree shows `[n]` open threads after a row, the schematic a numbered
-  disc on a box's corner (`InstanceShape::reviewOpen`, drawn through the
-  painter); hovering a tree row lists them.
+  disc on a box's corner (`InstanceShape::reviewOpen`) and next to a pin
+  or on a top-level port's flag with threads on its term (`Port::reviewOpen`,
+  `ReviewStore::pinThreads()`: that bit's threads plus the whole term's; a
+  merged bus pin, every bit's), drawn through the painter. Hovering a tree
+  row or a disc lists them; clicking a disc opens one in the Review tab
+  (`ReviewView::showThreads()`, `SchematicView::reviewBadges()` hit-tests
+  the drawn geometry). Net threads have no schematic badge: a wire tree is
+  an equipotential across the hierarchy, which no net id names.
 - **`SelectionStore`** — global static store (same pattern) for the one
   selection: an instance, by `InstancePath` (`{}` = top), or a schematic
   net, by `SchematicNetRef` (the pin its wire tree starts from: instance
