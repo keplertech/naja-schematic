@@ -188,8 +188,8 @@ inline std::string displayNetName(const std::string& name, unsigned id) {
 
 struct BitTerm {
   std::string name;
-  unsigned child_id;
-  Direction direction;
+  unsigned child_id = 0;
+  Direction direction = Direction::Inout;
   std::optional<int> bit;
   bool clock = false;  // a sequential cell's clock pin (naja's isClock)
 
@@ -445,6 +445,9 @@ struct Port {
     // A sequential cell's clock pin, as naja models it (never guessed from
     // the pin name) -- drawDffInstance() marks it with the clock notch.
     bool clock = false;
+    // The host found nothing else on this pin's net (EquipotentialView::
+    // markUnconnected()): drawn with a no-connect cross, never "open".
+    bool unconnected = false;
     // Open review threads on this pin's term (ReviewStore::pinThreads):
     // a numbered disc by the pin, in `reviewColor`, like a box's badge.
     int   reviewOpen = 0;

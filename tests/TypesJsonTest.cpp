@@ -197,7 +197,7 @@ TEST(NetsResponseJson, ParsesScalarAndBusNets) {
 TEST(EquipotentialJson, ParsesTermsAndOccurrences) {
   json j = {
     {"terms", json::array({
-      {{"name", "q"}, {"direction", 1}, {"bit", 3}},
+      {{"name", "q"}, {"child_id", 5}, {"direction", 1}, {"bit", 3}},
     })},
     {"occurrences", json::array({
       {
@@ -214,6 +214,7 @@ TEST(EquipotentialJson, ParsesTermsAndOccurrences) {
 
   ASSERT_EQ(e.terms.size(), 1u);
   EXPECT_EQ(e.terms[0].name, "q");
+  EXPECT_EQ(e.terms[0].child_id, 5u);  // the port's id, which a click on its flag sends
   ASSERT_TRUE(e.terms[0].bit.has_value());
   EXPECT_EQ(*e.terms[0].bit, 3);
 

@@ -1120,3 +1120,63 @@ TEST_F(SchematicClicks, AnUnnamedGatesPinsAreLabeledByIdAndNotDuplicated) {
   ASSERT_NE(bus, nullptr);
   EXPECT_TRUE(bus->isBus);
 }
+
+namespace {
+nlohmann::json pinReply(bool found, std::vector<unsigned> path, unsigned termId) {
+  return {{"response", "equipotential_response"}, {"found", found},
+          {"start", {{"path", path}, {"term_id", termId}, {"bit", nullptr}}}};
+}
+}  // namespace
+
+// A pin the host found with nothing on its net -- no net at all, or a net
+// holding only it -- is drawn not connected, and clicking it asks nothing.
+TEST_F(SchematicClicks, APinWithNothingOnItsNetIsMarkedNotConnected) {
+  showFirstNet();
+  expandU2();
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  ASSERT_EQ(sent("load_equipotential").size(), 1u);
+  ASSERT_TRUE(pin({{2, "u2"}}, "B")->pending);
+
+  // u2.B: no net, so an empty net.
+  EXPECT_TRUE(EquipotentialView::noteUnconnectedReply(pinReply(true, {2}, 21),
+                                                      Equipotential{true, {}, {}}));
+  // u2.Y: alone on its net.
+  Equipotential alone{true, {}, {}};
+  alone.occurrences.push_back(occ("u2", 2, "Y", 22, Direction::Output, 3));
+  EXPECT_TRUE(EquipotentialView::noteUnconnectedReply(pinReply(true, {2}, 22), alone));
+  frame(2);
+  for (const char* name : {"B", "Y"}) {
+    const Port* p = pin({{2, "u2"}}, name);
+    ASSERT_NE(p, nullptr);
+    EXPECT_TRUE(p->unconnected) << name;
+    EXPECT_FALSE(p->open) << name;
+    EXPECT_FALSE(p->pending) << name;
+  }
+  EXPECT_FALSE(pin({{2, "u2"}}, "A")->unconnected);
+
+  // Nothing more to load from it.
+  provider.sent.clear();
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  EXPECT_TRUE(sent("load_equipotential").empty());
+}
+
+TEST_F(SchematicClicks, OnlyAFoundPinAloneOnItsNetIsNotConnected) {
+  showFirstNet();
+  expandU2();
+  // Not found (bad ids): unknown, not "not connected".
+  EXPECT_FALSE(EquipotentialView::noteUnconnectedReply(pinReply(false, {2}, 21),
+                                                       Equipotential{true, {}, {}}));
+  // Something else on the net: connected.
+  Equipotential net{true, {}, {}};
+  net.occurrences.push_back(occ("u2", 2, "B", 21, Direction::Input, 3));
+  net.occurrences.push_back(occ("u9", 9, "Y", 90, Direction::Output, 1));
+  EXPECT_FALSE(EquipotentialView::noteUnconnectedReply(pinReply(true, {2}, 21), net));
+  // No echo (another request kind): nothing to say.
+  EXPECT_FALSE(EquipotentialView::noteUnconnectedReply({{"response", "equipotential_response"}},
+                                                       Equipotential{true, {}, {}}));
+  frame(2);
+  EXPECT_TRUE(pin({{2, "u2"}}, "B")->open);
+  EXPECT_FALSE(pin({{2, "u2"}}, "B")->unconnected);
+}

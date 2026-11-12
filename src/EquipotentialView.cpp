@@ -105,6 +105,9 @@ static std::vector<const ReviewThread*> pinReviewThreads(int portId) {
     return ReviewStore::pinThreads(it->second.pathIds, it->second.termId, it->second.bit);
 }
 
+// Pins the host found unconnected (markUnconnected()).
+static std::set<SchematicInteraction::PinRequestKey> g_unconnectedPins;
+
 // focusObject(): the object to bring into view, and whether what adds it
 // was requested (since when: given up after a few seconds).
 struct PendingFocus {
@@ -160,6 +163,37 @@ void EquipotentialView::focusObject(const FocusTarget& target) {
     // The top design has no box: only its ports can be shown.
     if (target.path.empty() && !target.termId) { g_focus.reset(); return; }
     g_focus = PendingFocus{target};
+}
+
+void EquipotentialView::markUnconnected(const std::vector<unsigned>& pathIds, unsigned termId,
+                                        std::optional<int> bit) {
+    const auto key = SchematicInteraction::pinRequestKey(pathIds, termId, bit);
+    g_unconnectedPins.insert(key);
+    g_pendingPinNets.resolve(key);  // answered: no more "loading"
+}
+
+bool EquipotentialView::noteUnconnectedReply(const json& reply, const Equipotential& eq) {
+    if (!reply.value("found", false) || !reply.contains("start") || !reply["start"].is_object())
+        return false;
+    const json& s = reply["start"];
+    // Ids, signed or not as JSON numbers go (the request's own encoding).
+    auto isId = [](const json& v) { return v.is_number_integer() && v.get<long long>() >= 0; };
+    std::vector<unsigned> pathIds;
+    for (const auto& id : s.value("path", json::array())) {
+        if (!isId(id)) return false;
+        pathIds.push_back(id.get<unsigned>());
+    }
+    if (!s.contains("term_id") || !isId(s["term_id"])) return false;
+    const unsigned termId = s["term_id"].get<unsigned>();
+    std::optional<int> bit;
+    if (s.contains("bit") && s["bit"].is_number_integer()) bit = s["bit"].get<int>();
+    // Anything on the net but the pin itself: it's connected.
+    for (const auto& o : eq.occurrences)
+        if (o.pathIds != pathIds || o.term.child_id != termId || o.term.bit != bit) return false;
+    for (const auto& t : eq.terms)
+        if (!pathIds.empty() || t.child_id != termId || t.bit != bit) return false;
+    markUnconnected(pathIds, termId, bit);
+    return true;
 }
 
 bool EquipotentialView::takeAddOnResolve(const InstancePath& path) {
@@ -587,6 +621,7 @@ void EquipotentialView::resetLayout() {
     g_shownBeforePinNet.clear();
     g_portsBeforePinNet.clear();
     g_pendingPinNets.clear();
+    g_unconnectedPins.clear();
     g_focus.reset();
     g_focusPin.reset();
     g_addOnResolve.clear();
@@ -1451,6 +1486,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             const auto threads = pinReviewThreads(p.id);
             p.reviewOpen  = int(ReviewStore::openCount(threads));
             p.reviewColor = ReviewStore::openColor(threads);
+            auto req = g_portEquiByPortId.find(p.id);
+            if (req != g_portEquiByPortId.end() && g_unconnectedPins.count(pinRequestKey(req->second))) {
+                p.unconnected = true;
+                p.open = p.pending = false;  // nothing more to load
+            }
         }
     }
 
@@ -1711,7 +1751,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 case PinAction::ExpandBus: ImGui::TextDisabled("Click: show the individual bits"); break;
                 case PinAction::LoadNet:   ImGui::TextDisabled("Click: add this net to the view"); break;
                 case PinAction::Loading:   ImGui::TextDisabled("Loading net..."); break;
-                case PinAction::None:      ImGui::TextDisabled("Net shown"); break;
+                case PinAction::None:
+                    ImGui::TextDisabled(port->unconnected ? "Not connected" : "Net shown");
+                    break;
             }
             if (g_portEquiByPortId.count(port->id))
                 ImGui::TextDisabled("Right-click: Trace to Driver (add to view)");

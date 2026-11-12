@@ -150,6 +150,11 @@ void from_json(const json& j, Equipotential& e) {
       if (termJson.contains("name") && !termJson["name"].is_null()) {
         term.name = termJson["name"].get<std::string>();
       }
+      // The port's id: what a pin click, a trace or a review anchor on its
+      // flag sends back.
+      if (termJson.contains("child_id") && !termJson["child_id"].is_null()) {
+        term.child_id = termJson["child_id"].get<unsigned>();
+      }
       if (termJson.contains("direction") && !termJson["direction"].is_null()) {
         term.direction = intToDirection(termJson["direction"].get<int>());
       }
