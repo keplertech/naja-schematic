@@ -22,7 +22,8 @@
        "terms": [["i", "input"], ["o", "output"]],
        "instances": [["", "LEAF"], ["", "LEAF"], ["u_leaf", "LEAF"]],
        "nets": [{"name": "i", "term": "i", "pins": [[0, "A"], [1, "A"]]},
-                {"name": "o", "term": "o", "pins": [[1, "Y"]]}]},
+                {"name": "o", "term": "o", "pins": [[1, "Y"]]},
+                {"name": "w", "pins": [[2, "A"]]}]},
       {"name": "top_anon",
        "terms": [["x", "input"]],
        "instances": [["", "mid"], ["", "mid"], ["a/b", "mid"], ["u_mid", "mid"]],
@@ -193,7 +194,22 @@
 
     {"name": "an unresolved load_equipotential still echoes its trace_id",
      "request": {"request": "load_equipotential", "path": [], "term_id": 99, "trace_id": 8},
-     "expect": [{"response": "equipotential_response", "trace_id": 8}]},
+     "expect": [{"response": "equipotential_response", "trace_id": 8, "found": false,
+                 "start": {"path": [], "term_id": 99, "bit": null}}]},
+
+    {"name": "a pin with no net is found, with nothing on its net (the viewer marks it unconnected)",
+     "request": {"request": "load_equipotential", "path": [0, 0], "term_id": 1},
+     "expect": [{"response": "equipotential_response", "found": true,
+                 "start": {"path": [0, 0], "term_id": 1, "bit": null},
+                 "terms": [], "occurrences": []}]},
+
+    {"name": "a pin alone on its net is found, and its net holds only itself",
+     "request": {"request": "load_equipotential", "path": [0, 2], "term_id": 0},
+     "expect": [{"response": "equipotential_response", "found": true,
+                 "start": {"path": [0, 2], "term_id": 0, "bit": null},
+                 "terms": [],
+                 "occurrences": [{"path": [["", 0, "mid"], ["u_leaf", 2, "LEAF"]], "name": "A",
+                                  "child_id": 0}]}]},
 
     {"name": "instance_selected is a notification",
      "request": {"request": "instance_selected", "path": ["", ""], "id_path": [1, 0]},

@@ -372,6 +372,12 @@ void setupProvider(AppState& state) {
       int traceId = j.value("trace_id", 0);
       if (traceId != 0 && !TraceStore::find(traceId)) traceId = 0;  // removed meanwhile
       auto* eq = new Equipotential(j.get<Equipotential>());
+      if (EquipotentialView::noteUnconnectedReply(j, *eq)) {
+        // Nothing else on the pin's net: it's drawn with a no-connect cross.
+        const Trace* t = traceId ? TraceStore::find(traceId) : nullptr;
+        Console::Log((t ? t->label.substr(0, t->label.rfind(" (net)")) : std::string("Pin")) +
+                     ": not connected");
+      }
       if (traceId != 0 && eq->terms.empty() && eq->occurrences.empty()) {
         // Nothing to show (unresolved term): no empty row in the Traces tab.
         TraceStore::remove(traceId);

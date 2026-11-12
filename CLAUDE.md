@@ -478,6 +478,17 @@ meets other traces. A schematic pin click sends no `trace_id`: those nets
 are exploration and stay the plain wire color (a `direct` net). An empty
 reply to a tagged request drops its trace, so no empty row is left.
 
+`equipotential_response` also echoes the pin it was asked about,
+`"start": {"path", "term_id", "bit"}`, and `"found"`: whether that pin
+resolved. A found pin with nothing else on its net -- no net at all (an
+empty reply), or a net holding only itself -- is **not connected**:
+`EquipotentialView::noteUnconnectedReply()` marks it (`markUnconnected()`,
+`Port::unconnected`), and it's drawn with a no-connect cross (on a
+top-level port, past its flag's tip), says "Not connected" in its tooltip,
+and is never requested again; the console logs it. A pin that didn't
+resolve (`found: false`) is never marked. Shared cases in
+`tests/data/anonymous_protocol_cases.json` cover both kinds.
+
 Extending the schematic by hand works pin by pin. A box drawn with a dashed
 border shows only the pins on nets already in view; double-clicking its body
 sends `expand_instance_terms` and reveals the rest. Pins whose net isn't in

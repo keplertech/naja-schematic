@@ -600,6 +600,11 @@ def _handle_load_equipotential(u, request):
     # "Show Equipotential"); a schematic pin click sends none.
     if "trace_id" in request:
         response["trace_id"] = request["trace_id"]
+    # Also echoed: the pin asked about, and whether it exists. An empty net
+    # for a found pin means it's not connected (the viewer marks it), unlike
+    # one that didn't resolve.
+    response["start"] = {"path": path_ids, "term_id": term_id, "bit": bit}
+    response["found"] = start_point is not None
     return [response]
 
 

@@ -306,6 +306,13 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
             dl->AddCircleFilled(c, r, pending ? portColor : kCanvasBgColor);
             dl->AddCircle(c, r, portColor, 0, std::max(1.0f, tickThickness * 0.8f));
         }
+        // Not connected: the schematic no-connect cross on the stub's end.
+        if (p.unconnected) {
+            float r = std::max(kMinOpenPinR, kOpenPinBaseR * sv.transform.scale);
+            ImVec2 c(tickEnd.x + (isLeft ? -r : r), tickEnd.y);
+            dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), portColor, tickThickness);
+            dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), portColor, tickThickness);
+        }
         // A merged bus pin gets the classic diagonal bus slash across its
         // tick instead of a plain line, in addition to its "[hi:lo]" label.
         if (p.isBus) {
@@ -810,6 +817,13 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
     };
     dl->AddConvexPolyFilled(pts, 5, kBoundaryPortFillColor);
     dl->AddPolyline(pts, 5, outline, lineThickness, ImDrawFlags_Closed);
+    // Not connected: a no-connect cross where its wire would start.
+    if (p.unconnected) {
+        const float r = halfH * 0.6f;
+        const ImVec2 c(anchor.x + (p.isInput ? r : -r) * 1.6f, anchor.y);
+        dl->AddLine(ImVec2(c.x - r, c.y - r), ImVec2(c.x + r, c.y + r), outline, lineThickness);
+        dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), outline, lineThickness);
+    }
     if (inst.diagOutline != 0)
         dl->AddPolyline(pts, 5, inst.diagOutline, 3.0f, ImDrawFlags_Closed);
 

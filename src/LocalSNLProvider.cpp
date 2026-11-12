@@ -957,24 +957,31 @@ std::optional<json> LocalSNLProvider::termRequest(const json& spec, std::string&
 std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const {
   // The viewer's trace_id (a tree "Show Equipotential") is echoed back, so
   // it knows which trace the net is for (see TraceStore).
-  auto reply = [&req](json response) {
+  // Also echoed: the pin asked about ("start") and whether it exists
+  // ("found"). An empty net for a found pin means it's not connected (the
+  // viewer marks it), unlike one that didn't resolve (protocol.py: same).
+  auto reply = [&req](json response, bool found) {
     response["response"] = "equipotential_response";
     if (req.contains("trace_id")) response["trace_id"] = req["trace_id"];
+    response["start"] = {{"path", req.value("path", json::array())},
+                         {"term_id", req.value("term_id", json())},
+                         {"bit", req.value("bit", json())}};
+    response["found"] = found;
     return response.dump();
   };
   const json empty = {{"terms", json::array()}, {"occurrences", json::array()}};
 
   auto* topDesign = db_ ? db_->getTopDesign() : nullptr;
-  if (!topDesign) return reply(empty);
+  if (!topDesign) return reply(empty, false);
 
   try {
     auto start = resolveStartOccurrence(topDesign, req, std::nullopt);
-    if (!start.isValid()) return reply(empty);
+    if (!start.isValid()) return reply(empty, false);
     SNLEquipotential equi(start, SNLEquipotential::Mode::TraverseAssigns);
-    return reply(equipotentialJson(equi));
+    return reply(equipotentialJson(equi), true);
   } catch (const std::exception& e) {
     Console::Error("buildEquipotentialResponse: " + std::string(e.what()));
-    return reply(empty);
+    return reply(empty, false);
   }
 }
 

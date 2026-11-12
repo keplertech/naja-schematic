@@ -115,6 +115,16 @@ class EquipotentialView {
     // instance is added to the view rather than replacing it.
     static bool takeAddOnResolve(const InstancePath& path);
 
+    // The host found this pin and nothing else on its net (no net, or a net
+    // with only it): it's drawn as not connected (a no-connect cross) and
+    // clicking it asks nothing more. `pathIds` {} = a top-level port.
+    static void markUnconnected(const std::vector<unsigned>& pathIds, unsigned termId,
+                                std::optional<int> bit);
+    // For an equipotential_response: when the host found the pin it echoes
+    // ("found", "start") and nothing on its net but that pin, marks it
+    // unconnected and returns true.
+    static bool noteUnconnectedReply(const json& reply, const Equipotential& eq);
+
     // Called by AppLogic when an instance_internals_response arrives.
     static void applyInstanceInternals(const InstancePath& path,
                                        const InstanceInternals& data);
