@@ -221,17 +221,44 @@ asks a Python server (the `naja-schematic` package) over a WebSocket. To
 work on the Python package with a locally built viewer, see
 [python/README.md](python/README.md#development).
 
-A standalone page, talking to a server on `ws://localhost:8081/ws`:
+`scripts/najaeda_server.py` runs the `naja-schematic` server straight from
+this source tree, without installing it. The simplest setup is one process:
+build the viewer as a single-file bundle and let the server serve it,
+page and WebSocket on the same port:
+
+```bash
+emcmake cmake -S . -B build-wasm-module -DCMAKE_BUILD_TYPE=Release -DNAJA_SCHEMATIC_WASM_MODULE=ON
+cmake --build build-wasm-module
+export NAJA_SCHEMATIC_BUNDLE=$PWD/build-wasm-module/naja-schematic.js
+python3 scripts/najaeda_server.py --verilog design.v --liberty cells.lib --open
+```
+
+The viewer is at `http://localhost:8081/` (`--port` to change it), and
+Ctrl+C on the server stops everything. Without `NAJA_SCHEMATIC_BUNDLE` (or
+the bundle copied into `python/naja_schematic/static/`), a source checkout
+has no viewer to serve: the page stays blank and the server answers
+`naja-schematic.js` with a 404 saying so.
+
+When working on the standalone page itself (`naja-schematic.html`), build
+the plain WASM target and serve it separately. It connects to the server on
+`ws://localhost:8081/ws`. That's two processes, each stopped on its own, so
+run them in two terminals:
 
 ```bash
 emcmake cmake -S . -B build-wasm
 cmake --build build-wasm
-python3 scripts/najaeda_server.py --verilog design.v --liberty cells.lib &
+
+# terminal 1: the netlist server (port 8081)
+python3 scripts/najaeda_server.py --verilog design.v --liberty cells.lib
+
+# terminal 2: the page (port 8080)
 emrun --port 8080 build-wasm/naja-schematic.html
 ```
 
-`scripts/najaeda_server.py` runs the `naja-schematic` server straight from
-this source tree, without installing it.
+`emrun` opens a browser and keeps running until it's stopped, independently
+of the server: Ctrl+C on the server doesn't free port 8080. Any static file
+server works instead, e.g. `python3 -m http.server 8080 -d build-wasm`, then
+open `http://localhost:8080/naja-schematic.html`.
 
 ## How it works
 
