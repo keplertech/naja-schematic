@@ -188,6 +188,9 @@ void from_json(const json& j, Equipotential& e) {
       }
       if (occJson.contains("child_id") && !occJson["child_id"].is_null()) {
         term.child_id = occJson["child_id"].get<unsigned>();
+      } else if (occJson.contains("term_id") && !occJson["term_id"].is_null()) {
+        // naja-schematic <= 0.2.x Python hosts named it "term_id".
+        term.child_id = occJson["term_id"].get<unsigned>();
       }
       if (occJson.contains("direction") && !occJson["direction"].is_null()) {
         term.direction = intToDirection(occJson["direction"].get<int>());
