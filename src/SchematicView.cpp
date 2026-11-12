@@ -324,7 +324,12 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
         // Inside: at most half the box, so left and right names never meet.
         const float maxWidth = namesInside ? inst.w * 0.5f * sv.transform.scale - pad * 1.5f
                                            : 90.0f * sv.transform.scale;
-        std::string label = truncateToWidth(font, fontSize, p.name, maxWidth);
+        // A gate's pins are unnamed on the canvas: its bus pin shows only its
+        // range, "[7:0]" (the full name is in the pin's tooltip).
+        const size_t range = p.name.rfind('[');
+        const std::string shown = namesInside || range == std::string::npos ? p.name
+                                                                           : p.name.substr(range);
+        std::string label = truncateToWidth(font, fontSize, shown, maxWidth);
         if (label.empty()) continue;
         ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str());
         ImVec2 lblPos;

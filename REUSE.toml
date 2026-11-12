@@ -136,6 +136,7 @@ path = [
   "tests/VerilogLanguageTest.cpp",
   "tests/data/anonymous_protocol_cases.json",
   "tests/data/source_protocol_cases.json",
+  "tests/data/sv/gates.sv",
   "tests/data/sv/operators.sv",
   "tests/data/sv/two_tops.sv",
   "tests/data/sources/gate/alu_syn.v",
