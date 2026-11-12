@@ -447,6 +447,25 @@ TEST(ProviderLoading, BadVHDLLeavesNoDesign) {
 
 // The word-level operators SystemVerilog lowers to are drawn as such, from
 // NLDB0's own identification of the model (never its name).
+// The gates naja builds for SystemVerilog operators have unnamed terms: sent
+// as "" (the viewer shows them by id), like protocol.py, never a made-up name.
+TEST(ProviderLoading, UnnamedGateTermsAreSentWithAnEmptyName) {
+  LoadedProvider p;
+  p.provider.loadSystemVerilog({testData("sv/gates.sv")});
+  ASSERT_TRUE(p.provider.hasDesign());
+  json root = p.ask({{"request", "load_root"}})["root"];
+  json prims = p.ask({{"request", "load_primitives"}, {"design_ref", root["design_ref"]}})["children"];
+  bool sawGate = false;
+  for (const auto& gate : prims) {
+    if (gate["model_name"] != "and_2" && gate["model_name"] != "or_2") continue;
+    sawGate = true;
+    json terms = p.ask({{"request", "load_terms"}, {"design_ref", gate["design_ref"]}})["children"];
+    ASSERT_EQ(terms.size(), 2u);
+    for (const auto& t : terms) EXPECT_EQ(t["name"], "") << t.dump();
+  }
+  EXPECT_TRUE(sawGate);
+}
+
 TEST(ProviderLoading, WordLevelOperatorsGetTheirPrimitiveType) {
   LoadedProvider p;
   p.provider.loadSystemVerilog({testData("sv/operators.sv")});

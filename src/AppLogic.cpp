@@ -414,8 +414,8 @@ void setupProvider(AppState& state) {
       if (j.contains("terms") && j["terms"].is_array()) {
         for (const auto& t : j["terms"]) {
           EquipotentialView::ExpandedPort ep;
-          ep.name    = t.value("name", std::string(""));
           ep.childId = t.value("child_id", 0u);
+          ep.name    = displayPinLabel(t.value("name", std::string("")), ep.childId);
           if (t.contains("bit") && !t["bit"].is_null())
             ep.bit = t["bit"].get<int>();
           ep.clock = t.value("clock", false);
@@ -455,7 +455,8 @@ void setupProvider(AppState& state) {
           if (n.contains("pins") && n["pins"].is_array()) {
             for (const auto& p : n["pins"]) {
               EquipotentialView::InternalPin ip;
-              ip.name    = p.value("name", std::string(""));
+              ip.name    = displayTermName(p.value("name", std::string("")),
+                                           p.value("child_id", 0u));
               int dirInt = p.value("direction", 0);
               ip.direction = dirInt == 1 ? Direction::Output
                            : dirInt == 2 ? Direction::Inout

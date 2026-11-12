@@ -2,6 +2,20 @@
 
 #include <gtest/gtest.h>
 
+// Unnamed terms (naja's operator gates) are shown by id, never by "".
+TEST(TermNames, AnUnnamedTermIsShownByItsId) {
+  EXPECT_EQ(displayTermName("A", 3), "A");
+  EXPECT_EQ(displayTermName("", 3), "<term #3>");
+  EXPECT_EQ(displayNetName("", 5), "<net #5>");
+  EXPECT_EQ((BitTerm{"", 0, Direction::Output, std::nullopt}).getString(), "<term #0>");
+  EXPECT_EQ((BitTerm{"", 1, Direction::Input, 2}).getString(), "<term #1>[2]");
+  EXPECT_EQ((BitTerm{"D", 1, Direction::Input, 2}).getString(), "D[2]");
+  // An expanded term's label already carries its bit.
+  EXPECT_EQ(displayPinLabel("[2]", 1), "<term #1>[2]");
+  EXPECT_EQ(displayPinLabel("", 0), "<term #0>");
+  EXPECT_EQ(displayPinLabel("D[2]", 1), "D[2]");
+}
+
 TEST(DesignRefJson, ParsesAllFields) {
   json j = {{"db_id", 1}, {"library_id", 2}, {"design_id", 3}};
   DesignRef d = j.get<DesignRef>();

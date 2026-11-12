@@ -357,6 +357,16 @@ are run against both (`python/tests/test_anonymous_instances.py`,
 `tests/provider/LocalSNLProviderProtocolTest.cpp`) -- add a case there
 when changing how either resolves or answers.
 
+**Unnamed terms and nets** get the same treatment. The gates naja builds
+for SystemVerilog operators (`and_N`, `or_N`, `not_1`, ...) have unnamed
+terms (output id 0, input bus id 1), and elaboration leaves many nets
+unnamed. Both backends send their name as `""` (never a made-up one), and
+the viewer shows `<term #id>` (`displayTermName()`, `displayPinLabel()`
+for a label already ending in `[bit]`) and `<net #id>` (`displayNetName()`)
+-- distinct from an instance's `<#id>`. Display only, never parsed: terms
+and nets are addressed by id. A gate symbol's bus pin draws only its range
+(`[1:0]`); the full name is in its tooltip.
+
 The C++ viewer follows the same rule internally: an instance's identity is
 an `InstancePath` (`std::vector<InstanceRef>`, `Types.h`), each segment an
 `{id, name}` pair that compares **by id only**, used directly as map/set

@@ -253,10 +253,10 @@ std::string anchorLabel(const ReviewAnchor& anchor) {
                  ? "<#" + std::to_string(anchor.idPath[i]) + ">" : name;
   }
   std::string object;
-  if (anchor.kind == ReviewAnchorKind::Term) object = anchor.terminal;
+  if (anchor.kind == ReviewAnchorKind::Term)
+    object = anchor.termId ? displayTermName(anchor.terminal, *anchor.termId) : anchor.terminal;
   if (anchor.kind == ReviewAnchorKind::Net)
-    object = anchor.net.empty() && anchor.netId
-                 ? "<net #" + std::to_string(*anchor.netId) + ">" : anchor.net;
+    object = anchor.netId ? displayNetName(anchor.net, *anchor.netId) : anchor.net;
   if (!object.empty()) {
     if (anchor.bit) object += "[" + std::to_string(*anchor.bit) + "]";
     label += label.empty() ? object : "/" + object;

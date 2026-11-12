@@ -167,6 +167,25 @@ inline const char* toString(Direction dir) {
   }
 }
 
+// A term's name for a human to read: its name, or "<term #id>" for an
+// unnamed one -- naja's gates for SystemVerilog operators (and_N, or_N,
+// ...) have unnamed terms. Not "<#id>", which is an anonymous instance's
+// (displayName()), so a pin never reads like an instance. Display only:
+// never sent back or parsed; the host addresses terms by id.
+inline std::string displayTermName(const std::string& name, unsigned id) {
+  return name.empty() ? "<term #" + std::to_string(id) + ">" : name;
+}
+// The same for a pin label that already ends in "[bit]" (an
+// expanded_instance_terms/instance_resolved term entry): "[3]" of an
+// unnamed bus is shown "<term #id>[3]".
+inline std::string displayPinLabel(const std::string& label, unsigned id) {
+  return label.empty() || label.front() == '[' ? displayTermName("", id) + label : label;
+}
+// A net's name for a human to read: its name, or "<net #id>".
+inline std::string displayNetName(const std::string& name, unsigned id) {
+  return name.empty() ? "<net #" + std::to_string(id) + ">" : name;
+}
+
 struct BitTerm {
   std::string name;
   unsigned child_id;
@@ -174,8 +193,10 @@ struct BitTerm {
   std::optional<int> bit;
   bool clock = false;  // a sequential cell's clock pin (naja's isClock)
 
+  // The pin's label: displayTermName() plus "[bit]" for a bus bit.
   std::string getString() const {
-    return name + (bit.has_value() ? ("[" + std::to_string(bit.value()) + "]") : "");
+    return displayTermName(name, child_id) +
+           (bit.has_value() ? ("[" + std::to_string(bit.value()) + "]") : "");
   }
 
   std::string getDebugString() const {

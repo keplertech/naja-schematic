@@ -639,8 +639,8 @@ EquipotentialView::startInstanceFromResolved(const json& reply) {
     start.hasSources = inst.value("has_sources", false);
     for (const auto& t : inst.value("terms", json::array())) {
         ExpandedPort ep;
-        ep.name    = t.value("name", std::string(""));
         ep.childId = t.value("child_id", 0u);
+        ep.name    = displayPinLabel(t.value("name", std::string("")), ep.childId);
         if (t.contains("bit") && !t["bit"].is_null()) ep.bit = t["bit"].get<int>();
         ep.clock   = t.value("clock", false);
         int dirInt   = t.value("direction", 0);

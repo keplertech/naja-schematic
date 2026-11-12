@@ -320,7 +320,7 @@ void NetlistTreeNode::render() {
         if (!clicked) continue;
         NetlistTree::Path path;
         getPath(path);
-        std::string label = getTermBaseName();
+        std::string label = displayTermName(getTermBaseName(), getChildID());
         if (isBusBit()) label += "[" + std::to_string(getBusBit()) + "]";
         getTree()->sendLoadEquipotential(
           path,
@@ -334,7 +334,7 @@ void NetlistTreeNode::render() {
         if (!clicked) continue;
         NetlistTree::Path path;
         getPath(path);
-        std::string label = getTermBaseName();
+        std::string label = displayTermName(getTermBaseName(), getChildID());
         if (isBusBit()) label += "[" + std::to_string(getBusBit()) + "]";
         getTree()->sendTraceDriver(
           path, getChildID(),
@@ -590,12 +590,7 @@ void NetlistTreeTermNode::expand() {
 }
 
 std::string NetlistTreeTermNode::getLabel() const {
-  std::string name;
-  if (not name_.empty()) {
-    name = name_;
-  } else {
-    name = "<unnamed>";
-  }
+  std::string name = displayTermName(name_, childID_);
   if (not isBitTerm()) {
     name += "[" + std::to_string(msb_.value()) + ":" + std::to_string(lsb_.value()) + "]";
   }
@@ -678,12 +673,9 @@ void NetlistTreeNetNode::expand() {
 }
 
 std::string NetlistTreeNetNode::getLabel() const {
-  std::string name;
-  if (not name_.empty()) {
-    name = name_;
-  } else {
-    name = "<unnamed>";
-  }
+  // An unnamed net shows its id when the host sent it, like a term.
+  std::string name = netID_ ? displayNetName(name_, *netID_)
+                            : (name_.empty() ? std::string("<unnamed>") : name_);
   if (not isBitNet()) {
     name += "[" + std::to_string(msb_.value()) + ":" + std::to_string(lsb_.value()) + "]";
   }

@@ -222,18 +222,10 @@ static std::string termName(const SNLTerm* t) {
   // getName() returns the plain base name with no "[bit]" suffix — the
   // client appends that itself from the separate "bit" field, so using
   // getString() here would double the brackets for bus bit terms.
-  auto s = t->getName().getString();
-  // Unnamed ports have an empty name — show direction instead, matching
-  // getString()'s "<term:id>" placeholder behavior.
-  if (s.empty()) {
-    switch (static_cast<SNLNetComponent::Direction::DirectionEnum>(t->getDirection())) {
-      case SNLNetComponent::Direction::DirectionEnum::Input:  return "(in)";
-      case SNLNetComponent::Direction::DirectionEnum::Output: return "(out)";
-      case SNLNetComponent::Direction::DirectionEnum::InOut:  return "(inout)";
-      default: return s;
-    }
-  }
-  return s;
+  // An unnamed term (naja's gates for SystemVerilog operators) is sent as
+  // "", like an anonymous instance and like protocol.py: the viewer shows
+  // it by id (displayTermName() in Types.h).
+  return t->getName().getString();
 }
 
 // Build a bit-term JSON node (shared by terms and occurrence entries).
