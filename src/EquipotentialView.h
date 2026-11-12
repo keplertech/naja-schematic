@@ -96,6 +96,25 @@ class EquipotentialView {
     // when it has none (not found, or the top design).
     static std::optional<StartInstance> startInstanceFromResolved(const json& reply);
 
+    // An object to bring into view (a review thread's): an instance, or one
+    // of its pins (a term, and a bus bit if `bit` is set; `path` {} = a
+    // top-level port).
+    struct FocusTarget {
+      InstancePath            path;
+      std::optional<unsigned> termId;
+      std::optional<int>      bit;
+    };
+    // Pans to the target if it's drawn, as little as possible, and
+    // highlights a pin for a moment. Otherwise adds it to the view, keeping
+    // what's shown: an instance as a lone box (resolve_instance, see
+    // takeAddOnResolve()), a pin by loading its net (an instance's term
+    // without a bit, maybe a whole bus: its instance); then pans to it once
+    // it arrives.
+    static void focusObject(const FocusTarget& target);
+    // True once for an instance_resolved that focusObject() asked for: the
+    // instance is added to the view rather than replacing it.
+    static bool takeAddOnResolve(const InstancePath& path);
+
     // Called by AppLogic when an instance_internals_response arrives.
     static void applyInstanceInternals(const InstancePath& path,
                                        const InstanceInternals& data);

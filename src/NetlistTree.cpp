@@ -86,6 +86,7 @@ void NetlistTree::render() {
   // revealed here; one made by clicking this tree is already visible.
   if (SelectionStore::revision() != seenSelectionRevision_) {
     seenSelectionRevision_ = SelectionStore::revision();
+    highlighted_.reset();
     if (SelectionStore::hasSelection() &&
         SelectionStore::origin() != SelectionStore::Origin::Tree)
       reveal(SelectionStore::selected());
@@ -111,8 +112,15 @@ void NetlistTree::render() {
   }
 }
 
-void NetlistTree::reveal(const InstancePath& path) {
+void NetlistTree::reveal(const InstancePath& path, std::optional<RevealLeaf> leaf) {
   revealPath_ = path;
+  revealLeaf_ = leaf;
+  highlighted_.reset();
+  seenSelectionRevision_ = SelectionStore::revision();
+}
+
+NetlistTreeNode* NetlistTree::highlightedNode() const {
+  return highlighted_ ? getNode(*highlighted_) : nullptr;
 }
 
 void NetlistTree::advanceReveal() {
@@ -154,6 +162,7 @@ void NetlistTree::advanceReveal() {
                        (node->getInstancePath().empty() ? node->getLabel()
                                                         : displayPath(node->getInstancePath())));
         revealPath_.reset();
+        revealLeaf_.reset();
       }
       return;
     }
@@ -161,9 +170,58 @@ void NetlistTree::advanceReveal() {
     toOpen.push_back(via);
     node = next;
   }
+  NetlistTreeNode* target = node;
+  if (revealLeaf_) {
+    // On into the instance's Terms or Nets group, to the row.
+    const bool isTerm = revealLeaf_->kind == RevealLeaf::Kind::Term;
+    const auto type = isTerm ? NetlistTreeGroupNode::Type::Terms : NetlistTreeGroupNode::Type::Nets;
+    node->expand();
+    NetlistTreeGroupNode* group = nullptr;
+    for (auto* child : *node->children_) {
+      auto* g = dynamic_cast<NetlistTreeGroupNode*>(child);
+      if (g && g->getType() == type) { group = g; break; }
+    }
+    if (group && !group->children_) {
+      if (!group->hasRequestedChildren_) {
+        group->hasRequestedChildren_ = true;
+        group->sendLoadRequest();
+      }
+      return;  // wait for its rows
+    }
+    NetlistTreeNode* row = nullptr;
+    if (group) {
+      for (auto* c : *group->children_) {
+        const bool match = isTerm ? (c->isBitTerm() || c->isBus()) && c->getChildID() == revealLeaf_->id
+                                  : c->getNetID() == revealLeaf_->id;
+        if (match) { row = c; break; }
+      }
+    }
+    if (!row) {
+      Console::Error(std::string("Cannot reveal ") + (isTerm ? "term" : "net") + " #" +
+                     std::to_string(revealLeaf_->id) + " in " +
+                     (node->getInstancePath().empty() ? node->getLabel()
+                                                      : displayPath(node->getInstancePath())));
+    } else {
+      toOpen.push_back(node);
+      toOpen.push_back(group);
+      target = row;
+      if (revealLeaf_->bit && (row->isBus() || row->isBusNet())) {
+        row->expand();
+        for (auto* b : *row->children_) {
+          if (b->isBusBit() && b->getBusBit() == *revealLeaf_->bit) {
+            toOpen.push_back(row);
+            target = b;
+            break;
+          }
+        }
+      }
+      highlighted_ = target->guiID_;
+    }
+  }
   for (auto* n : toOpen) forceOpen_.insert(n->guiID_);
-  scrollTo_ = node->guiID_;
+  scrollTo_ = target->guiID_;
   revealPath_.reset();
+  revealLeaf_.reset();
 }
 
 NetlistTreeNode* NetlistTree::findInstance(const InstancePath& path) const {
@@ -217,7 +275,8 @@ void NetlistTreeNode::render() {
   if (isLeaf()) {
     flags = flags | ImGuiTreeNodeFlags_Leaf;
   }
-  if (isInstanceNode() && SelectionStore::isSelected(getInstancePath())) {
+  if ((isInstanceNode() && SelectionStore::isSelected(getInstancePath())) ||
+      tree->highlighted_ == guiID_) {
     flags = flags | ImGuiTreeNodeFlags_Selected;
   }
   if (tree->forceOpen_.erase(guiID_)) {

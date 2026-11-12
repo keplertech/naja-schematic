@@ -2,6 +2,7 @@
 // EquipotentialViewTest): what it sends to the host.
 #include "ReviewStore.h"
 #include "ReviewView.h"
+#include "SelectionStore.h"
 
 #include <imgui.h>
 #include <nlohmann/json.hpp>
@@ -71,6 +72,33 @@ TEST_F(CommentDialog, SendsNothingWithoutText) {
   ASSERT_TRUE(ReviewView::commentButtonForTesting());
   click(*ReviewView::commentButtonForTesting());  // disabled
   EXPECT_TRUE(provider.sent.empty());
+}
+
+TEST(ReviewGoTo, AnExactThreadSelectsItsInstanceAndAsksToRevealItsObject) {
+  ReviewStore::setResponse(json::parse(R"({"response": "review_response", "threads": [
+    {"id": "t1", "anchor": {"kind": "term", "id_path": [3], "path": ["u3"], "term_id": 5, "bit": 2},
+     "resolution": {"state": "exact", "id_path": [3], "path": ["u3_now"]}, "comments": []},
+    {"id": "t2", "anchor": {"kind": "term", "id_path": [3], "term_id": 5},
+     "resolution": {"state": "other_snapshot"}, "comments": []}]})"));
+  SelectionStore::clear();
+  const auto& threads = ReviewStore::threads();
+
+  ReviewView::goTo(threads[1]);  // on another netlist: nowhere to go
+  EXPECT_FALSE(ReviewView::takeGoTo());
+  EXPECT_FALSE(SelectionStore::hasSelection());
+
+  ReviewView::goTo(threads[0]);
+  EXPECT_TRUE(SelectionStore::isSelected({{3, "u3_now"}}));
+  auto go = ReviewView::takeGoTo();
+  ASSERT_TRUE(go);
+  EXPECT_EQ(go->path, (InstancePath{{3, "u3_now"}}));
+  EXPECT_EQ(go->anchor.kind, ReviewAnchorKind::Term);
+  EXPECT_EQ(go->anchor.termId, 5u);
+  EXPECT_EQ(go->anchor.bit, 2);
+  EXPECT_FALSE(ReviewView::takeGoTo());  // once
+
+  SelectionStore::clear();
+  ReviewStore::clear();
 }
 
 }  // namespace

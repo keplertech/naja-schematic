@@ -105,6 +105,122 @@ static std::vector<const ReviewThread*> pinReviewThreads(int portId) {
     return ReviewStore::pinThreads(it->second.pathIds, it->second.termId, it->second.bit);
 }
 
+// focusObject(): the object to bring into view, and whether what adds it
+// was requested (since when: given up after a few seconds).
+struct PendingFocus {
+    EquipotentialView::FocusTarget target;
+    bool   requested = false;
+    double since = 0.0;
+};
+static std::optional<PendingFocus> g_focus;
+// The pin focusObject() last brought into view, highlighted until then.
+static std::optional<EquipotentialView::FocusTarget> g_focusPin;
+static double g_focusPinUntil = 0.0;
+// Instances whose instance_resolved should add them, not replace the view.
+static std::set<InstancePath> g_addOnResolve;
+static constexpr double kFocusTimeout = 5.0;
+static constexpr double kFocusPinHighlight = 2.5;
+
+// The drawn pin a focus target names: its own bit's pin, else (a bus shown
+// merged, or a target without a bit) the term's merged bus pin or any of
+// its bit pins.
+static std::optional<std::pair<InstanceShape*, Port*>> findFocusPin(
+        const EquipotentialView::FocusTarget& t) {
+    const auto ids = pathIds(t.path);
+    std::optional<std::pair<InstanceShape*, Port*>> loose;
+    for (auto& inst : g_schematic.instances) {
+        for (auto& p : inst.ports) {
+            auto it = g_portEquiByPortId.find(p.id);
+            if (it != g_portEquiByPortId.end() && it->second.pathIds == ids &&
+                it->second.termId == *t.termId) {
+                if (!t.bit || it->second.bit == t.bit) return std::make_pair(&inst, &p);
+                continue;
+            }
+            auto bus = g_busTermByPortId.find(p.id);
+            if (bus != g_busTermByPortId.end() && bus->second.pathIds == ids &&
+                bus->second.termId == *t.termId && !loose)
+                loose = std::make_pair(&inst, &p);
+        }
+    }
+    return loose;
+}
+
+// The drawn box (or module frame) of an instance.
+static const InstanceShape* findFocusShape(const InstancePath& path) {
+    const InstanceShape* frame = nullptr;
+    for (const auto& inst : g_schematic.instances) {
+        if (inst.path != path || inst.modelName == "port") continue;
+        if (!inst.isHierGroup) return &inst;
+        frame = &inst;
+    }
+    return frame;
+}
+
+void EquipotentialView::focusObject(const FocusTarget& target) {
+    // The top design has no box: only its ports can be shown.
+    if (target.path.empty() && !target.termId) { g_focus.reset(); return; }
+    g_focus = PendingFocus{target};
+}
+
+bool EquipotentialView::takeAddOnResolve(const InstancePath& path) {
+    return g_addOnResolve.erase(path) > 0;
+}
+
+// One step of a pending focusObject(), on this frame's geometry: pan to the
+// target if it's drawn, else ask for it once, else give up after a while.
+static void advanceFocus(const ImVec2& canvasSize) {
+    if (!g_focus) return;
+    const auto& t = g_focus->target;
+    const double now = ImGui::GetTime();
+    ImVec2 lo, hi;
+    bool found = false;
+    if (t.termId) {
+        if (auto pin = findFocusPin(t)) {
+            const ImVec2 p = g_schematic.portWorldPos(*pin->first, *pin->second);
+            lo = ImVec2(p.x - 30.f, p.y - 30.f);
+            hi = ImVec2(p.x + 30.f, p.y + 30.f);
+            found = true;
+            g_focusPin = t;
+            g_focusPinUntil = now + kFocusPinHighlight;
+        }
+    } else if (const InstanceShape* shape = findFocusShape(t.path)) {
+        shapeWorldExtent(*shape, lo, hi);
+        found = true;
+    }
+    if (found) {
+        auto v = SchematicInteraction::revealRect(
+            { g_schematic.transform.offset, g_schematic.transform.scale },
+            lo, hi, canvasSize, kRevealMargin, g_schematic.minScale);
+        g_schematic.transform.offset = v.offset;
+        g_schematic.transform.scale  = v.scale;
+        g_focus.reset();
+        return;
+    }
+    if (g_focus->requested) {
+        if (now - g_focus->since > kFocusTimeout) g_focus.reset();
+        return;
+    }
+    // Not drawn: add it to the view -- a pin by its net. An instance's term
+    // without a bit may be a whole bus, which has no one net: its instance
+    // is added instead, every pin shown (a top-level bus just answers an
+    // empty net).
+    g_focus->requested = true;
+    g_focus->since = now;
+    if (!g_provider) { g_focus.reset(); return; }
+    json req;
+    if (t.termId && (t.bit || t.path.empty())) {
+        req["request"] = "load_equipotential";
+        req["path"]    = pathIds(t.path);
+        req["term_id"] = *t.termId;
+        if (t.bit) req["bit"] = *t.bit;
+    } else {
+        req["request"] = "resolve_instance";
+        writePath(req, t.path);
+        g_addOnResolve.insert(t.path);
+    }
+    g_provider->send(req.dump());
+}
+
 // The review badge under the cursor (screen position), if any: the threads
 // it counts, for its tooltip and click.
 static std::optional<SchematicView::ReviewBadge> pickReviewBadge(ImVec2 mouse) {
@@ -471,6 +587,9 @@ void EquipotentialView::resetLayout() {
     g_shownBeforePinNet.clear();
     g_portsBeforePinNet.clear();
     g_pendingPinNets.clear();
+    g_focus.reset();
+    g_focusPin.reset();
+    g_addOnResolve.clear();
     g_pendingFit   = true;
 }
 
@@ -1525,7 +1644,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             g_keepInPlacePath.clear();
             g_shownBeforePinNet.clear();
             g_portsBeforePinNet.clear();
-        } else {
+        } else if (!(g_focus && g_focus->requested)) {
+            // (What a focusObject() request adds is panned to instead.)
             g_schematic.requestFit(true);
         }
         lastTotal = totalItems;
@@ -1539,6 +1659,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         g_pendingZoomGroup.reset();
     }
     g_schematic.updateFitIfNeeded(cpos, inner, 60.f);
+    advanceFocus(inner);
 
     // Hover feedback, against this frame's geometry (the one about to be
     // drawn): the pin under the cursor is highlighted, gets a hand cursor if
@@ -1564,6 +1685,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 ImGui::EndTooltip();
             }
         }
+    }
+    // A pin focusObject() just brought into view stands out for a moment.
+    if (g_focusPin && ImGui::GetTime() < g_focusPinUntil) {
+        if (auto pin = findFocusPin(*g_focusPin)) g_schematic.hoveredPortId = pin->second->id;
+    } else {
+        g_focusPin.reset();
     }
     bool pinHovered = badgeHovered;
     if (canvasHovered && !badgeHovered) {

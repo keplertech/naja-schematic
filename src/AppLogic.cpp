@@ -539,13 +539,17 @@ void setupProvider(AppState& state) {
         Console::Error("No instance '" + what + "' in the design");
         return;
       }
-      // Start a fresh schematic from the instance alone, all pins open.
+      // Start a fresh schematic from the instance alone, all pins open --
+      // or, asked for by a review "go to", add it to what's shown.
+      const bool add = EquipotentialView::takeAddOnResolve(*path);
       if (auto start = EquipotentialView::startInstanceFromResolved(j)) {
-        state.guiData->clearEquipotentials();
-        EquipotentialView::resetLayout();
+        if (!add) {
+          state.guiData->clearEquipotentials();
+          EquipotentialView::resetLayout();
+        }
         EquipotentialView::showInstance(*start);
       }
-      SelectionStore::select(*path, SelectionStore::Origin::Host);
+      if (!add) SelectionStore::select(*path, SelectionStore::Origin::Host);
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
       // A refused review write: shown in the Review tab.
@@ -616,6 +620,23 @@ bool appFrame(AppState& state) {
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
+
+  // A review thread clicked last frame: its object in the tree (down to a
+  // term/net row) and in the schematic (added if not shown). Net threads
+  // have no schematic object (a wire is an equipotential, not a net).
+  if (auto go = ReviewView::takeGoTo()) {
+    const ReviewAnchor& a = go->anchor;
+    std::optional<NetlistTree::RevealLeaf> leaf;
+    if (a.kind == ReviewAnchorKind::Term && a.termId)
+      leaf = NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Term, *a.termId, a.bit};
+    else if (a.kind == ReviewAnchorKind::Net && a.netId)
+      leaf = NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Net, *a.netId, a.bit};
+    if (state.guiData->netlist_) state.guiData->netlist_->reveal(go->path, leaf);
+    if (a.kind == ReviewAnchorKind::Instance)
+      EquipotentialView::focusObject({go->path, std::nullopt, std::nullopt});
+    else if (a.kind == ReviewAnchorKind::Term && a.termId)
+      EquipotentialView::focusObject({go->path, a.termId, a.bit});
+  }
 
   // ==== Top Menu Bar ====
   static bool aboutOpen = false;

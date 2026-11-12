@@ -1011,3 +1011,81 @@ TEST_F(SchematicClicks, ATopLevelPortWithAnOpenThreadHasABadge) {
   EXPECT_EQ(flag->modelName, "port");
   EXPECT_EQ(badges[0].portId, flag->ports[0].id);
 }
+
+namespace {
+bool onCanvas(ImVec2 p) {
+  const ImVec2 o = EquipotentialView::canvasOriginForTesting();
+  const ImVec2 s = EquipotentialView::canvasSizeForTesting();
+  return p.x >= o.x && p.y >= o.y && p.x <= o.x + s.x && p.y <= o.y + s.y;
+}
+}  // namespace
+
+TEST_F(SchematicClicks, FocusingAShownPinPansToItAndHighlightsIt) {
+  showFirstNet();
+  // Scroll far away: nothing on the canvas.
+  auto& t = const_cast<SchematicView&>(sv()).transform;
+  t.offset = ImVec2(t.offset.x + 5000.f, t.offset.y + 5000.f);
+  frame();
+  ASSERT_FALSE(onCanvas(pinScreen({{2, "u2"}}, "A")));
+
+  EquipotentialView::focusObject({{{2, "u2"}}, 20u, std::nullopt});
+  frame();
+  EXPECT_TRUE(onCanvas(pinScreen({{2, "u2"}}, "A")));
+  EXPECT_EQ(sv().hoveredPortId, pin({{2, "u2"}}, "A")->id);
+  EXPECT_TRUE(provider.sent.empty());  // already shown: nothing loaded
+}
+
+TEST_F(SchematicClicks, FocusingAShownInstancePansToIt) {
+  showFirstNet();
+  auto& t = const_cast<SchematicView&>(sv()).transform;
+  t.offset = ImVec2(t.offset.x - 5000.f, t.offset.y);
+  frame();
+  ASSERT_FALSE(onCanvas(boxCenterScreen({{1, "u1"}})));
+  EquipotentialView::focusObject({{{1, "u1"}}, std::nullopt, std::nullopt});
+  frame();
+  EXPECT_TRUE(onCanvas(boxCenterScreen({{1, "u1"}})));
+  EXPECT_TRUE(provider.sent.empty());
+}
+
+TEST_F(SchematicClicks, FocusingAPinNotShownAddsItsNetThenPansToIt) {
+  showFirstNet();
+  EquipotentialView::focusObject({{{3, "u3"}}, 30u, 2});
+  frame(3);
+  auto reqs = sent("load_equipotential");
+  ASSERT_EQ(reqs.size(), 1u);  // once, however many frames
+  EXPECT_EQ(reqs[0]["path"], nlohmann::json::array({3}));
+  EXPECT_EQ(reqs[0]["term_id"], 30);
+  EXPECT_EQ(reqs[0]["bit"], 2);
+
+  // The net arrives (added to the view, which keeps u1 and u2).
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u9", 9, "Y", 90, Direction::Output, 1));
+  e.occurrences.push_back(occ("u3", 3, "D", 30, Direction::Input, 4, 2));
+  add(e);
+  frame(2);
+  ASSERT_NE(shape({{1, "u1"}}), nullptr);
+  ASSERT_NE(pin({{3, "u3"}}, "D[2]"), nullptr);
+  EXPECT_TRUE(onCanvas(pinScreen({{3, "u3"}}, "D[2]")));
+  EXPECT_EQ(sv().hoveredPortId, pin({{3, "u3"}}, "D[2]")->id);
+}
+
+TEST_F(SchematicClicks, FocusingAnInstanceNotShownAddsItInsteadOfReplacingTheView) {
+  showFirstNet();
+  EquipotentialView::focusObject({{{5, "u5"}}, std::nullopt, std::nullopt});
+  frame(2);
+  auto reqs = sent("resolve_instance");
+  ASSERT_EQ(reqs.size(), 1u);
+  EXPECT_EQ(reqs[0]["id_path"], nlohmann::json::array({5}));
+  // Its instance_resolved is to be added (AppLogic doesn't reset the view).
+  EXPECT_TRUE(EquipotentialView::takeAddOnResolve({{5, "u5"}}));
+  EXPECT_FALSE(EquipotentialView::takeAddOnResolve({{5, "u5"}}));
+}
+
+TEST_F(SchematicClicks, FocusingAnInstancesWholeTermAddsTheInstance) {
+  // No bit: maybe a whole bus, which has no one net to load.
+  showFirstNet();
+  EquipotentialView::focusObject({{{5, "u5"}}, 7u, std::nullopt});
+  frame();
+  EXPECT_TRUE(sent("load_equipotential").empty());
+  EXPECT_EQ(sent("resolve_instance").size(), 1u);
+}

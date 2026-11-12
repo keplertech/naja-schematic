@@ -66,17 +66,33 @@ class NetlistTree {
     void render();
     void insertNodeInMap(NetlistTreeNode* node);
 
+    // A term or net of the revealed instance, to open the tree down to:
+    // by id (a term's child id, a net's net id), and a bus bit's row when
+    // `bit` is set.
+    struct RevealLeaf {
+      enum class Kind { Term, Net };
+      Kind               kind = Kind::Term;
+      unsigned           id = 0;
+      std::optional<int> bit;
+    };
     // Opens the tree down to the instance at `path` ({} = root) and scrolls to it. Levels load on demand, so
     // this is asynchronous: each level's Instances/Primitives groups are
     // requested as needed and advanceReveal() continues once their replies
     // have created the child nodes. A new reveal replaces a pending one.
-    void reveal(const InstancePath& path);
+    // With a `leaf`, it goes on into the instance's Terms or Nets group to
+    // that row, scrolls to it and highlights it (until the next reveal or
+    // selection). It also takes the current selection as seen: a reveal
+    // made right after selecting the instance isn't replaced by the
+    // selection's own reveal of the instance alone.
+    void reveal(const InstancePath& path, std::optional<RevealLeaf> leaf = std::nullopt);
     // One step of a pending reveal; called by render() every frame (public
     // so tests can drive it without an ImGui frame).
     void advanceReveal();
     bool isRevealPending() const { return revealPath_.has_value(); }
     // The instance node at `path`, if its level is already loaded.
     NetlistTreeNode* findInstance(const InstancePath& path) const;
+    // The term/net row a leaf reveal highlighted, if any.
+    NetlistTreeNode* highlightedNode() const;
   private:
     friend class NetlistTreeNode;
     INetlistProvider*       ws_                    {nullptr};
@@ -86,6 +102,9 @@ class NetlistTree {
     NodesMap                nodes_;
     // Pending reveal: the instance names still to walk down from the root.
     std::optional<InstancePath> revealPath_;
+    std::optional<RevealLeaf>   revealLeaf_;
+    // The term/net row a leaf reveal ended on, drawn selected.
+    std::optional<unsigned>     highlighted_;
     // Nodes render() must open (once each) / scroll to, after a reveal.
     std::set<unsigned>      forceOpen_;
     std::optional<unsigned> scrollTo_;

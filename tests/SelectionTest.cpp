@@ -244,6 +244,102 @@ TEST_F(TreeReveal, RootIsRevealedImmediately) {
   EXPECT_EQ(tree.findInstance(InstancePath{}), tree.getRoot());
 }
 
+// A review "go to" a pin: on into the instance's Terms group, to the bus
+// bit's row, which is highlighted.
+TEST_F(TreeReveal, RevealsATermBitRowInsideTheInstance) {
+  tree.reveal(InstancePath{{11, "u1"}},
+              NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Term, 5, 1});
+  tree.advanceReveal();
+  answer(take("load_instances")[0]["gui_id"], {{"u1", 11, true}});
+  answer(take("load_primitives")[0]["gui_id"], {});
+  tree.advanceReveal();
+  // At u1: its terms are loaded, nothing else.
+  EXPECT_TRUE(tree.isRevealPending());
+  auto terms = take("load_terms");
+  ASSERT_EQ(terms.size(), 1u);
+  EXPECT_TRUE(provider.sent.empty());
+  tree.advanceReveal();  // waiting: not sent again
+  EXPECT_TRUE(take("load_terms").empty());
+
+  NetlistTreeNode* group = tree.getNode(terms[0]["gui_id"].get<unsigned>());
+  group->createChildren();
+  group->createTermNode("a", 4, Direction::Input, std::nullopt, std::nullopt);
+  group->createTermNode("d", 5, Direction::Input, 3, 0);
+  tree.advanceReveal();
+  EXPECT_FALSE(tree.isRevealPending());
+  NetlistTreeNode* row = tree.highlightedNode();
+  ASSERT_NE(row, nullptr);
+  EXPECT_TRUE(row->isBusBit());
+  EXPECT_EQ(row->getBusBit(), 1);
+  EXPECT_EQ(row->getTermBaseName(), "d");
+  EXPECT_EQ(row->getInstancePath(), (InstancePath{{11, "u1"}}));
+
+  // A term without a bit: the whole bus row.
+  tree.reveal(InstancePath{{11, "u1"}},
+              NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Term, 5, std::nullopt});
+  tree.advanceReveal();
+  ASSERT_NE(tree.highlightedNode(), nullptr);
+  EXPECT_TRUE(tree.highlightedNode()->isBus());
+
+  // A new reveal drops the highlight; an unknown term just stops.
+  tree.reveal(InstancePath{{11, "u1"}},
+              NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Term, 9, std::nullopt});
+  tree.advanceReveal();
+  EXPECT_FALSE(tree.isRevealPending());
+  EXPECT_EQ(tree.highlightedNode(), nullptr);
+}
+
+TEST(TreeRevealNet, RevealsANetRowByItsId) {
+  FakeNetlistProvider provider;
+  NetlistTree tree{&provider};
+  tree.createRootNode("top", DesignRef{1, 1, 0}, /*hasTerms=*/true, /*hasPrimitives=*/false,
+                      /*hasInstances=*/false, /*hasNets=*/true);
+  tree.reveal(InstancePath{}, NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Net, 7,
+                                                      std::nullopt});
+  tree.advanceReveal();
+  ASSERT_EQ(provider.sent.size(), 1u);
+  auto req = nlohmann::json::parse(provider.sent[0]);
+  EXPECT_EQ(req["request"], "load_nets");
+  NetlistTreeNode* group = tree.getNode(req["gui_id"].get<unsigned>());
+  group->createChildren();
+  group->createNetNode("", std::nullopt, std::nullopt, false, 3u);
+  group->createNetNode("", std::nullopt, std::nullopt, false, 7u);  // anonymous: the id finds it
+  tree.advanceReveal();
+  ASSERT_NE(tree.highlightedNode(), nullptr);
+  EXPECT_EQ(tree.highlightedNode()->getNetID(), 7u);
+}
+
+// The review tab selects the thread's instance, then (next frame) asks for
+// the reveal down to its pin: the selection's own reveal of the instance
+// alone must not replace it.
+TEST_F(TreeReveal, ALeafRevealAfterASelectionIsNotReplacedByIt) {
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(800.f, 600.f);
+  io.DeltaTime   = 1.f / 60.f;
+  io.IniFilename = nullptr;
+  unsigned char* px; int w, h;
+  io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+  auto frame = [&] {
+    ImGui::NewFrame();
+    ImGui::Begin("Tree");
+    tree.render();
+    ImGui::End();
+    ImGui::Render();
+  };
+  SelectionStore::clear();
+  frame();
+  provider.sent.clear();
+  SelectionStore::select(InstancePath{}, SelectionStore::Origin::Host);
+  tree.reveal(InstancePath{}, NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Term, 5,
+                                                      std::nullopt});
+  frame();
+  // Still going to the term: its group was requested.
+  EXPECT_EQ(take("load_terms").size(), 1u);
+  SelectionStore::clear();
+  ImGui::DestroyContext();
+}
+
 // A selection made outside the tree (schematic click, host focus) makes the
 // tree reveal it on its next render; one made in the tree doesn't.
 TEST_F(TreeReveal, RevealsASelectionMadeElsewhereOnRender) {
