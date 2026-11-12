@@ -274,6 +274,7 @@ void setupProvider(AppState& state) {
       SourceStore::clear();     // so do source references
       SelectionStore::clear();  // so does a stale selection
       ReviewStore::clear();     // the host pushes the review again for this design
+      state.serverInfo = j.value("server", json::object());
       const auto& root = j["root"];
       if (root.contains("has_terms") || root.contains("has_primitives") || root.contains("has_instances")) {
         InstanceResponseJson data = root.get<InstanceResponseJson>();
@@ -1013,9 +1014,25 @@ bool appFrame(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
+    ImGui::SeparatorText("Viewer");
     ImGui::Text("Version: %s", NAJA_SCHEMATIC_VERSION_STRING);
     ImGui::Text("Commit:  %s", NAJA_SCHEMATIC_GIT_HASH);
-    ImGui::Text("naja:    %s", NAJA_VERSION_STRING);
+    // What loads the design and answers the viewer: the Python host, or
+    // the native app itself (its root_response "server").
+    ImGui::SeparatorText("Server");
+    if (state.serverInfo.empty()) {
+      ImGui::TextDisabled("Not connected yet");
+    } else {
+      auto field = [&](const char* key) {
+        const auto it = state.serverInfo.find(key);
+        return it != state.serverInfo.end() && it->is_string() ? it->get<std::string>()
+                                                                : std::string("?");
+      };
+      ImGui::TextUnformatted(field("name").c_str());
+      ImGui::Text("Version: %s", field("version").c_str());
+      ImGui::Text("naja:    %s (%s)", field("naja").c_str(), field("naja_git").c_str());
+    }
+    ImGui::Spacing();
     ImGui::Text("Project: github.com/keplertech/naja-schematic");
     ImGui::Spacing();
 

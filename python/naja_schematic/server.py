@@ -675,6 +675,8 @@ def main(argv=None):
         protocol.check_najaeda_version()
     except RuntimeError as e:
         raise SystemExit(str(e))
+    info = protocol.server_info()
+    log.info("%s %s, naja %s (%s)", info["name"], info["version"], info["naja"], info["naja_git"])
 
     protocol_out = None
     if args.stdio:
