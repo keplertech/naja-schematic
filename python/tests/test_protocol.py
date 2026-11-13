@@ -283,3 +283,24 @@ def test_get_primitive_type_of_vhdl():
         f"loadVHDL({vhdl!r}, diagnostics_report_path=None)")
     assert types["naja_mux2__w1"] == "mux"
     assert types["leaf"] == "unknown"  # hierarchical
+
+
+def test_show_net_message():
+    assert protocol.show_net([0, 0], 2, path=["u_sub", "u_and"], label="u_sub/u_and/O (net)") == {
+        "response": "show_net", "id_path": [0, 0], "path": ["u_sub", "u_and"], "term_id": 2,
+        "label": "u_sub/u_and/O (net)", "add": True}
+    assert protocol.show_net([], 1, 0, color="#ff8800", add=False) == {
+        "response": "show_net", "id_path": [], "term_id": 1, "bit": 0, "color": "#ff8800",
+        "add": False}
+
+
+def test_show_net_pin_is_what_load_equipotential_takes(top):
+    # The viewer turns a show_net push into this load_equipotential: the
+    # pin the host resolved must resolve there too, to the same net.
+    from naja_schematic.session import net_pin
+    pin = net_pin((["u_sub", "u_and"], "I0"))
+    (reply,) = protocol.handle_request({"request": "load_equipotential", "path": pin["id_path"],
+                                        "term_id": pin["term_id"], "trace_id": 7})
+    assert reply["found"] and reply["trace_id"] == 7
+    assert [t["name"] for t in reply["terms"]] == ["d"]
+    assert reply["terms"][0]["bit"] == 0

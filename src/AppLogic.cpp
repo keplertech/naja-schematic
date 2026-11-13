@@ -25,6 +25,7 @@ using json = nlohmann::json;
 #include "PropertiesStore.h"
 #include "SelectionStore.h"
 #include "TraceStore.h"
+#include "ShowNetStore.h"
 #include "TraceView.h"
 #include "PropertiesView.h"
 #include "ReviewStore.h"
@@ -76,6 +77,7 @@ void setupFonts() {
 // Called both at startup and after every design reload.
 static void attachTreeCallbacks(AppState& state) {
   state.guiData->netlist_->setOnEquipotentialRequest([&state]() {
+    ShowNetStore::forget();
     state.guiData->clearEquipotentials();
     EquipotentialView::resetLayout();
   });
@@ -124,8 +126,10 @@ static void handleShortcuts(AppState& state) {
   if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_0, kOnce) ||
       ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_Keypad0, kOnce))
     EquipotentialView::fitView();
-  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_K, kOnce))
+  if (ImGui::Shortcut(ImGuiMod_Ctrl | ImGuiKey_K, kOnce)) {
+    ShowNetStore::forget();
     state.guiData->clearEquipotentials();
+  }
 }
 
 // Help > Keyboard Shortcuts. Keep in step with handleShortcuts() above,
@@ -192,6 +196,7 @@ static void reloadNetlist(AppState& state) {
   // Cleared now, not with clearNets()' next-frame clear: a focus_instance
   // re-pushed after the new root can be drawn before that frame, and the
   // deferred clear would wipe it.
+  ShowNetStore::forget();
   state.guiData->clearEquipotentials();
   EquipotentialView::resetLayout();
   delete state.guiData->netlist_;
@@ -367,10 +372,17 @@ void setupProvider(AppState& state) {
         parent->createNetNode(net.name, net.msb, net.lsb, net.has_sources, net.net_id);
       }
     } else if (resp == "equipotential_response") {
-      // A trace_id (echoed from a tree "Show Equipotential") makes the net a
-      // one-net trace; none (a schematic pin click) adds it uncolored.
-      int traceId = j.value("trace_id", 0);
+      // A trace_id (echoed from a tree "Show Equipotential" or a host's
+      // show_net) makes the net a one-net trace; none (a schematic pin
+      // click) adds it uncolored.
+      int traceId = ShowNetStore::takeReply(j.value("trace_id", 0));
+      if (traceId < 0) return;  // a host net the view was cleared of meanwhile
       if (traceId != 0 && !TraceStore::find(traceId)) traceId = 0;  // removed meanwhile
+      if (traceId != 0 && j.contains("found") && j["found"].is_boolean() && !j["found"]) {
+        // Named a pin the design doesn't have (e.g. a stale host push).
+        const std::string& label = TraceStore::find(traceId)->label;
+        Console::Error(label.substr(0, label.rfind(" (net)")) + ": no such pin in the design");
+      }
       auto* eq = new Equipotential(j.get<Equipotential>());
       if (EquipotentialView::noteUnconnectedReply(j, *eq)) {
         // Nothing else on the pin's net: it's drawn with a no-connect cross.
@@ -523,11 +535,21 @@ void setupProvider(AppState& state) {
       ReviewStore::setResponse(j);
     } else if (resp == "export_svg") {
       state.svgExportRequested = true;
+    } else if (resp == "show_net") {
+      // Host push (show_net()): the net on one pin, as a one-net trace --
+      // a tree "Show Equipotential" the host asked for (see ShowNetStore).
+      auto req = ShowNetStore::request(j, [&state]() {
+        state.guiData->clearEquipotentials();
+        EquipotentialView::resetLayout();
+      });
+      if (req) state.provider->send(req->dump());
     } else if (resp == "focus_instance") {
       // Host push (notebook show_instance()): resolve the path, then
       // instance_resolved below reveals and draws it. The host names the
       // instance by id_path (preferred: it reaches anonymous instances)
       // and/or by names; both are passed on for the provider to pick.
+      // The host nets shown so far go with the view it clears.
+      ShowNetStore::forget();
       json req;
       req["request"] = "resolve_instance";
       for (const char* key : {"path", "id_path"})
@@ -695,7 +717,10 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Show Hierarchy", "", EquipotentialView::showHierarchy()))
         EquipotentialView::setShowHierarchy(!EquipotentialView::showHierarchy());
       ImGui::Separator();
-      if (ImGui::MenuItem("Clear nets", NAJA_SHORTCUT("K"))) state.guiData->clearEquipotentials();
+      if (ImGui::MenuItem("Clear nets", NAJA_SHORTCUT("K"))) {
+        ShowNetStore::forget();
+        state.guiData->clearEquipotentials();
+      }
       // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
       // if (ImGui::MenuItem("Clear diagnosis", ""))  DiagnosisStore::clear();
       ImGui::EndMenu();
@@ -936,7 +961,10 @@ bool appFrame(AppState& state) {
       ImGui::BeginChild("SchematicPanel", ImVec2(0, 0), true,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
       {
-        if (EquipotentialView::takePendingClear()) state.guiData->clearEquipotentials();
+        if (EquipotentialView::takePendingClear()) {
+          ShowNetStore::forget();
+          state.guiData->clearEquipotentials();
+        }
         EquipotentialView::renderSchematic(state.guiData->equipotentials_);
         if (state.svgExportRequested && EquipotentialView::hasSchematic()) {
           state.svgExportRequested = false;

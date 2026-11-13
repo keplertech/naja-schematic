@@ -3,6 +3,7 @@ import json
 import pytest
 
 pytest.importorskip("anywidget")
+from najaeda import netlist  # noqa: E402
 from naja_schematic import widget  # noqa: E402
 
 
@@ -185,5 +186,117 @@ def test_export_svg_waiting_is_asked_again_after_each_root(top, view):
     assert sent_kinds(sent) == ["root_response", "export_svg"]
     v._on_viewer_message(v, {"json": json.dumps({"request": "svg_exported", "svg": "<svg/>"})}, [])
     del sent[:]
+    v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
+    assert sent_kinds(sent) == ["root_response"]
+
+
+def pushed(sent):
+    return [json.loads(m["json"]) for m in sent]
+
+
+def test_show_net_pushes_the_pin_by_ids(top, view):
+    v, sent = view
+    v.show_net((["u_sub", "u_and"], "O"), color=(255, 136, 0))
+    assert pushed(sent) == [{"response": "show_net", "id_path": [0, 0],
+                             "path": ["u_sub", "u_and"], "term_id": 2,
+                             "label": "u_sub/u_and/O (net)", "color": "#ff8800",
+                             "add": True, "generation": 0}]
+
+
+@pytest.mark.parametrize("make, expected", [
+    (lambda: netlist.get_instance_by_path(["u_sub", "u_and"]).get_term("I1"),
+     ([0, 0], 1, None, "u_sub/u_and/I1 (net)")),
+    (lambda: netlist.get_top().get_term("d").get_bit(1), ([], 1, 1, "d[1] (net)")),
+    (lambda: netlist.get_top().get_net("s"), ([0], 2, None, "s (net)")),
+    (lambda: netlist.get_instance_by_path(["u_sub"]).get_net("n"),
+     ([0, 0], 2, None, "u_sub/n (net)")),
+    (lambda: netlist.get_top().get_term("clk").get_equipotential(), ([], 0, None, "clk (net)")),
+    (lambda: ([], "d", 0), ([], 1, 0, "d[0] (net)")),
+    (lambda: ("u_sub", 2), ([0], 2, None, "u_sub/y (net)")),
+])
+def test_show_net_targets(top, view, make, expected):
+    v, sent = view
+    v.show_net(make())
+    (msg,) = pushed(sent)
+    assert (msg["id_path"], msg["term_id"], msg.get("bit"), msg["label"]) == expected
+
+
+def test_show_net_takes_naja_objects(top, view):
+    from najaeda import naja
+    v, sent = view
+    design = naja.NLUniverse.get().getTopDesign()
+    sub = design.getInstance("u_sub")
+    u_and = sub.getModel().getInstance("u_and")
+    occurrence = naja.SNLOccurrence(naja.SNLPath(naja.SNLPath(), sub),
+                                    u_and.getInstTerm(u_and.getModel().getTerm("O")))
+    v.show_net(occurrence)
+    v.show_net(sub.getInstTerm(sub.getModel().getTerm("y")))
+    v.show_net(design.getTerm("clk"))
+    v.show_net(naja.SNLEquipotential(design.getTerm("q")))
+    assert [(m["id_path"], m["term_id"]) for m in pushed(sent)] == [
+        ([0, 0], 2), ([0], 2), ([], 0), ([], 2)]
+
+
+@pytest.mark.parametrize("target, error, match", [
+    (([], "d"), ValueError, "is a bus"),               # a whole bus
+    (([], "d", 5), ValueError, "no bit 5"),
+    (([], "clk", 0), ValueError, "not a bus"),
+    (([], "nope"), ValueError, "no terminal 'nope'"),
+    ((["u_sub", "nope"], "a"), ValueError, "no instance"),
+    (lambda: netlist.get_top().get_net("d"), ValueError, "is a bus"),
+    ("u_sub", TypeError, "expected"),                  # an instance, not a pin
+    (42, TypeError, "expected"),
+])
+def test_show_net_rejects_what_is_not_one_pin(top, view, target, error, match):
+    v, sent = view
+    with pytest.raises(error, match=match):
+        v.show_net(target() if callable(target) else target)
+    assert sent == []
+
+
+def test_show_net_rejects_colors_the_viewer_would(top, view):
+    v, sent = view
+    for color, error in [("#000000", ValueError), ("#f8f8f8", ValueError),
+                         ("orange", ValueError), ((300, 0, 0), TypeError)]:
+        with pytest.raises(error):
+            v.show_net(([], "clk"), color=color)
+    assert sent == []
+
+
+def test_shown_nets_follow_the_focus_after_each_root(top, view):
+    v, sent = view
+    v.show_instance("u_sub")
+    v.show_net(([], "clk"))
+    v.show_net(([], "q"), label="out")
+    sent.clear()
+    v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
+    msgs = pushed(sent)
+    assert [m["response"] for m in msgs] == [
+        "root_response", "focus_instance", "show_net", "show_net"]
+    assert [m["label"] for m in msgs[2:]] == ["clk (net)", "out"]
+
+
+def test_show_instance_and_replacing_net_reset_the_kept_nets(top, view):
+    v, sent = view
+    v.show_instance("u_sub")
+    v.show_net(([], "clk"))
+    v.show_net(([], "q"), add=False)  # clears the view: the focus goes too
+    sent.clear()
+    v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
+    msgs = pushed(sent)
+    assert [m["response"] for m in msgs] == ["root_response", "show_net"]
+    assert msgs[1]["term_id"] == 2 and msgs[1]["add"] is False
+
+    v.show_instance("u_sub")  # clears the view: the nets go
+    sent.clear()
+    v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
+    assert sent_kinds(sent) == ["root_response", "focus_instance"]
+
+
+def test_design_changed_drops_the_kept_nets(top, view):
+    v, sent = view
+    v.show_net(([], "clk"))
+    v.design_changed()
+    sent.clear()
     v._on_viewer_message(v, {"json": json.dumps({"request": "load_root"})}, [])
     assert sent_kinds(sent) == ["root_response"]

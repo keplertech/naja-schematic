@@ -1165,3 +1165,27 @@ def export_svg():
     the schematic as SVG (the whole sheet, as File > Export Schematic as
     SVG... saves it). session.ViewerSession intercepts that answer."""
     return {"response": "export_svg"}
+
+
+def show_net(id_path, term_id, bit=None, *, path=None, label=None, color=None, add=True):
+    """Build a show_net push message: the viewer draws the net on a pin as
+    a colored one-net trace, as the tree's Show Equipotential does. The pin
+    is term `term_id` (bit `bit` of a bus) of the instance at `id_path`
+    (instance ids, top excluded; [] = a top-level port); `path`, the same
+    instance's names, is for display only. `label` names the trace in the
+    Traces tab, `color` ("#rrggbb") overrides its palette color, and with
+    add=False the viewer clears the schematic first. The viewer asks for the
+    net with load_equipotential, as for any other pin."""
+    message = {"response": "show_net",
+               "id_path": [int(i) for i in id_path],
+               "term_id": int(term_id),
+               "add": bool(add)}
+    if path is not None:
+        message["path"] = [str(name) for name in path]
+    if bit is not None:
+        message["bit"] = int(bit)
+    if label is not None:
+        message["label"] = str(label)
+    if color is not None:
+        message["color"] = str(color)
+    return message

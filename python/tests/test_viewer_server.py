@@ -248,3 +248,97 @@ def test_design_changed_reaches_every_viewer(server):
         assert [recv(b)["response"] for _ in range(2)] == ["root_response", "focus_instance"]
     assert server.selected_id_path is None
     assert cleared.wait_for(2) == [([0], ["u_sub"]), (None, None)]
+
+
+def test_show_net_reaches_every_viewer_and_follows_each_root(server):
+    with connect(ws_url(server)) as a, connect(ws_url(server)) as b:
+        for ws in (a, b):
+            ws.send(LOAD_ROOT)
+            assert recv(ws)["response"] == "root_response"
+        server.show_net((["u_sub", "u_and"], "O"), color="#ff8800")
+        for ws in (a, b):
+            assert recv(ws) == {"response": "show_net", "id_path": [0, 0],
+                                "path": ["u_sub", "u_and"], "term_id": 2,
+                                "label": "u_sub/u_and/O (net)", "color": "#ff8800",
+                                "add": True, "generation": 0}
+        a.send(LOAD_ROOT)
+        assert [recv(a)["response"] for _ in range(2)] == ["root_response", "show_net"]
+    with pytest.raises(ValueError):
+        server.show_net(([], "d"))  # a whole bus
+
+
+def _answer_svg_exports(ws, svg="<svg/>"):
+    # Plays a viewer: answers every export_svg push with an svg_exported.
+    def run():
+        try:
+            while True:
+                if recv(ws, timeout=10)["response"] == "export_svg":
+                    ws.send(json.dumps({"request": "svg_exported", "svg": svg,
+                                        "generation": 0}))
+        except (TimeoutError, ConnectionClosed):
+            pass
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+def test_export_svg_waits_for_a_viewer_and_writes_the_file(server, tmp_path):
+    with connect(ws_url(server)) as ws:
+        ws.send(LOAD_ROOT)
+        assert recv(ws)["response"] == "root_response"
+        _answer_svg_exports(ws)
+        out = tmp_path / "view.svg"
+        assert server.export_svg(out, timeout=5) == "<svg/>"
+        assert out.read_text() == "<svg/>"
+
+
+def test_export_svg_with_a_callback_returns_at_once(server):
+    got = threading.Event()
+    svgs = []
+    with connect(ws_url(server)) as ws:
+        ws.send(LOAD_ROOT)
+        assert recv(ws)["response"] == "root_response"
+        assert server.export_svg(callback=lambda svg: (svgs.append(svg), got.set())) is None
+        assert recv(ws)["response"] == "export_svg"
+        ws.send(json.dumps({"request": "svg_exported", "svg": "<svg>cb</svg>"}))
+        assert got.wait(5)
+    assert svgs == ["<svg>cb</svg>"]
+
+
+def test_export_svg_asks_a_viewer_that_connects_later(server):
+    result = []
+    waiter = threading.Thread(target=lambda: result.append(server.export_svg(timeout=10)))
+    waiter.start()
+    time.sleep(0.2)  # export asked with nobody connected
+    with connect(ws_url(server)) as ws:
+        ws.send(LOAD_ROOT)  # asked again after its root
+        _answer_svg_exports(ws, "<svg>late</svg>")
+        waiter.join(10)
+    assert result == ["<svg>late</svg>"]
+
+
+def test_export_svg_times_out_without_an_answer(server):
+    with pytest.raises(TimeoutError, match="0 connected"):
+        server.export_svg(timeout=0.2)
+
+
+def test_export_svg_refuses_to_wait_on_the_callbacks_thread(server):
+    errors = []
+    done = threading.Event()
+
+    def on_select(ids, path):
+        try:
+            server.export_svg(timeout=0.1)
+        except RuntimeError as e:
+            errors.append(str(e))
+        done.set()
+    server.on_select(on_select)
+    with connect(ws_url(server)) as ws:
+        ws.send(json.dumps({"request": "instance_selected", "path": ["u_sub"]}))
+        assert done.wait(5)
+    assert errors and "callback" in errors[0]
+
+
+def test_export_svg_needs_a_running_server(top, bundle):
+    with pytest.raises(RuntimeError, match="not running"):
+        ViewerServer().export_svg(timeout=0)

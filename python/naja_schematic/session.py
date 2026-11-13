@@ -1,18 +1,18 @@
 """One viewer's state on the Python side, whatever carries its messages.
 
 A ViewerSession answers the viewer's requests (protocol.handle_request()
-against the live NLUniverse), keeps the host's pushes -- diagnoses and the
-focused instance -- and re-sends them after every root_response (the viewer
-clears both on each root load), and records the instance the viewer
-selects. The notebook widget, the CLI servers and the embeddable
+against the live NLUniverse), keeps the host's pushes -- diagnoses, the
+focused instance and the nets shown with show_net() -- and re-sends them
+after every root_response (a viewer that reloads has lost them), and
+records the instance the viewer selects. The notebook widget, the CLI servers and the embeddable
 ViewerServer all wrap one; they only differ in how messages travel.
 
 Universe access is split by who starts it:
 - what the viewer starts (its requests, and resolving a selection sent by
   names only) runs through `run(fn)`, which the host can hook to serialize
   it with its own design operations (a lock, or a hop to its own thread);
-- what the host starts (annotate(), show_instance(), selected) touches the
-  universe directly, on the host's thread: call those where the host's own
+- what the host starts (annotate(), show_instance(), show_net(), selected)
+  touches the universe directly, on the host's thread: call those where the host's own
   design operations are allowed. They never go through `run`, so a host
   holding its lock -- or on the very thread `run` hops to -- can call them
   without deadlocking.
@@ -110,6 +110,199 @@ def instance_path(target):
     return instance_paths(target)[0]
 
 
+def _top_design():
+    universe = naja.NLUniverse.get()
+    design = universe.getTopDesign() if universe else None
+    if design is None:
+        raise ValueError("no design is loaded")
+    return design
+
+
+def _model_at(ids):
+    # The model of the instance at `ids` (the top design for []).
+    design = _top_design()
+    for inst_id in ids:
+        inst = design.getInstanceByID(inst_id)
+        if inst is None:
+            raise ValueError(f"instance id path {list(ids)} does not resolve in the loaded design")
+        design = inst.getModel()
+    return design
+
+
+def _same_design(a, b):
+    return a is not None and b is not None and a.getDB().getID() == b.getDB().getID() \
+        and a.getLibrary().getID() == b.getLibrary().getID() and a.getID() == b.getID()
+
+
+def _term_display_name(term):
+    # Same as displayTermName() in the viewer: "<term #id>" when unnamed.
+    return term.getName() or f"<term #{term.getID()}>"
+
+
+def _display_prefix(ids, names):
+    # "u1/u2/" for a trace label, "<#id>" for an anonymous level, "" at the
+    # top: same as traceLabel() in the viewer. Display only.
+    prefix = "/".join(name or f"<#{i}>" for name, i in zip(names, ids))
+    return prefix + "/" if prefix else ""
+
+
+def _pin_of(term, bit, what):
+    # (term_id, bit, display name) of the pin an SNL term (scalar, bus, or
+    # bus bit) and an optional bit name, as load_equipotential takes it.
+    if isinstance(term, naja.SNLBusTermBit):
+        if bit is not None and bit != term.getBit():
+            raise ValueError(f"{what} is bit {term.getBit()}, not bit {bit}")
+        bus = term.getBus()
+        return bus.getID(), term.getBit(), f"{_term_display_name(bus)}[{term.getBit()}]"
+    if isinstance(term, naja.SNLBusTerm):
+        if bit is None:
+            raise ValueError(f"{what} is a bus ({_term_display_name(term)}"
+                             f"[{term.getMSB()}:{term.getLSB()}]): give one bit")
+        if not is_id(bit) or term.getBusTermBit(bit) is None:
+            raise ValueError(f"{what} has no bit {bit!r}")
+        return term.getID(), bit, f"{_term_display_name(term)}[{bit}]"
+    if bit is not None:
+        raise ValueError(f"{what} is not a bus: it has no bit {bit!r}")
+    return term.getID(), None, _term_display_name(term)
+
+
+def _pin_on_equipotential(equipotential):
+    # A pin on an SNLEquipotential to draw it from: its first top-level
+    # port, else its first leaf pin.
+    for term in equipotential.getTerms():
+        return [], term
+    for occ in equipotential.getInstTermOccurrences():
+        return list(occ.getPath().getInstanceIDs()) + [occ.getInstTerm().getInstance().getID()], \
+            occ.getInstTerm().getBitTerm()
+    raise ValueError("the equipotential has no pin to draw it from")
+
+
+def net_pin(target):
+    """Normalize what show_net() accepts to the pin its net is drawn from:
+    a dict with `id_path` and `path` (the pin's instance, top excluded; []
+    for a top-level port), `term_id`, `bit` (None for a scalar) and
+    `label`, a default trace label. Raises ValueError (TypeError for an
+    unsupported kind) with the reason when it doesn't resolve.
+
+    `target` is one bit, never a whole bus:
+    - a najaeda netlist.Term (one bit), netlist.Net (one bit: the net is
+      drawn from a port of its design, else from its first instance pin),
+      or netlist.Equipotential;
+    - a naja SNLOccurrence of an inst term, an SNLInstTerm of a child of
+      the top design, a top-level SNLScalarTerm/SNLBusTermBit, or an
+      SNLEquipotential (drawn from its first top-level port, else its first
+      leaf pin);
+    - a tuple (instance, terminal) or (instance, terminal, bit): `instance`
+      as show_instance() takes it ([] = a top-level port), `terminal` a
+      name or a term id.
+    """
+    label = None
+    if isinstance(target, tuple) and len(target) in (2, 3):
+        instance, terminal = target[0], target[1]
+        bit = target[2] if len(target) == 3 else None
+        names, ids = instance_paths(instance)
+        design = _model_at(ids)
+        if isinstance(terminal, str):
+            term = design.getTerm(terminal)
+        elif is_id(terminal):
+            term = design.getTermByID(terminal)
+        else:
+            raise TypeError(f"expected a terminal name or id, got {terminal!r}")
+        if term is None:
+            raise ValueError(f"no terminal {terminal!r} on {'/'.join(names) or 'the top design'}"
+                             f" ({design.getName()})")
+    elif hasattr(target, "termID") and hasattr(target, "pathIDs"):  # najaeda Term
+        ids, bit = list(target.pathIDs), target.bit
+        term = _model_at(ids).getTermByID(target.termID)
+        if term is None:
+            raise ValueError(f"terminal {target.termID} does not resolve in the loaded design")
+    elif hasattr(target, "pathIDs") and (hasattr(target, "net") or hasattr(target, "net_concat")):
+        # najaeda Net: the net of the design at pathIDs.
+        net = target.net if hasattr(target, "net") else None
+        if net is None:
+            concat = list(target.net_concat)
+            if len(concat) != 1:
+                raise ValueError("a concatenation of several nets: show one bit")
+            net = concat[0]
+        if isinstance(net, naja.SNLBusNet):
+            raise ValueError(f"net {net.getName()} is a bus: show one bit (net.get_bit(i))")
+        head = list(target.pathIDs)
+        _model_at(head)  # validates the path
+        bit = None
+        bit_terms = list(net.getBitTerms())
+        if bit_terms:
+            ids, term = head, bit_terms[0]
+        else:
+            # A cell's pin rather than an assign's (an anonymous connector
+            # the schematic doesn't draw as a gate), when there is one.
+            inst_terms = sorted(net.getInstTerms(),
+                                key=lambda it: bool(it.getInstance().getModel().isAssign()))
+            if not inst_terms:
+                raise ValueError(f"net {net.getName() or '#' + str(net.getID())} connects "
+                                 "no pin: there is nothing to draw it from")
+            ids = head + [inst_terms[0].getInstance().getID()]
+            term = inst_terms[0].getBitTerm()
+        # Named after the net, in the instance owning it.
+        net_name = net.getName() or f"<net #{net.getID()}>"
+        if isinstance(net, naja.SNLBusNetBit):
+            net_name += f"[{net.getBit()}]"
+        label = _display_prefix(head, ids_to_names(head)) + net_name + " (net)"
+    elif hasattr(target, "equi") or isinstance(target, naja.SNLEquipotential):
+        ids, term = _pin_on_equipotential(getattr(target, "equi", target))
+        bit = None
+    elif isinstance(target, naja.SNLOccurrence):
+        inst_term = target.getInstTerm()
+        if inst_term is None:
+            raise ValueError("an SNLOccurrence of an instance, not of a pin: "
+                             "use show_instance(), or name one of its pins")
+        ids = list(target.getPath().getInstanceIDs()) + [inst_term.getInstance().getID()]
+        term, bit = inst_term.getBitTerm(), None
+    elif isinstance(target, naja.SNLInstTerm):
+        inst = target.getInstance()
+        if not _same_design(inst.getDesign(), _top_design()):
+            raise ValueError("an SNLInstTerm only names a pin of a child of the top design: "
+                             "pass an SNLOccurrence (or a najaeda Term) for a deeper one")
+        ids, term, bit = [inst.getID()], target.getBitTerm(), None
+    elif isinstance(target, (naja.SNLBitTerm, naja.SNLBusTerm)):
+        if not _same_design(target.getDesign(), _top_design()):
+            raise ValueError("an SNL term alone only names a top-level port: pass an "
+                             "SNLOccurrence (or a najaeda Term) for an instance pin")
+        ids, term, bit = [], target, None
+    else:
+        raise TypeError("expected a najaeda Term, Net or Equipotential, a naja SNLOccurrence, "
+                        "SNLInstTerm, top-level term or SNLEquipotential, or an "
+                        f"(instance, terminal[, bit]) tuple, got {type(target).__name__}")
+    names = ids_to_names(ids)
+    if names is None:
+        raise ValueError(f"instance id path {ids} does not resolve in the loaded design")
+    term_id, bit, pin = _pin_of(term, bit, "the terminal")
+    if label is None:
+        label = _display_prefix(ids, names) + pin + " (net)"
+    return {"id_path": ids, "path": names, "term_id": term_id, "bit": bit, "label": label}
+
+
+def trace_color(color):
+    """Normalize a trace color -- "#rrggbb" or an (r, g, b) tuple of 0-255
+    ints -- to "#rrggbb". The viewer refuses near-black colors (the
+    convergence color of shared gates) and near-white ones (invisible on its
+    white canvas); so does this, with a ValueError."""
+    if isinstance(color, str):
+        hexa = color[1:] if color.startswith("#") else color
+        if len(hexa) != 6 or any(c not in "0123456789abcdefABCDEF" for c in hexa):
+            raise ValueError(f"expected a color as '#rrggbb', got {color!r}")
+        rgb = tuple(int(hexa[i:i + 2], 16) for i in (0, 2, 4))
+    elif isinstance(color, (tuple, list)) and len(color) == 3 and all(
+            is_id(c) and 0 <= c <= 255 for c in color):
+        rgb = tuple(color)
+    else:
+        raise TypeError(f"expected a color as '#rrggbb' or (r, g, b), got {color!r}")
+    if all(c <= 80 for c in rgb):
+        raise ValueError(f"color {color!r} is too dark: near-black marks gates traces share")
+    if all(c >= 190 for c in rgb):
+        raise ValueError(f"color {color!r} is too light to show on the white canvas")
+    return "#%02x%02x%02x" % rgb
+
+
 def selected_instance(id_path, path):
     """A selection (id path and/or name path) as a naja SNLPath (empty for
     the top design), or None if there is none or it no longer exists in the
@@ -182,6 +375,9 @@ class ViewerSession:
         self._diagnosis_push = (protocol.diagnosis_response(diagnosis)
                                 if diagnosis is not None else None)
         self._focus_push = None
+        # show_net() pushes since the view was last cleared, in order: they
+        # are re-sent after the focus, which clears the view when drawn.
+        self._net_pushes = []
         self._select_callbacks = []
         self._svg_callbacks = []  # one-shot, for the next svg_exported
         self.svg = None
@@ -224,6 +420,7 @@ class ViewerSession:
             with self._state_lock:
                 generation = self._generation
                 pushes = [p for p in (self._diagnosis_push, self._focus_push) if p]
+                pushes += self._net_pushes
                 if self._svg_callbacks:
                     # An export asked before the view was up got lost with
                     # it: ask again once the view is (re)loaded.
@@ -378,6 +575,32 @@ class ViewerSession:
         message = protocol.focus_instance(names, ids)
         with self._state_lock:
             self._focus_push = message
+            self._net_pushes = []  # the focus clears the view
+            generation = self._generation
+        self._send(self._stamp(message, generation))
+
+    def show_net(self, target, *, label=None, color=None, add=True):
+        """Draw the net on a pin as a colored one-net trace, as the tree's
+        Show Equipotential does: its own color and a row in the Traces tab.
+        Now, and after every reload (until show_instance(), show_net(...,
+        add=False) or design_changed()). See net_pin() for what `target`
+        can be: one bit, resolved here, so a bad target raises ValueError
+        rather than reaching the viewer. `label` names the trace (default:
+        the pin, e.g. "u1/A[0] (net)"); `color` ("#rrggbb" or (r, g, b),
+        see trace_color()) replaces its palette color. With add=False the
+        schematic is cleared first. A net the view already shows as a
+        host net is left as it is."""
+        pin = net_pin(target)
+        message = protocol.show_net(
+            pin["id_path"], pin["term_id"], pin["bit"], path=pin["path"],
+            label=pin["label"] if label is None else str(label),
+            color=None if color is None else trace_color(color), add=add)
+        with self._state_lock:
+            if add:
+                self._net_pushes.append(message)
+            else:
+                # The view is cleared: the focus goes with it.
+                self._focus_push, self._net_pushes = None, [message]
             generation = self._generation
         self._send(self._stamp(message, generation))
 
@@ -418,6 +641,7 @@ class ViewerSession:
             generation = self._generation
             self._source_paths = dataclasses.replace(self._source_paths, loaded_at=time.time())
             self._diagnosis_push, self._focus_push = diagnosis_push, focus_push
+            self._net_pushes = []  # they name the old design
             had_selection = self.selected_id_path is not None or self.selected_path is not None
             self.selected_path = self.selected_id_path = None
         self._send(self._stamp(protocol.design_changed(), generation))

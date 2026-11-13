@@ -57,6 +57,10 @@ ids, which give the najaeda `Instance`, as `selected_id_path`:
 view.show_instance(netlist.get_instance_by_path(["u_sub", "u_and"]))
 view.show_instance(["u_sub", "u_and"]) # same thing
 
+view.show_net(netlist.get_instance_by_path(["u_sub", "u_and"]).get_term("O"),
+              color="#ff8800")         # its net, as a colored trace
+view.show_net((["u_sub"], "y"))        # (instance, terminal[, bit]) works too
+
 path = view.selected                   # what the user clicked (an SNLPath), or None
 path.getModel().getName()
 inst = netlist.Instance(view.selected_id_path)
@@ -95,6 +99,8 @@ server.open_browser()             # or hand server.url to the user
 
 server.annotate(items)            # diagnosis overlay, kept across reloads
 server.show_instance([3, 7])      # instance ids, names, or a najaeda Instance
+server.show_net(term, color="#ff8800")  # a net as a colored trace (a najaeda Term, ...)
+svg = server.export_svg("view.svg")     # the schematic as SVG, from a viewer
 server.on_select(lambda id_path, path: print("selected", path))
 with server.replacing_design():   # holds design_lock, then viewers reload
     netlist.load_gate_level_verilog("other.v")

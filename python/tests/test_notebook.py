@@ -76,6 +76,23 @@ if hasattr(_protocol, "request_sources"):
     assert "u_red" in _txt["text"].splitlines()[_txt["line"] - _txt["first_line"]], _txt
     del _sent[:]
 
+# show_net, in packages that have it: the push names the pin by ids, and
+# the viewer's load_equipotential for it (tagged with its trace) resolves.
+if hasattr(view, "show_net"):
+    _port = next(netlist.get_top().get_bit_terms())
+    del _sent[:]
+    view.show_net(_port, color="#ff8800")
+    (_push,) = _sent
+    assert _push["response"] == "show_net" and _push["color"] == "#ff8800", _push
+    _load = {"request": "load_equipotential", "path": _push["id_path"],
+             "term_id": _push["term_id"], "trace_id": 1}
+    if "bit" in _push:
+        _load["bit"] = _push["bit"]
+    (_eq,) = _ask(_load)
+    assert _eq["found"] and _eq["trace_id"] == 1 and _eq["terms"], _eq
+    view.show_instance(["u_counter"])  # back to the notebook's own focus, no net
+    del _sent[:]
+
 _svgs = []
 view.export_svg(callback=_svgs.append)
 assert [m["response"] for m in _sent] == ["export_svg"], _sent

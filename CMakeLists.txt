@@ -93,6 +93,7 @@ set(CORE_SOURCES
   src/SelectionStore.cpp
   src/TraceStore.cpp
   src/TraceView.cpp
+  src/ShowNetStore.cpp
   src/ReviewStore.cpp
   src/ReviewView.cpp
   src/AppLogic.cpp
@@ -255,6 +256,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/PropertiesStore.cpp
       src/SelectionStore.cpp
       src/TraceStore.cpp
+      src/ShowNetStore.cpp
       src/ReviewStore.cpp
       src/ReviewView.cpp
       src/GenerationProvider.cpp
