@@ -35,7 +35,7 @@ def review(top, tmp_path):
 
 
 def files(directory):
-    return sorted(str(p.relative_to(directory)) for p in directory.rglob("*") if p.is_file())
+    return sorted(p.relative_to(directory).as_posix() for p in directory.rglob("*") if p.is_file())
 
 
 def test_thread_files_and_folding(review):

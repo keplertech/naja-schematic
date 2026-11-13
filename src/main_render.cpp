@@ -26,7 +26,15 @@
 #include <iostream>
 #include <string>
 
+#ifdef _WIN32
+#include <fcntl.h>
+#include <io.h>
+#define dup _dup
+#define dup2 _dup2
+#define fdopen _fdopen
+#else
 #include <unistd.h>
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -55,6 +63,7 @@ class StdioProvider : public INetlistProvider {
       std::fflush(out_);
       std::string line;
       if (!std::getline(std::cin, line)) return false;
+      if (!line.empty() && line.back() == '\r') line.pop_back();  // a CRLF host
       json batch = json::parse(line, nullptr, /*allow_exceptions=*/false);
       if (!batch.is_array()) {
         std::cerr << "naja-schematic-render: expected a JSON array, got: " << line.substr(0, 200) << "\n";
@@ -96,7 +105,14 @@ int main(int argc, char** argv) {
   // Keep the real stdout for the protocol; everything else writing to fd 1
   // goes to stderr.
   std::fflush(stdout);
+#ifdef _WIN32
+  // No CRLF translation on the protocol channel (or on the SVG it carries).
+  _setmode(0, _O_BINARY);
+  _setmode(1, _O_BINARY);
+  FILE* protocolOut = fdopen(dup(1), "wb");
+#else
   FILE* protocolOut = fdopen(dup(1), "w");
+#endif
   if (!protocolOut) { std::perror("naja-schematic-render"); return 1; }
   dup2(2, 1);
 

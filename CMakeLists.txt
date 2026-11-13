@@ -151,9 +151,15 @@ if(NOT EMSCRIPTEN_BUILD)
   target_compile_definitions(naja-schematic-render PRIVATE
     NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
   )
-  if(NOT APPLE)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     # A self-contained binary for the manylinux wheels.
     target_link_options(naja-schematic-render PRIVATE -static-libstdc++ -static-libgcc)
+  elseif(MSVC)
+    # Self-contained too (no VC++ redistributable needed), and the sources
+    # are UTF-8 whatever the build machine's code page.
+    set_target_properties(naja-schematic-render PROPERTIES
+      MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+    target_compile_options(naja-schematic-render PRIVATE /utf-8 /bigobj)
   endif()
   if(NAJA_SCHEMATIC_RENDER_ONLY)
     return()

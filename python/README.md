@@ -131,7 +131,8 @@ works), or given as JSON (`'[3,7]'` ids, `'["u1","u2"]'` names; a pin as
 nothing, if any target doesn't resolve.
 
 The renderer, `naja-schematic-render`, is a small native program shipped in
-the Linux x86_64 and macOS wheels. Elsewhere, build it from a checkout
+the Linux (x86_64, aarch64), macOS and Windows (x64) wheels. Elsewhere,
+build it from a checkout
 (`cmake -S . -B build-render -DNAJA_SCHEMATIC_RENDER_ONLY=ON && cmake --build
 build-render`, a C++ compiler is all it needs) and set
 `NAJA_SCHEMATIC_RENDER` to its path.

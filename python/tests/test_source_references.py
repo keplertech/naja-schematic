@@ -8,6 +8,7 @@ and LocalSNLProvider are held to the same answers.
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 from najaeda import naja
@@ -95,6 +96,12 @@ def test_legacy_location_when_no_typed_reference():
     assert protocol.has_sources(_LegacyOnly())
 
 
+def _same(got, expected):
+    # The same file, whatever separators joined it: paths are opaque, so on
+    # Windows a root joined to "rtl/a.v" is "...\rtl/a.v", still that file.
+    return got is not None and Path(got) == Path(expected)
+
+
 def test_resolve_source_file(tmp_path, monkeypatch):
     first, second = tmp_path / "first", tmp_path / "second"
     (first / "rtl").mkdir(parents=True)
@@ -103,8 +110,8 @@ def test_resolve_source_file(tmp_path, monkeypatch):
     (first / "rtl" / "b.v").write_text("first")
     (second / "rtl" / "b.v").write_text("second")
     roots = protocol.SourcePaths((str(first), str(second)))
-    assert protocol.resolve_source_file("rtl/a.v", roots) == str(second / "rtl" / "a.v")
-    assert protocol.resolve_source_file("rtl/b.v", roots) == str(first / "rtl" / "b.v")  # in order
+    assert _same(protocol.resolve_source_file("rtl/a.v", roots), second / "rtl" / "a.v")
+    assert _same(protocol.resolve_source_file("rtl/b.v", roots), first / "rtl" / "b.v")  # in order
     absolute = str(second / "rtl" / "a.v")
     assert protocol.resolve_source_file(absolute, protocol.SourcePaths((str(first),))) == absolute
     assert protocol.resolve_source_file("rtl/c.v", roots) is None
@@ -120,16 +127,16 @@ def test_source_maps(tmp_path):
     local = str(checkout / "rtl" / "a.v")
     maps = lambda *m: protocol.SourcePaths(maps=m)  # noqa: E731
     # A prefix of the recorded path, at a path boundary, with or without "/".
-    assert protocol.resolve_source_file("/synth/flow/rtl/a.v", maps(("/synth/flow", str(checkout)))) == local
-    assert protocol.resolve_source_file("/synth/flow/rtl/a.v", maps(("/synth/flow/", str(checkout) + "/"))) == local
+    assert _same(protocol.resolve_source_file("/synth/flow/rtl/a.v", maps(("/synth/flow", str(checkout)))), local)
+    assert _same(protocol.resolve_source_file("/synth/flow/rtl/a.v", maps(("/synth/flow/", str(checkout) + "/"))), local)
     # Not in the middle of a name: /synth/flowX is another directory.
     assert protocol.resolve_source_file("/synth/flowX/rtl/a.v", maps(("/synth/flow", str(checkout)))) is None
     # In order; a map that leads nowhere falls through to the next one.
-    assert protocol.resolve_source_file(
-        "/synth/flow/rtl/a.v", maps(("/synth", "/nowhere"), ("/synth/flow", str(checkout)))) == local
+    assert _same(protocol.resolve_source_file(
+        "/synth/flow/rtl/a.v", maps(("/synth", "/nowhere"), ("/synth/flow", str(checkout)))), local)
     # Relative paths too, and a map is tried before roots.
-    assert protocol.resolve_source_file(
-        "build/rtl/a.v", protocol.SourcePaths(("/nowhere",), (("build", str(checkout)),))) == local
+    assert _same(protocol.resolve_source_file(
+        "build/rtl/a.v", protocol.SourcePaths(("/nowhere",), (("build", str(checkout)),))), local)
 
 
 def test_large_file_sends_the_lines_around_the_reference(tmp_path, monkeypatch):
@@ -167,16 +174,22 @@ def test_stale_files(sources, tmp_path):
     (tmp_path / "rtl").mkdir()
     copy = tmp_path / "rtl" / "alu.v"
     copy.write_text((CASES_DIR / "sources" / "rtl" / "alu.v").read_text())
+    # Modification times are set well clear of the load time: time.time()
+    # can be coarser than the file system's clock (Windows), so "now" on
+    # both sides may compare either way.
+    def touch(offset):
+        when = time.time() + offset
+        os.utime(copy, (when, when))
     request = json.dumps({"request": "load_source", "kind": "instance",
                           "id_path": [0, 0], "role": "origin", "index": 0})
+    touch(-5)
     session = ViewerSession(source_roots=[str(tmp_path)])
     stale = lambda: json.loads(session.answer(request)[0])["stale"]  # noqa: E731
     assert stale() is False
-    later = time.time() + 5
-    os.utime(copy, (later, later))
+    touch(5)
     assert stale() is True
     # design_changed() starts a new design: its ranges are newer than the file.
-    os.utime(copy, (time.time(), time.time()))
+    touch(-5)
     session.design_changed()
     assert stale() is False
     # Unknown load time (a bare SourcePaths): never stale.

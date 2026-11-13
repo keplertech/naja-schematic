@@ -755,7 +755,7 @@ def load_review_snapshot(review, snapshot=None):
 
 
 def load_diagnosis_file(path):
-    with open(path) as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -797,7 +797,7 @@ def main(argv=None):
         # stdout for protocol messages and point fd 1 at stderr, so nothing
         # else can land on the protocol channel.
         sys.stdout.flush()
-        protocol_out = os.fdopen(os.dup(1), "w")
+        protocol_out = os.fdopen(os.dup(1), "w", encoding="utf-8")
         os.dup2(2, 1)
 
     diagnosis = load_diagnosis_file(args.diagnosis) if args.diagnosis else None

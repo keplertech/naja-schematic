@@ -13,6 +13,7 @@ path = [
   ".github/workflows/native-macos.yml",
   ".github/workflows/python-package.yml",
   ".github/workflows/reuse.yml",
+  ".gitattributes",
   ".gitignore",
   ".gitmodules",
   "AGENTS.md",
