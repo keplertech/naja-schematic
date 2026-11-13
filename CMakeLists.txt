@@ -144,6 +144,10 @@ set(HEADLESS_SOURCES
 option(NAJA_SCHEMATIC_RENDER_ONLY "Build only naja-schematic-render" OFF)
 if(NOT EMSCRIPTEN_BUILD)
   add_executable(naja-schematic-render ${HEADLESS_SOURCES} src/main_render.cpp)
+  # SourceView's "Open in Editor" worker is a std::thread: older glibc
+  # (manylinux_2_28) keeps pthread_* in libpthread, not libc.
+  find_package(Threads REQUIRED)
+  target_link_libraries(naja-schematic-render PRIVATE Threads::Threads)
   target_compile_definitions(naja-schematic-render PRIVATE
     NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
   )
