@@ -69,8 +69,8 @@ your own tool).
   opened at the highlighted line.
 - **Diagnosis overlay**: color and annotate flagged instances, pins and
   nets from a JSON report, e.g. from a formal equivalence check.
-- **SVG export** of the schematic, from the File menu or headless from the
-  command line.
+- **SVG export** of the schematic, from the File menu or headless (no
+  browser, no display) from the command line or Python.
 - Loads gate-level Verilog (with Liberty), SystemVerilog, VHDL
   (experimental) or naja SNL netlists. Muxes are drawn as muxes, and the
   adders, multipliers and shifters SystemVerilog becomes as operator boxes.
@@ -88,6 +88,7 @@ plus options, in any order. Their flags differ slightly:
 | `a.vhd b.vhd --top top` | `--vhdl a.vhd b.vhd --top top` | Load VHDL, files in any order (naja's experimental frontend) |
 | `snl_dir/` | | Load a naja-if (SNL) netlist directory |
 | `--liberty a.lib --liberty b.lib` | `--liberty a.lib b.lib` | Liberty cell libraries (Verilog only) |
+| | `--py-primitives prims.py` | Primitives defined in Python: a `.py` file or module whose `load(db)` builds them (repeatable) |
 | `--diagnosis report.json` | `--diagnosis report.json` | Show a diagnosis report on the design |
 | `--yosys-src` | `--yosys-src` | Read Yosys `(* src *)` attributes, so Show Sources leads back to the RTL (Verilog only) |
 | `--source-root dir` | `--source-root dir` | Where to look for relative source paths (repeatable) |
@@ -125,6 +126,15 @@ naja-schematic-standalone design.v --liberty cells.lib --export cone.svg \
 A pin is `{"path": ["u1"], "terminal": "A", "bit": 0}`: `path` is the
 instance that holds it (leave it out for a top-level port), `bit` is only
 for buses.
+
+The Python package does the same without the desktop app (see
+[python/README.md](python/README.md#svg-export-no-browser)), also for
+designs whose primitives are defined in Python:
+
+```bash
+naja-schematic render --verilog design.v --py-primitives prims.py \
+  --trace u1:D --net u2:A[3] --instance u1 --svg cone.svg
+```
 
 ## Controls
 

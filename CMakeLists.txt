@@ -96,11 +96,69 @@ set(CORE_SOURCES
   src/ShowNetStore.cpp
   src/ReviewStore.cpp
   src/ReviewView.cpp
+  src/AppMessages.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
   # Read-only code view of the Source tab (SourceView).
   ${CMAKE_SOURCE_DIR}/thirdparty/ImGuiColorTextEdit/TextEditor.cpp
 )
+
+# The viewer's logic without SDL, GL or any ImGui backend (the windowed
+# frame loop, AppLogic.cpp, is left out): what the headless renderer links.
+set(HEADLESS_SOURCES
+  src/Console.cpp
+  src/Types.cpp
+  src/GUIData.cpp
+  src/NetlistTree.cpp
+  src/EquipotentialView.cpp
+  src/SchematicLayout.cpp
+  src/SchematicInteraction.cpp
+  src/SchematicView.cpp
+  src/SvgPainter.cpp
+  src/DiagnosisStore.cpp
+  src/SourceStore.cpp
+  src/SourceView.cpp
+  src/VerilogLanguage.cpp
+  src/PropertiesStore.cpp
+  src/SelectionStore.cpp
+  src/TraceStore.cpp
+  src/ShowNetStore.cpp
+  src/ReviewStore.cpp
+  src/ReviewView.cpp
+  src/AppMessages.cpp
+  src/HeadlessView.cpp
+  ${IMGUI_DIR}/imgui.cpp
+  ${IMGUI_DIR}/imgui_draw.cpp
+  ${IMGUI_DIR}/imgui_tables.cpp
+  ${IMGUI_DIR}/imgui_widgets.cpp
+  ${CMAKE_SOURCE_DIR}/thirdparty/ImGuiColorTextEdit/TextEditor.cpp
+)
+
+# ============================================================
+# naja-schematic-render — headless SVG renderer for the Python package
+# ============================================================
+# No naja, SDL or GL: the Python host answers its requests (see
+# src/main_render.cpp). Built with the native targets, or alone with
+# -DNAJA_SCHEMATIC_RENDER_ONLY=ON (what the wheel builds need: nothing
+# but a C++ compiler and the imgui submodules).
+option(NAJA_SCHEMATIC_RENDER_ONLY "Build only naja-schematic-render" OFF)
+if(NOT EMSCRIPTEN_BUILD)
+  add_executable(naja-schematic-render ${HEADLESS_SOURCES} src/main_render.cpp)
+  # SourceView's "Open in Editor" worker is a std::thread: older glibc
+  # (manylinux_2_28) keeps pthread_* in libpthread, not libc.
+  find_package(Threads REQUIRED)
+  target_link_libraries(naja-schematic-render PRIVATE Threads::Threads)
+  target_compile_definitions(naja-schematic-render PRIVATE
+    NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
+  )
+  if(NOT APPLE)
+    # A self-contained binary for the manylinux wheels.
+    target_link_options(naja-schematic-render PRIVATE -static-libstdc++ -static-libgcc)
+  endif()
+  if(NAJA_SCHEMATIC_RENDER_ONLY)
+    return()
+  endif()
+endif()
 
 # ============================================================
 # Target 1: naja-schematic  — Browser / VSCode webview (WASM)
@@ -195,6 +253,7 @@ else()
   add_executable(naja-schematic-standalone
     ${CORE_SOURCES}
     src/LocalSNLProvider.cpp
+    src/HeadlessView.cpp
     src/HeadlessExport.cpp
     ${PLATFORM_FILE_DIALOG_SOURCE}
     src/main_native.cpp

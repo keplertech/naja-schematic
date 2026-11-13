@@ -20,3 +20,5 @@ python/LICENSE
 .pytest_cache/
 __pycache__/
 dist/
+# Headless SVG renderer: built by CI, shipped in the platform wheels.
+python/naja_schematic/bin/

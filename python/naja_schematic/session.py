@@ -579,7 +579,7 @@ class ViewerSession:
             generation = self._generation
         self._send(self._stamp(message, generation))
 
-    def show_net(self, target, *, label=None, color=None, add=True):
+    def show_net(self, target, *, label=None, color=None, add=True, trace=False):
         """Draw the net on a pin as a colored one-net trace, as the tree's
         Show Equipotential does: its own color and a row in the Traces tab.
         Now, and after every reload (until show_instance(), show_net(...,
@@ -589,12 +589,15 @@ class ViewerSession:
         the pin, e.g. "u1/A[0] (net)"); `color` ("#rrggbb" or (r, g, b),
         see trace_color()) replaces its palette color. With add=False the
         schematic is cleared first. A net the view already shows as a
-        host net is left as it is."""
+        host net is left as it is. With trace=True the pin's whole fan-in
+        cone is drawn, as the tree's Trace to Driver does."""
         pin = net_pin(target)
+        if label is None:
+            label = pin["label"].removesuffix(" (net)") if trace else pin["label"]
         message = protocol.show_net(
             pin["id_path"], pin["term_id"], pin["bit"], path=pin["path"],
-            label=pin["label"] if label is None else str(label),
-            color=None if color is None else trace_color(color), add=add)
+            label=str(label), color=None if color is None else trace_color(color), add=add,
+            trace=trace)
         with self._state_lock:
             if add:
                 self._net_pushes.append(message)

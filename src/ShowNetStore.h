@@ -24,14 +24,17 @@
 // "add": false push arrives, the user clears it, the design is reloaded --
 // forget() drops every host net: a reply still in flight for one is then
 // not drawn at all.
+//
+// A push with "trace": true asks for the pin's fan-in cone instead, a
+// trace_driver tagged the same way (as the tree's "Trace to Driver").
 class ShowNetStore {
   public:
-    // Handles a show_net push. Returns the load_equipotential request to
-    // send, or nullopt for a malformed push or a net already shown.
+    // Handles a show_net push. Returns the load_equipotential (or, with
+    // "trace": true, trace_driver) request to send, or nullopt for a malformed push or a net already shown.
     // `clearView` is called first when the push has "add": false.
     static std::optional<nlohmann::json> request(const nlohmann::json& push,
                                                  const std::function<void()>& clearView);
-    // An equipotential_response's trace_id -> the trace to draw its net
+    // An equipotential_response's (or trace_driver_response's) trace_id -> the trace to draw its net
     // under: the same id, the id of the trace registered again for a host
     // net whose trace a view clear dropped while it was in flight, or -1:
     // a forgotten host net, not to be drawn.

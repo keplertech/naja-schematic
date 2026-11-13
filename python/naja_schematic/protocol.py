@@ -1137,15 +1137,20 @@ def diagnosis_response(items):
     return {"response": "diagnosis_response", "items": [_diagnosis_item(i) for i in items]}
 
 
-def focus_instance(path=None, id_path=None):
+def focus_instance(path=None, id_path=None, *, add=False):
     """Build a focus_instance push message: the viewer resolves the instance
     -- by `id_path` (a list of instance ids, top excluded) when given, else
     by `path` (a list of instance names); [] = the top design -- reveals and
-    selects it in the tree, and draws it alone in the schematic."""
+    selects it in the tree, and draws it alone in the schematic. With
+    add=True (needs `id_path`) its box is added to what the schematic shows
+    instead, and nothing is selected: how render.py draws several
+    instances."""
     message = {"response": "focus_instance",
                "path": [str(name) for name in (path or [])]}
     if id_path is not None:
         message["id_path"] = [int(i) for i in id_path]
+    if add:
+        message["add"] = True
     return message
 
 
@@ -1167,7 +1172,8 @@ def export_svg():
     return {"response": "export_svg"}
 
 
-def show_net(id_path, term_id, bit=None, *, path=None, label=None, color=None, add=True):
+def show_net(id_path, term_id, bit=None, *, path=None, label=None, color=None, add=True,
+             trace=False):
     """Build a show_net push message: the viewer draws the net on a pin as
     a colored one-net trace, as the tree's Show Equipotential does. The pin
     is term `term_id` (bit `bit` of a bus) of the instance at `id_path`
@@ -1175,7 +1181,9 @@ def show_net(id_path, term_id, bit=None, *, path=None, label=None, color=None, a
     instance's names, is for display only. `label` names the trace in the
     Traces tab, `color` ("#rrggbb") overrides its palette color, and with
     add=False the viewer clears the schematic first. The viewer asks for the
-    net with load_equipotential, as for any other pin."""
+    net with load_equipotential, as for any other pin -- or, with
+    trace=True, for the pin's whole fan-in cone with trace_driver, as the
+    tree's Trace to Driver does (one trace, one color)."""
     message = {"response": "show_net",
                "id_path": [int(i) for i in id_path],
                "term_id": int(term_id),
@@ -1188,4 +1196,6 @@ def show_net(id_path, term_id, bit=None, *, path=None, label=None, color=None, a
         message["label"] = str(label)
     if color is not None:
         message["color"] = str(color)
+    if trace:
+        message["trace"] = True
     return message

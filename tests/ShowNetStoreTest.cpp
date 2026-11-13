@@ -164,3 +164,20 @@ TEST(ShowNetStoreColor, ParsesHashRrggbbOnly) {
   for (const char* bad : {"", "0a14fa", "#0a14f", "#0a14fa0", "#0g14fa"})
     EXPECT_FALSE(ShowNetStore::parseColor(bad)) << bad;
 }
+
+// "trace": true asks for the pin's fan-in cone, tagged the same way; the
+// same pin shown as a net and as a trace are two different host nets.
+TEST_F(ShowNetStoreTest, TraceAsksForTheFanInCone) {
+  auto net = ShowNetStore::request(push(), clearView);
+  auto trace = ShowNetStore::request(push({{"trace", true}, {"label", "u_sub/u_and/O"}}), clearView);
+  ASSERT_TRUE(net && trace);
+  EXPECT_EQ((*net)["request"], "load_equipotential");
+  EXPECT_EQ((*trace)["request"], "trace_driver");
+  EXPECT_EQ((*trace)["path"], json({0, 0}));
+  EXPECT_EQ((*trace)["term_id"], 2);
+  const int id = (*trace)["trace_id"];
+  EXPECT_NE(id, (*net)["trace_id"].get<int>());
+  EXPECT_EQ(TraceStore::find(id)->label, "u_sub/u_and/O");
+  EXPECT_FALSE(ShowNetStore::request(push({{"trace", true}}), clearView));  // already shown
+  EXPECT_EQ(ShowNetStore::takeReply(id), id);
+}

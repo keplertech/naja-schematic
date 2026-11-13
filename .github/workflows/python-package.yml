@@ -1,8 +1,14 @@
 name: Python Package
 
-# Builds the naja-schematic wheel/sdist (Python backend + the WASM viewer
-# bundle), tests it against published najaeda, and on a `v<version>`
-# tag publishes it to PyPI.
+# Builds the naja-schematic wheels/sdist (Python backend + the WASM viewer
+# bundle, and in the platform wheels the headless SVG renderer), tests them
+# against published najaeda, and on a `v<version>` tag publishes them to
+# PyPI.
+#
+# Wheels: one per platform carrying bin/naja-schematic-render (Linux
+# x86_64 manylinux, macOS universal2), plus a pure py3-none-any one for
+# every other platform (everything but export_svg()). See
+# python/hatch_build.py.
 #
 # Publishing uses PyPI trusted publishing (no token): the PyPI project must
 # list this repository, this workflow file and the `pypi` environment as a
@@ -63,18 +69,109 @@ jobs:
           python -m pip install build
           python -m build python --outdir dist
 
-      - name: Check the bundle is in both archives
+      - name: Check the bundle is in both archives, and no renderer
         run: |
-          unzip -l dist/*.whl | grep -q 'naja_schematic/static/naja-schematic.js'
+          python -m zipfile -l dist/*.whl | grep -q 'naja_schematic/static/naja-schematic.js'
           tar tzf dist/*.tar.gz | grep -q 'naja_schematic/static/naja-schematic.js'
+          ls dist/*-py3-none-any.whl
+          ! unzip -l dist/*.whl | grep -q 'naja_schematic/bin/'
 
       - uses: actions/upload-artifact@v4
         with:
-          name: dist
+          name: dist-pure
+          path: dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: python/naja_schematic/static/naja-schematic.js
+
+  platform-wheels:
+    # The headless SVG renderer (no naja, SDL or GL: imgui and a C++
+    # compiler only) in a wheel per platform.
+    needs: build
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            container: quay.io/pypa/manylinux_2_28_x86_64
+            platform: manylinux_2_28_x86_64
+          - os: macos-latest
+            container: ""
+            platform: macosx_11_0_universal2
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Fetch the submodules the renderer needs
+        shell: bash
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git submodule update --init --depth 1 thirdparty/imgui thirdparty/ImGuiColorTextEdit
+
+      - name: Set up the build tools (manylinux)
+        if: matrix.container != ''
+        run: |
+          /opt/python/cp312-cp312/bin/python -m pip install cmake ninja build
+          echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
+
+      - uses: actions/setup-python@v5
+        if: matrix.container == ''
+        with:
+          python-version: "3.12"
+
+      - name: Set up the build tools (macOS)
+        if: matrix.container == ''
+        run: python -m pip install cmake ninja build
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: bundle
+          path: python/naja_schematic/static/
+
+      - name: Build naja-schematic-render
+        shell: bash
+        run: |
+          extra=()
+          if [ "$RUNNER_OS" = macOS ]; then
+            extra=(-DCMAKE_OSX_ARCHITECTURES="arm64;x86_64")
+          fi
+          cmake -S . -B build-render -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DNAJA_SCHEMATIC_RENDER_ONLY=ON "${extra[@]}"
+          cmake --build build-render
+          mkdir -p python/naja_schematic/bin
+          cp build-render/naja-schematic-render python/naja_schematic/bin/
+          python/naja_schematic/bin/naja-schematic-render --version
+          if [ "$RUNNER_OS" = macOS ]; then
+            lipo -info python/naja_schematic/bin/naja-schematic-render
+            otool -L python/naja_schematic/bin/naja-schematic-render
+          else
+            ldd python/naja_schematic/bin/naja-schematic-render
+          fi
+          cp LICENSE python/LICENSE
+
+      - name: Build the platform wheel
+        shell: bash
+        env:
+          NAJA_SCHEMATIC_WHEEL_PLATFORM: ${{ matrix.platform }}
+        run: |
+          python -m build python --wheel --outdir dist
+          ls dist/*-py3-none-${{ matrix.platform }}.whl
+          python -m zipfile -l dist/*.whl | grep -q 'naja_schematic/bin/naja-schematic-render'
+          python -m zipfile -l dist/*.whl | grep -q 'naja_schematic/static/naja-schematic.js'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.platform }}
           path: dist/
 
   test:
-    needs: build
+    needs: [ build, platform-wheels ]
     runs-on: ${{ matrix.os }}
     # A request that errors leaves some tests waiting for a reply: fail, don't hang.
     timeout-minutes: 20
@@ -95,18 +192,27 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: dist
+          pattern: dist-*
+          merge-multiple: true
           path: dist/
 
       - name: Install the built wheel
+        # The wheel pip picks for this platform, from the built ones only
+        # (PyPI may hold the same version): the one with the renderer.
         shell: bash
         run: |
-          python -m pip install "$(ls dist/*.whl)[test]" "najaeda${{ matrix.najaeda }}"
+          python -m pip install --no-index --find-links dist --no-deps naja-schematic
+          python -m pip install "naja-schematic[test]" "najaeda${{ matrix.najaeda }}"
+          python -c "from naja_schematic import render; print(render.renderer_path())"
 
       - name: Run tests against the installed package
         # From outside python/, so the tests import the installed wheel
-        # rather than the source tree.
+        # rather than the source tree. No display: the SVG export must not
+        # need one (and fails here rather than skipping without a renderer).
         working-directory: ${{ runner.temp }}
+        env:
+          NAJA_SCHEMATIC_REQUIRE_RENDER: "1"
+          DISPLAY: ""
         run: python -m pytest -v ${{ github.workspace }}/python/tests
 
       - name: Smoke-test the CLI
@@ -116,8 +222,23 @@ jobs:
             | naja-schematic --xilinx --verilog python/tests/data/design.v --stdio \
             | grep -q '"root_response"'
 
+      - name: Smoke-test SVG export, with primitives defined in Python
+        shell: bash
+        env:
+          DISPLAY: ""
+        working-directory: python/tests/data
+        run: |
+          naja-schematic render --verilog py_design.v --py-primitives py_prims.py \
+              --trace u_ff:D --instance u_ff --svg "$RUNNER_TEMP/cone.svg"
+          grep -q '<svg' "$RUNNER_TEMP/cone.svg"
+          grep -q '>u_and2<' "$RUNNER_TEMP/cone.svg"
+          # Any unresolved target: non-zero, nothing written.
+          ! naja-schematic render --verilog py_design.v --py-primitives py_prims.py \
+              --trace u_ff:D --net nope:A --svg "$RUNNER_TEMP/bad.svg"
+          test ! -e "$RUNNER_TEMP/bad.svg"
+
   publish:
-    needs: [ build, test ]
+    needs: [ build, platform-wheels, test ]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     environment: pypi
@@ -126,7 +247,8 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: dist
+          pattern: dist-*
+          merge-multiple: true
           path: dist/
 
       - uses: pypa/gh-action-pypi-publish@release/v1

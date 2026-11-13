@@ -274,7 +274,7 @@ class ViewerServer:
         one name for a child of the top."""
         self._session.show_instance(target)
 
-    def show_net(self, target, *, label=None, color=None, add=True):
+    def show_net(self, target, *, label=None, color=None, add=True, trace=False):
         """Draw the net on one pin as a colored one-net trace in every
         viewer, and in any that (re)loads later -- like the tree's Show
         Equipotential: its own color and a Traces tab row. `target`: a
@@ -284,8 +284,9 @@ class ViewerServer:
         session.net_pin()); it's resolved here, and a bad one raises
         ValueError. `label` names the trace, `color` ("#rrggbb" or (r, g,
         b)) replaces its palette color, and add=False clears the schematic
-        first."""
-        self._session.show_net(target, label=label, color=color, add=add)
+        first. trace=True draws the pin's fan-in cone instead (Trace to
+        Driver)."""
+        self._session.show_net(target, label=label, color=color, add=add, trace=trace)
 
     def export_svg(self, path=None, callback=None, timeout=30.0):
         """The schematic as SVG (the whole sheet, as File > Export Schematic
@@ -544,7 +545,8 @@ def build_arg_parser():
     parser = argparse.ArgumentParser(
         prog="naja-schematic",
         description="Serve a netlist to the naja-schematic viewer (browser page "
-                    "+ WebSocket, or stdio).")
+                    "+ WebSocket, or stdio). `naja-schematic render --help`: draw it "
+                    "to SVG instead, with no browser.")
     parser.add_argument("--host", default="localhost",
                         help="Interface to listen on (default: localhost)")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT,
@@ -578,8 +580,21 @@ def build_arg_parser():
 
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Log every request (to stderr)")
+    add_design_arguments(parser)
+    return parser
+
+
+def add_design_arguments(parser):
+    """The arguments naming the design to load (load_design()), shared by
+    the server and `naja-schematic render`."""
     parser.add_argument("--xilinx", action="store_true",
                         help="Load Xilinx primitives")
+    parser.add_argument("--py-primitives", action="append", default=[], metavar="FILE|MODULE",
+                        dest="py_primitives",
+                        help="Python module defining primitives (repeatable): a .py file or "
+                             "an importable module name, whose load(db) is called on the "
+                             "design's NLDB before the design is loaded (like najaeda's "
+                             "primitives.xilinx)")
     parser.add_argument("--allow_unknown_designs", action="store_true",
                         help="Allow unknown designs when loading the design.")
     parser.add_argument("--liberty", nargs="*", help="List of liberty files to load")
@@ -600,7 +615,57 @@ def build_arg_parser():
                         help="SystemVerilog/VHDL only: top module (entity) to elaborate")
     parser.add_argument("--define", "-D", action="append", metavar="NAME[=VALUE]",
                         help="SystemVerilog only: preprocessor define (repeatable)")
-    return parser
+
+
+def check_design_arguments(parser, args, review=False):
+    """Reject inconsistent design arguments (add_design_arguments()) with
+    parser.error(). With `review`, no design at all is allowed (the
+    review's snapshot is opened instead)."""
+    is_sv = bool(args.systemverilog or args.flist)
+    designs = sum(map(bool, (args.verilog, is_sv, args.vhdl)))
+    if designs > 1 or not (designs or review):
+        parser.error("provide one design: --verilog, --systemverilog and/or --flist, "
+                     "or --vhdl" + (" (or --review alone, to open its snapshot)" if review else ""))
+    if args.top and not (is_sv or args.vhdl):
+        parser.error("--top only applies to --systemverilog/--flist/--vhdl")
+    if args.define and not is_sv:
+        parser.error("--define only applies to --systemverilog/--flist")
+    if (is_sv or args.vhdl) and args.liberty:
+        # Same restriction as the native standalone: the SystemVerilog and
+        # VHDL loaders have no liberty hook, so fail loudly rather than
+        # silently ignore it.
+        parser.error("--liberty only applies to --verilog")
+    if (is_sv or args.vhdl) and args.yosys_src:
+        parser.error("--yosys-src only applies to --verilog")
+    return designs
+
+
+def load_python_primitives(spec, db):
+    """Call load(db) of a Python module defining primitives: `spec` is the
+    path of a .py file, or an importable module name (e.g.
+    "najaeda.primitives.xilinx")."""
+    import importlib
+    import importlib.util
+
+    if spec.endswith(".py") or os.sep in spec or os.path.isfile(spec):
+        path = os.path.abspath(spec)
+        if not os.path.isfile(path):
+            raise SystemExit(f"--py-primitives: no file {spec}")
+        name = os.path.splitext(os.path.basename(path))[0]
+        module_spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(module_spec)
+        # Registered first, like an import: a module may look itself up.
+        sys.modules.setdefault(name, module)
+        module_spec.loader.exec_module(module)
+    else:
+        try:
+            module = importlib.import_module(spec)
+        except ImportError as e:
+            raise SystemExit(f"--py-primitives: cannot import {spec}: {e}")
+    if not callable(getattr(module, "load", None)):
+        raise SystemExit(f"--py-primitives: {spec} has no load(db) function")
+    log.info("Loading primitives from %s", spec)
+    module.load(db)
 
 
 def _top_db():
@@ -627,6 +692,8 @@ def load_design(args):
         log.info("Loading Xilinx primitives")
         from najaeda.primitives import xilinx
         xilinx.load(db)
+    for spec in getattr(args, "py_primitives", None) or ():
+        load_python_primitives(spec, db)
 
     if args.liberty:
         # Expand wildcards ourselves, for shells that pass them through.
@@ -693,28 +760,19 @@ def load_diagnosis_file(path):
 
 
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv[:1] == ["render"]:
+        # `naja-schematic render ...`: SVG export, no browser (render.py).
+        from .render import main as render_main
+        return render_main(argv[1:])
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    is_sv = bool(args.systemverilog or args.flist)
-    designs = sum(map(bool, (args.verilog, is_sv, args.vhdl)))
-    from_review = not designs and args.review is not None
-    if designs > 1 or not (designs or from_review):
-        parser.error("provide one design: --verilog, --systemverilog and/or --flist, "
-                     "or --vhdl (or --review alone, to open its snapshot)")
+    designs = check_design_arguments(parser, args, review=args.review is not None)
+    from_review = not designs
     if args.snapshot and not from_review:
         parser.error("--snapshot only applies with --review and no design")
-    if args.top and not (is_sv or args.vhdl):
-        parser.error("--top only applies to --systemverilog/--flist/--vhdl")
-    if args.define and not is_sv:
-        parser.error("--define only applies to --systemverilog/--flist")
-    if (is_sv or args.vhdl) and args.liberty:
-        # Same restriction as the native standalone: the SystemVerilog and
-        # VHDL loaders have no liberty hook, so fail loudly rather than
-        # silently ignore it.
-        parser.error("--liberty only applies to --verilog")
-    if (is_sv or args.vhdl) and args.yosys_src:
-        parser.error("--yosys-src only applies to --verilog")
     if args.stdio and args.open:
         parser.error("--open does not apply to --stdio")
     if args.author and not args.review:

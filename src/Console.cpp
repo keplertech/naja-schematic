@@ -11,11 +11,17 @@ void Console::Error(const std::string& msg) {
   emscripten::val::global("console").call<void>("error", msg);
 }
 
+void Console::setVerbose(bool) {}
+
 #else
 #include <iostream>
 
+static bool g_verbose = true;
+
+void Console::setVerbose(bool verbose) { g_verbose = verbose; }
+
 void Console::Log(const std::string& msg) {
-  std::cout << "[LOG] " << msg << "\n";
+  if (g_verbose) std::cout << "[LOG] " << msg << "\n";
 }
 
 void Console::Error(const std::string& msg) {

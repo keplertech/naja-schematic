@@ -118,8 +118,12 @@ File > Open Verilog...) — any order, all optional:
 **Headless SVG export.** `--export <out.svg>` draws the schematic to a
 file and exits, with no window (`HeadlessExport.cpp`, run before any SDL
 init). It uses the same requests and `AppLogic` response handling as the
-GUI, a backend-less ImGui context with the app's font (so names are
-measured the same way), then `SchematicView::exportSvg()`. It needs at least
+GUI through `HeadlessView` (a backend-less ImGui context with the app's
+font, so names are measured the same way, and the schematic panel alone),
+then `SchematicView::exportSvg()`. The Python package has the same export
+for designs it holds, including primitives defined in Python (see
+`render.py` under Python package); both give byte-identical SVG for the
+same design and targets. It needs at least
 one of these:
 - `--focus <json>`: one instance drawn alone with every pin open. Takes a
   list of ids (`[3,7]`, an `id_path`), a list of names (`["u1","u2"]`), or
@@ -142,6 +146,35 @@ naja-schematic-standalone design.v --liberty cells.lib --export cone.svg \
   --trace '{"terminal":"y"}' --focus '["u1","u2"]'
 ```
 
+### Headless renderer (`naja-schematic-render`)
+
+The viewer with no window, no SDL/GL and **no naja** (`src/main_render.cpp`
++ `HEADLESS_SOURCES` in `CMakeLists.txt`): what the Python package's
+`export_svg()`/`naja-schematic render` run, shipped in the platform wheels.
+Built with the native targets, or alone (only imgui and a C++ compiler):
+
+```bash
+cmake -S . -B ../naja-schematic-build/render -DCMAKE_BUILD_TYPE=Release -DNAJA_SCHEMATIC_RENDER_ONLY=ON
+cmake --build ../naja-schematic-build/render
+export NAJA_SCHEMATIC_RENDER=$PWD/../naja-schematic-build/render/naja-schematic-render
+```
+
+It's a viewer like the browser one, with the Python host answering its
+requests from the live `NLUniverse` -- which is why it exists rather than
+dumping the design to naja-if for `--export`: a naja-if dump drops the
+modeling primitives built in Python carry (sequential models, clock roles,
+LUT truth tables from parameters, so traces stop at the first LUT), and
+the native app refuses a snapshot from any other naja build. Transport:
+JSON lines on stdin/stdout, strictly alternating -- each line it writes (a
+request or notification) gets exactly one line back, a JSON array of
+messages (replies, pushes, maybe none). Idle, it sends
+`{"request":"render_idle"}`; the answer holds the next drawing's pushes
+(`design_changed` to reset, `focus_instance`, `show_net`, `export_svg`),
+and closing stdin ends it. An `export_svg` is answered, after the frames
+settle, by `svg_exported` (`""` if nothing is drawn). stdout is the
+protocol only (fd 1 points at stderr; `Console::Log` is off unless
+`NAJA_SCHEMATIC_RENDER_VERBOSE=1`).
+
 ### WASM target (`naja-schematic`)
 
 Requires Emscripten (`emcmake`/`emrun` on `PATH`). Detected automatically in
@@ -158,7 +191,7 @@ The WASM app doesn't link naja directly — it talks to a netlist server over a
 WebSocket instead. Start the server first, optionally with `--verilog <path>`
 (a single Verilog netlist) and `--liberty <path> [<path>...]` (one flag,
 listing the Liberty files defining its cell library — see
-`build_arg_parser()` in `python/naja_schematic/server.py`;
+`build_arg_parser()`/`add_design_arguments()` in `python/naja_schematic/server.py`;
 `scripts/najaeda_server.py` is just a wrapper that runs that CLI from the
 source tree without installing the package):
 
@@ -183,6 +216,10 @@ VHDL via `--vhdl <path>...` (`NLDB.loadVHDL()`, files in any order).
 (`NLDB.loadGateLevelVerilog()`/`loadSystemVerilog()`/`loadVHDL()`/
 `loadLibertyPrimitives()`); `--top` reaches slang as
 `frontend_options={"slang": ["--top", name]}` (najaeda >= 0.7.34).
+`--py-primitives <file.py|module>` (repeatable; `load_python_primitives()`)
+calls the module's `load(db)` on the top NLDB before the design is loaded,
+after `--xilinx` (najaeda's own `primitives.xilinx`) and before Liberty:
+primitives built in Python, like kepler-formal's `py_tech_files`. Allowed with every design kind.
 `--top` applies to SystemVerilog and VHDL, `--define`/`-D` only to
 SystemVerilog, and `--liberty`/`--yosys-src` are rejected with SV and VHDL —
 same restriction as the native CLI, since those loaders have no liberty
@@ -253,6 +290,30 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   (or calls `design_changed()` itself, in the same critical section):
   every viewer reloads, and requests made for the old design are dropped
   (see `design_changed` under Wire protocol).
+- `render.py` — SVG export with no browser or display:
+  `export_svg(targets=None, path=None, *, nets=, instances=, traces=)`
+  and `export_svgs([{...}, ...])` (one renderer process, each drawing on
+  a clean view; all jobs resolved before anything is drawn, files written
+  once all are drawn), on the design in the current `NLUniverse`, read on
+  the calling thread. Drives `naja-schematic-render` (`bin/` in the
+  platform wheels, or `$NAJA_SCHEMATIC_RENDER`; see "Headless renderer"
+  above) as a viewer, answering through a `ViewerSession`, so the SVG is
+  what a viewer showing the same things exports. Targets are resolved
+  first (`session.instance_paths()`/`net_pin()`, `ValueError` on a bad
+  one) into pushes (`drawing_pushes()`): `design_changed` (a clean view),
+  the instances (`focus_instance`, then with `"add": true`), the nets and
+  traces (`show_net`, traces with `"trace": true`), `export_svg`. In
+  `targets` a tuple is one pin and a list holds several targets, so an
+  instance path there is a list inside the list. Also the `naja-schematic
+  render` subcommand (`render.main()`, dispatched from `server.main()`):
+  the design flags plus repeatable `--instance PATH`, `--net INST:TERM[BIT]`,
+  `--trace INST:TERM[BIT]` (or JSON, as the native `--focus`/`--trace`),
+  `--svg FILE`; exits non-zero, writing nothing, on any unresolved
+  target. Text paths are matched against the design (`/` ends a name
+  only where such an instance exists, `_instances_matching()`), never
+  split blindly, and ambiguity is an error. Tests:
+  `tests/test_render.py` (drawing tests skip without a renderer unless
+  `NAJA_SCHEMATIC_REQUIRE_RENDER=1`, as in CI).
 - `widget.py` — `naja_schematic.show()`: an anywidget for Jupyter/Colab/
   VSCode notebooks. Its ES module is the bundle + `static/widget.js`; the
   viewer's requests come back over the widget comm channel as
@@ -263,7 +324,16 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   instances with najaeda (see "Getting to one hierarchical instance"
   under Wire protocol); `show_net()` draws a net as a colored trace (see
   `show_net` under Wire protocol). `ViewerSession`, `ViewerServer` and
-  `Schematic` all have `show_net()`.
+  `Schematic` all have `show_net()` (`trace=True`: the pin's fan-in cone).
+
+Wheels: the `build` job makes the sdist and a pure `py3-none-any` wheel
+(no renderer: everything but `export_svg()`), the `platform-wheels` job
+one wheel per platform with `bin/naja-schematic-render` (manylinux_2_28
+x86_64 in the manylinux container, libstdc++ linked statically; macOS
+universal2), tagged `py3-none-<platform>` by `python/hatch_build.py` from
+`$NAJA_SCHEMATIC_WHEEL_PLATFORM` (the executable is gitignored, like the
+bundle, and only included when present). `test` installs the wheel pip
+picks for its runner from the built ones.
 
 The viewer bundle `static/naja-schematic.js` is **not** checked in: it's the
 WASM target configured with `-DNAJA_SCHEMATIC_WASM_MODULE=ON` (single file,
@@ -320,9 +390,12 @@ synchronously and answers requests in-process, as does `JsBridgeProvider`'s
 (the host channel is already up); `WebSocketProvider` is a passive
 wrapper since the underlying socket connects in its constructor.
 
-`src/AppLogic.h/.cpp` holds the logic shared by both entry points:
-- `setupProvider(AppState&)` wires all provider callbacks and calls
-  `provider->start()`. All response-message dispatch (`root_response`,
+`src/AppLogic.h` + `AppMessages.cpp`/`AppLogic.cpp` hold the logic shared
+by the entry points. `AppMessages.cpp` has no SDL/GL (the headless
+renderer links it without them; `AppLogic.h` only forward-declares
+`SDL_Window`), `AppLogic.cpp` the windowed frame loop:
+- `setupProvider(AppState&)` (`AppMessages.cpp`) wires all provider
+  callbacks and calls `provider->start()`. All response-message dispatch (`root_response`,
   `instances_response`/`primitives_response`/`children_loaded`,
   `terms_response`, `nets_response`, `equipotential_response`,
   `expanded_instance_terms`, `error`, ...) lives here, driven by the
@@ -594,7 +667,10 @@ the same `id_path`/`path` pair as diagnosis items:
   `{"response":"focus_instance","path":["u1","u2"],"id_path":[3,7]}`, from
   `Schematic.show_instance()` / `show(instance=...)` (which take a naja
   `SNLPath` or najaeda `Instance`, a list of ids, or a list of names), re-pushed after each
-  `root_response` like diagnoses. The viewer answers it with a
+  `root_response` like diagnoses. With `"add": true` (`render.py`
+  drawing several instances; needs `id_path`) the box is added to the
+  view instead (`EquipotentialView::addOnResolve()`, as a review "go to"
+  adds one) and the selection stays. The viewer answers it with a
   `resolve_instance` request carrying the same `path`/`id_path`,
   which both providers implement (`protocol.py`
   `_handle_resolve_instance`, `LocalSNLProvider::buildResolveInstanceResponse`).
@@ -647,8 +723,14 @@ color, Traces tab row), as the tree's "Show Equipotential" does, from
   "term_id": 2, "bit": 1,            // bit: bus bits only
   "label": "u_sub/u_and/O (net)",    // the Traces tab row
   "color": "#ff8800",                // optional: replaces the palette color
-  "add": true }                      // false: clear the schematic first
+  "add": true,                       // false: clear the schematic first
+  "trace": true }                    // optional: the pin's fan-in cone (trace_driver)
 ```
+With `"trace": true` (`show_net(..., trace=True)`) the viewer sends a
+tagged `trace_driver` instead, as the tree's "Trace to Driver" does, and
+the `trace_driver_response` goes through `ShowNetStore::takeReply()` like
+an `equipotential_response`; a net and a trace on the same pin are two
+host nets. A viewer predating it ignores the key and draws just the net.
 The pin is named by ids only (`id_path` + `term_id` + `bit`, what
 `load_equipotential` takes; `path` is for display): the host resolves the
 target -- a najaeda `Term`/`Net`/`Equipotential`, a naja `SNLOccurrence`,
@@ -878,7 +960,8 @@ path the host read, used by the native "Open in Editor".
   and forgotten when the view is cleared (`GUIData::clearEquipotentials()`).
 - **`ShowNetStore`** — global static store (same pattern) for the nets a
   host pushed with `show_net` (see Wire protocol): turns a push into a
-  tagged `load_equipotential` (`request()`), maps its reply's `trace_id`
+  tagged `load_equipotential`, or `trace_driver` for `"trace": true`
+  (`request()`), maps its reply's `trace_id`
   (`takeReply()`: re-registers a trace a focus cleared in flight, -1 for a
   forgotten net), and `forget()`s them when the view is cleared.
   `tests/ShowNetStoreTest.cpp`.
@@ -1032,3 +1115,12 @@ canvas clicks in `EquipotentialView::renderSchematic()`.
 `.vscode/settings.json` locks `cmake-tools` to preset mode
 (`native-debug`), pointing IntelliSense at
 `../naja-schematic-build/native-debug/compile_commands.json`.
+
+### Licensing (REUSE)
+
+Files carry no license headers: `REUSE.toml` lists every file by path
+(explicitly, not `**`, so third-party exceptions aren't double-annotated),
+and `.github/workflows/reuse.yml` runs `reuse lint`. **Add every new
+file to the right `[[annotations]]` list in the same change**, or CI fails
+with "no copyright and licensing information". Check locally with
+`pip install "reuse[charset-normalizer]" && reuse lint`.
