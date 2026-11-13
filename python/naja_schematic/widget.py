@@ -101,7 +101,7 @@ class Schematic(anywidget.AnyWidget):
         """
         self._session.show_instance(target)
 
-    def show_net(self, target, *, label=None, color=None, add=True):
+    def show_net(self, target, *, label=None, color=None, add=True, trace=False):
         """Draw the net on one pin as a colored one-net trace, as the tree's
         Show Equipotential does: its own color and a row in the Traces tab.
         Kept across view reloads, until show_instance() or
@@ -114,9 +114,11 @@ class Schematic(anywidget.AnyWidget):
         show_instance() takes it ([] = a top-level port). A target that
         doesn't resolve raises ValueError. `label` names the trace (default:
         the pin), `color` ("#rrggbb" or (r, g, b)) replaces its palette
-        color, and add=False clears the schematic first.
+        color, and add=False clears the schematic first. trace=True draws
+        the pin's whole fan-in cone instead, as the tree's Trace to Driver
+        does.
         """
-        self._session.show_net(target, label=label, color=color, add=add)
+        self._session.show_net(target, label=label, color=color, add=add, trace=trace)
 
     def export_svg(self, path=None, callback=None):
         """Ask the view for its schematic as SVG: the whole sheet, as File >

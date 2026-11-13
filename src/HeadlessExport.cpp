@@ -5,11 +5,8 @@
 #include <fstream>
 #include <iostream>
 
-#include <imgui.h>
-
 #include "AppLogic.h"
-#include "EquipotentialView.h"
-#include "GUIData.h"
+#include "HeadlessView.h"
 #include "LocalSNLProvider.h"
 #include "SelectionStore.h"
 #include "TraceStore.h"
@@ -37,21 +34,6 @@ std::string termLabel(const json& spec) {
   out += spec.value("terminal", "");
   if (spec.contains("bit")) out += "[" + spec["bit"].dump() + "]";
   return out;
-}
-
-// One headless frame: the schematic panel alone, filling the display. The
-// layout (and any request it sends, e.g. a partial gate's full interface)
-// happens here, exactly as in the GUI.
-void frame(GUIData& gui) {
-  ImGui::NewFrame();
-  ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-  ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
-  ImGui::Begin("Schematic", nullptr,
-               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
-  if (EquipotentialView::takePendingClear()) gui.clearEquipotentials();
-  EquipotentialView::renderSchematic(gui.equipotentials_);
-  ImGui::End();
-  ImGui::Render();
 }
 
 } // namespace
@@ -90,27 +72,13 @@ int runHeadlessExport(LocalSNLProvider* provider, const HeadlessExportOptions& o
     return 1;
   }
 
-  // An ImGui context with the app's font, so names are measured (and the
-  // layout sized) exactly as in the GUI. No backend: nothing is rendered.
-  ImGui::CreateContext();
-  ImGuiIO& io = ImGui::GetIO();
-  io.IniFilename = nullptr;
-  io.DisplaySize = ImVec2(1600.0f, 1000.0f);
-  io.DeltaTime   = 1.0f / 60.0f;
-  setupFonts();
-  unsigned char* pixels; int w, h;
-  io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
-
-  AppState state;
-  state.guiData  = new GUIData();
-  state.provider = provider;
-  setupProvider(state);   // answers load_root synchronously
+  // The provider answers each request synchronously, through the same
+  // response handling as the GUI (AppLogic.cpp).
+  HeadlessView view(provider);
 
   int status = 0;
   if (!options.diagnosisPath.empty() && !loadDiagnosisFile(options.diagnosisPath)) status = 1;
 
-  // The provider answers each request synchronously, through the same
-  // response handling as the GUI (AppLogic.cpp).
   const auto isTop = [](const json& focus) {
     const json& p = focus.contains("id_path") ? focus["id_path"] : focus.value("path", json::array());
     return p.is_array() && p.empty();
@@ -145,14 +113,11 @@ int runHeadlessExport(LocalSNLProvider* provider, const HeadlessExportOptions& o
   for (const auto& spec : options.equipotentials) sendTerm(spec, "load_equipotential", false);
   for (const auto& spec : options.traces)         sendTerm(spec, "trace_driver", true);
 
-  // A few frames: the first lays the schematic out, and may ask for more
-  // (a gate reached through one input loads its whole interface), which the
-  // next ones draw.
-  for (int i = 0; i < 4; ++i) frame(*state.guiData);
+  view.settle();
 
   // Nothing is written when part of the request failed: a script must not
   // take a partial drawing for the one it asked for.
-  const std::string svg = status == 0 ? EquipotentialView::exportSvg() : std::string();
+  const std::string svg = status == 0 ? view.exportSvg() : std::string();
   if (status != 0) {
     // already reported
   } else if (svg.empty()) {
@@ -169,8 +134,6 @@ int runHeadlessExport(LocalSNLProvider* provider, const HeadlessExportOptions& o
     }
   }
 
-  EquipotentialView::setProvider(nullptr);
-  ImGui::DestroyContext();
   return status;
 }
 

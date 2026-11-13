@@ -6,12 +6,16 @@
   viewer page and opens it in a browser.
 - From an application that already holds the design: ``ViewerServer``
   serves the viewer page from a background thread.
+- With no browser or display: ``naja_schematic.export_svg()`` (and
+  ``export_svgs()``) draws part of the loaded design to SVG, as does
+  ``naja-schematic render --verilog design.v --trace u1:A --svg out.svg``.
 """
 # Single version for the whole project: CMakeLists.txt reads this line into the
 # C++ app too (NAJA_SCHEMATIC_VERSION_STRING), so keep it a plain literal.
 __version__ = "0.2.1"
 
 from .protocol import diagnosis_response, handle_request
+from .render import RenderError, export_svg, export_svgs
 from .review import Review
 from .server import ViewerServer
 
@@ -24,4 +28,5 @@ def show(instance=None, *, height=600, diagnosis=None, review=None):
     return _show(instance, height=height, diagnosis=diagnosis, review=review)
 
 
-__all__ = ["__version__", "show", "handle_request", "diagnosis_response", "ViewerServer", "Review"]
+__all__ = ["__version__", "show", "handle_request", "diagnosis_response", "ViewerServer", "Review",
+           "export_svg", "export_svgs", "RenderError"]

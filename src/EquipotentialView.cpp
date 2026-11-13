@@ -196,6 +196,8 @@ bool EquipotentialView::noteUnconnectedReply(const json& reply, const Equipotent
     return true;
 }
 
+void EquipotentialView::addOnResolve(const InstancePath& path) { g_addOnResolve.insert(path); }
+
 bool EquipotentialView::takeAddOnResolve(const InstancePath& path) {
     return g_addOnResolve.erase(path) > 0;
 }

@@ -114,6 +114,9 @@ class EquipotentialView {
     // True once for an instance_resolved that focusObject() asked for: the
     // instance is added to the view rather than replacing it.
     static bool takeAddOnResolve(const InstancePath& path);
+    // The next instance_resolved for `path` adds the instance to the view
+    // rather than replacing it (a host's focus_instance with "add": true).
+    static void addOnResolve(const InstancePath& path);
 
     // The host found this pin and nothing else on its net (no net, or a net
     // with only it): it's drawn as not connected (a no-connect cross) and

@@ -1,7 +1,5 @@
 #pragma once
 
-#include <SDL.h>
-#include <SDL_opengl.h>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -9,10 +7,14 @@
 class INetlistProvider;
 class GUIData;
 
+// SDL's types, declared here so that the headless renderer (no SDL) can
+// use AppState and the message handling (AppMessages.cpp).
+struct SDL_Window;
+
 // Shared application state used by both native and WASM entry points.
 struct AppState {
-  SDL_Window*       window    {nullptr};
-  SDL_GLContext     glContext {};
+  SDL_Window*       window    {nullptr};   // null when headless
+  void*             glContext {nullptr};   // an SDL_GLContext
   GUIData*          guiData   {nullptr};
   INetlistProvider* provider  {nullptr};
   bool              connected {false};
@@ -47,6 +49,11 @@ struct AppState {
 // Wire all provider callbacks (on_open, on_message, on_close, on_error)
 // and call provider->start().  Must be called once after SDL/GL/ImGui init.
 void setupProvider(AppState& state);
+
+// Throw the loaded design away and ask the provider for the root again:
+// after File > Open (native) and on a host's design_changed push. The
+// root_response clears diagnoses, properties and the selection.
+void reloadNetlist(AppState& state);
 
 // Load the app's UI font (embedded DroidSans, larger and crisper than
 // ImGui's default bitmap font). Must be called once after ImGui::CreateContext()

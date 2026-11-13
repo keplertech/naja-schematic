@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "naja-schematic"
 dynamic = ["version"]
-description = "Interactive schematic viewer for najaeda netlists: in Jupyter/Colab notebooks or a browser"
+description = "Interactive schematic viewer for najaeda netlists: in Jupyter/Colab notebooks or a browser, or exported to SVG"
 readme = "README.md"
 license = "Apache-2.0"
 authors = [{name = "Naja Authors", email = "contact@keplertech.io"}]
@@ -40,6 +40,11 @@ packages = ["naja_schematic"]
 # explicitly or hatch would skip it along with other ignored files.
 artifacts = ["naja_schematic/static/naja-schematic.js"]
 
+# The headless SVG renderer (naja_schematic/bin/, also a CI build product):
+# included when present, making a platform wheel; see hatch_build.py.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.sdist]
-include = ["naja_schematic", "tests", "README.md"]
+include = ["naja_schematic", "tests", "README.md", "hatch_build.py"]
 artifacts = ["naja_schematic/static/naja-schematic.js"]

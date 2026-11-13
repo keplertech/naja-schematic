@@ -16,6 +16,7 @@ struct HostNet {
   json        bit;
   std::string label;
   std::optional<ImU32> color;
+  bool        trace = false;  // its fan-in cone (trace_driver), not just its net
   int         traceId = 0;
   bool        pending = true;  // load_equipotential sent, no reply yet
 };
@@ -78,6 +79,7 @@ std::optional<json> ShowNetStore::request(const json& push,
   net.termId = push["term_id"].get<unsigned>();
   net.bit    = bit;
   net.label  = push.value("label", std::string("Net"));
+  net.trace  = push.value("trace", false);
   if (push.contains("color") && push["color"].is_string()) {
     net.color = parseColor(push["color"].get<std::string>());
     if (!net.color) Console::Error(net.label + ": not a #rrggbb color, using the palette's");
@@ -91,13 +93,14 @@ std::optional<json> ShowNetStore::request(const json& push,
   }
   prune();
   const bool shown = std::any_of(g_nets.begin(), g_nets.end(), [&](const HostNet& n) {
-    return n.idPath == net.idPath && n.termId == net.termId && n.bit == net.bit;
+    return n.idPath == net.idPath && n.termId == net.termId && n.bit == net.bit &&
+           n.trace == net.trace;
   });
   if (shown) return std::nullopt;
 
   beginTrace(net);
   json req;
-  req["request"]  = "load_equipotential";
+  req["request"]  = net.trace ? "trace_driver" : "load_equipotential";
   req["path"]     = net.idPath;
   req["term_id"]  = net.termId;
   if (!net.bit.is_null()) req["bit"] = net.bit;
