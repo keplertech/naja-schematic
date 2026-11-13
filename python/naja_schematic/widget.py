@@ -101,6 +101,23 @@ class Schematic(anywidget.AnyWidget):
         """
         self._session.show_instance(target)
 
+    def show_net(self, target, *, label=None, color=None, add=True):
+        """Draw the net on one pin as a colored one-net trace, as the tree's
+        Show Equipotential does: its own color and a row in the Traces tab.
+        Kept across view reloads, until show_instance() or
+        show_net(..., add=False).
+
+        `target` is one bit: a najaeda Term (e.g. inst.get_term("A"), or
+        term.get_bit(0) of a bus), Net or Equipotential; a naja
+        SNLOccurrence, SNLInstTerm, top-level term or SNLEquipotential; or
+        a tuple (instance, terminal[, bit]) with `instance` as
+        show_instance() takes it ([] = a top-level port). A target that
+        doesn't resolve raises ValueError. `label` names the trace (default:
+        the pin), `color` ("#rrggbb" or (r, g, b)) replaces its palette
+        color, and add=False clears the schematic first.
+        """
+        self._session.show_net(target, label=label, color=color, add=add)
+
     def export_svg(self, path=None, callback=None):
         """Ask the view for its schematic as SVG: the whole sheet, as File >
         Export Schematic as SVG... saves it. The view answers once it is

@@ -244,7 +244,11 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   than its own page and `allowed_origins`, so other web pages can't read
   the design; `token=None` turns the token off. Pushes go to every
   connected viewer (`websockets` `broadcast`); selection callbacks get
-  `(id_path, path)` in order on a callbacks thread with no lock held. The
+  `(id_path, path)` in order on a callbacks thread with no lock held.
+  `export_svg(path=None, callback=None, timeout=30.0)` returns the SVG
+  (blocking; `TimeoutError` past `timeout`), or with `callback` returns at
+  once; waiting refuses to run on the callbacks thread, and must not hold
+  `lock` (the answer is a viewer request). The
   host swaps or edits the design inside `with server.replacing_design():`
   (or calls `design_changed()` itself, in the same critical section):
   every viewer reloads, and requests made for the old design are dropped
@@ -257,7 +261,9 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   the netlist as edited by earlier cells. `Schematic.annotate(items)`
   pushes diagnoses; `show_instance()`/`selected`/`on_select()` exchange
   instances with najaeda (see "Getting to one hierarchical instance"
-  under Wire protocol).
+  under Wire protocol); `show_net()` draws a net as a colored trace (see
+  `show_net` under Wire protocol). `ViewerSession`, `ViewerServer` and
+  `Schematic` all have `show_net()`.
 
 The viewer bundle `static/naja-schematic.js` is **not** checked in: it's the
 WASM target configured with `-DNAJA_SCHEMATIC_WASM_MODULE=ON` (single file,
@@ -632,6 +638,41 @@ callbacks; the widget also writes it to the `path` given. A notebook reads
 it in a later cell or through the callback (e.g. updating a
 `display_id` output), since comm messages reach the kernel between cells.
 
+`show_net` is a server push too: a net drawn as a one-net trace (own
+color, Traces tab row), as the tree's "Show Equipotential" does, from
+`show_net(target, *, label=None, color=None, add=True)` (`ViewerSession`,
+`ViewerServer`, `Schematic`):
+```json
+{ "response": "show_net", "id_path": [0, 0], "path": ["u_sub", "u_and"],
+  "term_id": 2, "bit": 1,            // bit: bus bits only
+  "label": "u_sub/u_and/O (net)",    // the Traces tab row
+  "color": "#ff8800",                // optional: replaces the palette color
+  "add": true }                      // false: clear the schematic first
+```
+The pin is named by ids only (`id_path` + `term_id` + `bit`, what
+`load_equipotential` takes; `path` is for display): the host resolves the
+target -- a najaeda `Term`/`Net`/`Equipotential`, a naja `SNLOccurrence`,
+`SNLInstTerm` (child of the top), top-level term or `SNLEquipotential`, or
+an `(instance, terminal[, bit])` tuple; always one bit -- with
+`session.net_pin()`, and validates the color (`trace_color()`: `#rrggbb`
+or `(r, g, b)`, not near-black/near-white, like `TraceStore::setColor()`),
+raising `ValueError` rather than pushing something that can't resolve. A
+`Net` is drawn from a port of its design, else a cell (not assign) pin on
+it; an equipotential from its first top-level port, else its first leaf
+pin. The viewer (`ShowNetStore`, `AppLogic.cpp`) registers the trace and
+sends a tagged `load_equipotential`; the reply is an ordinary
+`equipotential_response`. The session keeps the pushes and re-sends them
+after every `root_response`, after the focus: `show_instance()` and
+`add=False` reset the kept list (both clear the view; `add=False` drops
+the focus too), `design_changed()` empties it. Because of that re-send,
+`ShowNetStore` skips a push for a pin it already shows as a host net,
+gives a reply whose trace a focus cleared in flight its trace back (same
+label and color), and `forget()`s its nets when the view is cleared (a
+`focus_instance` push, an `add: false` push, the user's clears, a reload)
+so their late replies aren't drawn. A tagged reply with `found: false`
+logs the label. Native has no host, so `LocalSNLProvider` has nothing to
+add (headless export has `--equipotential`).
+
 `design_changed` is another server push, `{"response":"design_changed",
 "generation":N}`: the host replaced or edited the design, so every tree
 node, instance id and schematic box the viewer holds may be stale -- or,
@@ -835,6 +876,12 @@ path the host read, used by the native "Open in Editor".
   traces in the schematic: id, label (the start pin), palette color,
   visibility. A trace is registered when its `trace_driver` request is sent,
   and forgotten when the view is cleared (`GUIData::clearEquipotentials()`).
+- **`ShowNetStore`** — global static store (same pattern) for the nets a
+  host pushed with `show_net` (see Wire protocol): turns a push into a
+  tagged `load_equipotential` (`request()`), maps its reply's `trace_id`
+  (`takeReply()`: re-registers a trace a focus cleared in flight, -1 for a
+  forgotten net), and `forget()`s them when the view is cleared.
+  `tests/ShowNetStoreTest.cpp`.
 - **`TraceView`** — the "Traces" bottom-panel tab: one row per trace, to
   show/hide it, change its color or remove it. Clicking the color swatch
   opens a popup (palette swatches, a color picker, Reset); a picked color

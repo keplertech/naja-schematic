@@ -127,6 +127,8 @@ class ViewerServer:
         server.start()
         webbrowser.open(server.url)               # or server.open_browser()
         server.annotate(items); server.show_instance(instance)
+        server.show_net(term, color="#ff8800")    # a net, as a colored trace
+        svg = server.export_svg()                 # the schematic, as SVG
         server.on_select(lambda id_path, path: ...)
         with server.replacing_design():            # viewers reload the new design,
             netlist.load_gate_level_verilog(other)            # stale requests are dropped
@@ -144,7 +146,7 @@ class ViewerServer:
       starts, e.g. to hand `fn` to the host's own thread and wait for it.
     Viewer requests are answered one at a time, on a worker thread, and
     `run`/`lock` see only those. The host's own calls (annotate(),
-    show_instance(), selected) touch the universe directly on the calling
+    show_instance(), show_net(), selected) touch the universe directly on the calling
     thread: make them where the host's design operations are allowed.
 
     Security: the WebSocket only accepts connections that present
@@ -271,6 +273,59 @@ class ViewerServer:
         netlist.Instance), a list of instance ids or of instance names (top excluded; [] = top), or
         one name for a child of the top."""
         self._session.show_instance(target)
+
+    def show_net(self, target, *, label=None, color=None, add=True):
+        """Draw the net on one pin as a colored one-net trace in every
+        viewer, and in any that (re)loads later -- like the tree's Show
+        Equipotential: its own color and a Traces tab row. `target`: a
+        najaeda Term, Net or Equipotential, a naja SNLOccurrence,
+        SNLInstTerm, top-level term or SNLEquipotential, or a tuple
+        (instance, terminal[, bit]), always one bit (see
+        session.net_pin()); it's resolved here, and a bad one raises
+        ValueError. `label` names the trace, `color` ("#rrggbb" or (r, g,
+        b)) replaces its palette color, and add=False clears the schematic
+        first."""
+        self._session.show_net(target, label=label, color=color, add=add)
+
+    def export_svg(self, path=None, callback=None, timeout=30.0):
+        """The schematic as SVG (the whole sheet, as File > Export Schematic
+        as SVG... saves it), from the first viewer to answer once its
+        schematic shows something; also written to `path` if given.
+
+        With `callback`, returns None at once and calls `callback(svg)`
+        later, on the server's callbacks thread. Without, waits for the
+        answer and returns it, raising TimeoutError after `timeout` seconds
+        (None: wait forever) -- e.g. when no viewer is connected, or its
+        schematic stays empty. A viewer that connects meanwhile is asked
+        too. The answer is made by a viewer request, answered through
+        `lock`/`run` like any other: don't wait while holding `lock`, on
+        the thread `run` hops to, or in an on_select() callback."""
+        if not self.running:
+            raise RuntimeError("ViewerServer is not running")
+        if callback is None and threading.current_thread().name.startswith(
+                "naja-schematic-callbacks"):
+            raise RuntimeError("export_svg() can't wait for the answer on the callbacks "
+                               "thread it is delivered on: pass a callback")
+        done = threading.Event()
+        result = []
+
+        def deliver(svg):
+            if path is not None:
+                with open(path, "w", encoding="utf-8") as f:
+                    f.write(svg)
+            if callback is not None:
+                callback(svg)
+            result.append(svg)
+            done.set()
+
+        self._session.export_svg(deliver)
+        if callback is not None:
+            return None
+        if not done.wait(timeout):
+            raise TimeoutError(
+                f"no SVG from a viewer within {timeout} s ({len(self._clients)} connected): "
+                "a viewer answers once its schematic shows something")
+        return result[0]
 
     @property
     def generation(self):
