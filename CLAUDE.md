@@ -1115,3 +1115,12 @@ canvas clicks in `EquipotentialView::renderSchematic()`.
 `.vscode/settings.json` locks `cmake-tools` to preset mode
 (`native-debug`), pointing IntelliSense at
 `../naja-schematic-build/native-debug/compile_commands.json`.
+
+### Licensing (REUSE)
+
+Files carry no license headers: `REUSE.toml` lists every file by path
+(explicitly, not `**`, so third-party exceptions aren't double-annotated),
+and `.github/workflows/reuse.yml` runs `reuse lint`. **Add every new
+file to the right `[[annotations]]` list in the same change**, or CI fails
+with "no copyright and licensing information". Check locally with
+`pip install "reuse[charset-normalizer]" && reuse lint`.
