@@ -1,0 +1,4 @@
+# Test data is compared byte for byte (source windows read back, expected
+# outputs): no CRLF conversion on Windows checkouts.
+tests/data/** -text
+python/tests/data/** -text
