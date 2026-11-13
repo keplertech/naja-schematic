@@ -5,7 +5,13 @@
 #include <cstdlib>
 #include <string>
 #include <unordered_map>
-#ifndef __EMSCRIPTEN__
+// "Open in Editor": native POSIX hosts only. The browser's files aren't on
+// its machine, and Windows only builds the headless renderer, which never
+// shows this tab (its shell quoting, SourceStore::editorCommand(), is POSIX).
+#if !defined(__EMSCRIPTEN__) && !defined(_WIN32)
+#define NAJA_SCHEMATIC_OPEN_IN_EDITOR 1
+#endif
+#ifdef NAJA_SCHEMATIC_OPEN_IN_EDITOR
 #include <mutex>
 #include <thread>
 #include <unistd.h>
@@ -168,7 +174,7 @@ void renderReferences(INetlistProvider* provider) {
   ImGui::EndTable();
 }
 
-#ifndef __EMSCRIPTEN__
+#ifdef NAJA_SCHEMATIC_OPEN_IN_EDITOR
 // What the last "Open in Editor" did, written by its worker thread: shown
 // next to the button, so a missing editor doesn't fail silently.
 std::mutex  g_editorMutex;
@@ -262,7 +268,7 @@ void renderFile() {
     ImGui::SameLine();
     ImGui::TextDisabled("(large file: only the lines around the reference)");
   }
-#ifndef __EMSCRIPTEN__
+#ifdef NAJA_SCHEMATIC_OPEN_IN_EDITOR
   if (!SourceStore::hostPath().empty()) {
     ImGui::SameLine();
     if (ImGui::SmallButton("Open in Editor")) openInEditor();

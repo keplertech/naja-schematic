@@ -25,7 +25,8 @@ def _widget_esm():
             "NAJA_SCHEMATIC_BUNDLE at the resulting naja-schematic.js.")
     # The bundle is a classic script defining createNajaSchematic; the glue
     # appended after it is the ES module anywidget loads.
-    return bundle.read_text() + "\n" + (STATIC_DIR / "widget.js").read_text()
+    return (bundle.read_text(encoding="utf-8") + "\n"
+            + (STATIC_DIR / "widget.js").read_text(encoding="utf-8"))
 
 
 class Schematic(anywidget.AnyWidget):

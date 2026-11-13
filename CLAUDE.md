@@ -328,12 +328,17 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
 
 Wheels: the `build` job makes the sdist and a pure `py3-none-any` wheel
 (no renderer: everything but `export_svg()`), the `platform-wheels` job
-one wheel per platform with `bin/naja-schematic-render` (manylinux_2_28
-x86_64 in the manylinux container, libstdc++ linked statically; macOS
-universal2), tagged `py3-none-<platform>` by `python/hatch_build.py` from
-`$NAJA_SCHEMATIC_WHEEL_PLATFORM` (the executable is gitignored, like the
-bundle, and only included when present). `test` installs the wheel pip
-picks for its runner from the built ones.
+one wheel per platform with `bin/naja-schematic-render`, each on its own
+runner in parallel: manylinux_2_28 x86_64 and aarch64 (in the manylinux
+containers, `ubuntu-24.04-arm` for aarch64; libstdc++ linked statically),
+macOS universal2, and Windows x64 (`win_amd64`, MSVC with the static CRT,
+`naja-schematic-render.exe`; "Open in Editor" is compiled out there, its
+shell quoting being POSIX). Tagged `py3-none-<platform>` by
+`python/hatch_build.py` from `$NAJA_SCHEMATIC_WHEEL_PLATFORM` (the
+executable is gitignored, like the bundle, and only included when present).
+`test` runs on one runner per platform wheel (ubuntu, ubuntu arm, macOS,
+Windows) and installs the wheel pip picks there from the built ones; its
+`renderer_path()` check fails if that's the pure wheel.
 
 The viewer bundle `static/naja-schematic.js` is **not** checked in: it's the
 WASM target configured with `-DNAJA_SCHEMATIC_WASM_MODULE=ON` (single file,

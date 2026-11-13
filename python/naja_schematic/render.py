@@ -38,7 +38,7 @@ from . import protocol, session
 log = logging.getLogger("naja_schematic")
 
 BIN_DIR = Path(__file__).parent / "bin"
-RENDERER_NAME = "naja-schematic-render"
+RENDERER_NAME = "naja-schematic-render" + (".exe" if sys.platform == "win32" else "")
 # Seconds one drawing may take before the renderer is stopped.
 DEFAULT_TIMEOUT = 120.0
 
@@ -65,7 +65,8 @@ def renderer_path():
         raise RenderError(f"NAJA_SCHEMATIC_RENDER={override}: not an executable file")
     raise RenderError(
         "this naja-schematic install has no SVG renderer (bin/naja-schematic-render): "
-        "it ships in the platform wheels (Linux x86_64, macOS); on other platforms build "
+        "it ships in the platform wheels (Linux x86_64/aarch64, macOS, Windows x64); on "
+        "other platforms build "
         "it from a source checkout (cmake -DNAJA_SCHEMATIC_RENDER_ONLY=ON) and set "
         "NAJA_SCHEMATIC_RENDER to its path")
 
@@ -249,7 +250,8 @@ class Renderer:
 
 
 def _write_svg(path, svg):
-    Path(path).write_text(svg, encoding="utf-8")
+    # newline="": the same bytes on every platform (no CRLF on Windows).
+    Path(path).write_text(svg, encoding="utf-8", newline="")
 
 
 def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=None,
