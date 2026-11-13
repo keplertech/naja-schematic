@@ -14,6 +14,7 @@ class LocalSNLProvider;
 struct HeadlessExportOptions {
   std::string outPath;
   std::string diagnosisPath;
+  std::string stylePath;  // --style: host styling (StyleStore), drawn in the export
   // One instance drawn alone with every pin open (resolve_instance): a JSON
   // list of ids ([3, 7], an id_path) or of names (["u1", "u2"], a path), or
   // an object with "id_path"/"path". [] is the top design.

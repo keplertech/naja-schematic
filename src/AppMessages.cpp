@@ -21,6 +21,7 @@ using json = nlohmann::json;
 #include "Console.h"
 #include "EquipotentialView.h"
 #include "DiagnosisStore.h"
+#include "StyleStore.h"
 #include "SourceStore.h"
 #include "SourceView.h"
 #include "PropertiesStore.h"
@@ -149,6 +150,7 @@ void setupProvider(AppState& state) {
       }
       Console::Log("Root node data received");
       DiagnosisStore::clear();  // stale diagnoses reference the old design
+      StyleStore::clear();      // so do styles: the host pushes them again
       PropertiesStore::clear(); // stale properties reference the old design
       SourceStore::clear();     // so do source references
       SelectionStore::clear();  // so does a stale selection
@@ -407,6 +409,13 @@ void setupProvider(AppState& state) {
       Console::Log("Diagnosis received: " + std::to_string(items.size()) + " item(s)");
       DiagnosisStore::setDiagnostics(std::move(items));
       state.focusDiagnosisTab = true;
+    } else if (resp == "style_response") {
+      // Host push (style()): colors, widths, labels on nets, instances, pins.
+      std::vector<std::string> errors;
+      auto items = StyleStore::parse(j, &errors);
+      for (const auto& e : errors) Console::Error(e);
+      Console::Log("Styles received: " + std::to_string(items.size()) + " item(s)");
+      StyleStore::setStyles(std::move(items));
     } else if (resp == "review_response") {
       ReviewStore::setResponse(j);
     } else if (resp == "export_svg") {
@@ -511,6 +520,26 @@ bool loadDiagnosisFile(const std::string& path) {
     return true;
   } catch (const std::exception& e) {
     Console::Error("Failed to parse diagnosis JSON: " + std::string(e.what()));
+    return false;
+  }
+}
+
+bool loadStyleFile(const std::string& path) {
+  std::ifstream ifs(path);
+  if (!ifs) {
+    Console::Error("Failed to open style file: " + path);
+    return false;
+  }
+  try {
+    json j; ifs >> j;
+    std::vector<std::string> errors;
+    auto items = StyleStore::parse(j, &errors);
+    for (const auto& e : errors) Console::Error(path + ": " + e);
+    Console::Log("Loaded " + std::to_string(items.size()) + " style item(s) from " + path);
+    StyleStore::setStyles(std::move(items));
+    return errors.empty();
+  } catch (const std::exception& e) {
+    Console::Error("Failed to parse style JSON: " + std::string(e.what()));
     return false;
   }
 }

@@ -43,6 +43,10 @@ public:
         std::vector<ImU32> stripeColors;
         bool        isBus = false;
         std::string netName;
+        // Host styling (StyleStore): wire width in world units (0 = the
+        // default), and a label drawn on its longest horizontal run.
+        float       width = 0.0f;
+        std::string label;
         // The net this tree draws, and whether it's the selected one
         // (SelectionStore): drawn over a selection-colored halo.
         SchematicNetRef ref;

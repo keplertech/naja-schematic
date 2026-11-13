@@ -78,4 +78,8 @@ bool appFrame(AppState& state);
 // Returns true on success (logs the reason to Console and returns false on
 // a missing/unreadable/malformed file).
 bool loadDiagnosisFile(const std::string& path);
+// main()'s --style flag: a style_response-shaped JSON ({"items": [...]} or
+// a bare array; see StyleStore), same calling contract as
+// loadDiagnosisFile(). False also when an item was skipped as malformed.
+bool loadStyleFile(const std::string& path);
 #endif

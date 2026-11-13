@@ -90,6 +90,30 @@ class Schematic(anywidget.AnyWidget):
         """
         self._session.annotate(items)
 
+    def style(self, items):
+        """Style nets, instances and pins: colors, stroke widths, fills and
+        labels, kept across reloads until the next call (or
+        design_changed()); [] clears. `items` is a list of dicts (or a
+        {"items": [...]} document, as `--style` files hold):
+
+        - "kind": "net" (the whole net through a pin: its wires),
+          "instance" (a box) or "term" (one pin);
+        - the object: "target" -- an instance as show_instance() takes it,
+          a pin as show_net() does -- or "id_path"/"path" (the instance,
+          or the one containing the pin; [] = a top-level port) plus
+          "terminal" or "term_id" and an optional "bit" (absent: every bit);
+        - "color" ("#rrggbb", "#rrggbbaa" or an (r, g, b[, a]) tuple): a
+          net's wires, an instance's outline, a pin's tick; "width" (SVG px
+          at 1x); "fill": an instance's body (a translucent one tints the
+          default fill); "label": drawn instead of an instance's or pin's
+          name, or on a net's wire.
+
+        Items are resolved now (a bad one raises ValueError). Several items
+        on one object merge in order. Diagnosis colors win over styles, and
+        styles over trace colors. Kept in SVG exports.
+        """
+        self._session.style(items)
+
     def show_instance(self, target):
         """Bring one hierarchical instance into view.
 
@@ -141,14 +165,15 @@ class Schematic(anywidget.AnyWidget):
                 callback(svg)
         self._session.export_svg(done)
 
-    def design_changed(self, diagnosis=None, instance=None):
+    def design_changed(self, diagnosis=None, instance=None, style=None):
         """Refresh this view after the design was replaced or edited in
-        later cells, instead of calling show() again. Kept diagnoses and
-        focus are replaced by `diagnosis` and `instance` (resolved against
-        the new design; None: none), and the selection is cleared. What
+        later cells, instead of calling show() again. Kept diagnoses, styles
+        and focus are replaced by `diagnosis`, `style` and `instance`
+        (resolved against the new design; None: none), and the selection is
+        cleared. What
         the view asked about or selected in the previous design is ignored,
         even if it arrives later. Returns the new design generation."""
-        return self._session.design_changed(diagnosis, instance)
+        return self._session.design_changed(diagnosis, instance, style)
 
     @property
     def selected(self):
@@ -169,8 +194,8 @@ class Schematic(anywidget.AnyWidget):
         return handler
 
 
-def show(instance=None, *, height=600, diagnosis=None, source_roots=(), source_maps=(),
-         review=None):
+def show(instance=None, *, height=600, diagnosis=None, style=None, source_roots=(),
+         source_maps=(), review=None):
     """Display a view of the design currently loaded with najaeda.
 
     Evaluate it as the last expression of a cell (or pass it to
@@ -183,12 +208,16 @@ def show(instance=None, *, height=600, diagnosis=None, source_roots=(), source_m
     `source_maps`, (FROM, TO) path prefixes to rewrite for files recorded on
     another machine, e.g. [("/home/ci/flow", "/work/flow")]. `review`, a
     naja_schematic.Review, shows its threads and lets the viewer add to it.
+    `diagnosis` and `style` are passed to Schematic.annotate() and
+    Schematic.style().
     """
     # (anywidget itself turns on Colab's custom widget manager.)
     view = Schematic(height=height, source_roots=source_roots, source_maps=source_maps,
                      review=review)
     if diagnosis is not None:
         view.annotate(diagnosis)
+    if style is not None:
+        view.style(style)
     if instance is not None:
         view.show_instance(instance)
     return view

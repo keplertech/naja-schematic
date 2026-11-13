@@ -78,6 +78,7 @@ int runHeadlessExport(LocalSNLProvider* provider, const HeadlessExportOptions& o
 
   int status = 0;
   if (!options.diagnosisPath.empty() && !loadDiagnosisFile(options.diagnosisPath)) status = 1;
+  if (!options.stylePath.empty() && !loadStyleFile(options.stylePath)) status = 1;
 
   const auto isTop = [](const json& focus) {
     const json& p = focus.contains("id_path") ? focus["id_path"] : focus.value("path", json::array());

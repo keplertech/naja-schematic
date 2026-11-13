@@ -281,6 +281,110 @@ def net_pin(target):
     return {"id_path": ids, "path": names, "term_id": term_id, "bit": bit, "label": label}
 
 
+def _style_pin_terms(item, what):
+    # (ids, term, bit) for each bit the pin of a "net"/"term" style item
+    # names: its bit, or every bit of a bus when it gives none.
+    ids = item.get("id_path")
+    if ids is None:
+        ids = names_to_ids(item.get("path", []))
+        if ids is None:
+            raise ValueError(f"{what}: no instance {item.get('path')!r} in the loaded design")
+    if ids_to_names(ids) is None:
+        raise ValueError(f"{what}: instance id path {ids} does not resolve in the loaded design")
+    design = _model_at(ids)
+    term = (design.getTermByID(item["term_id"]) if "term_id" in item
+            else design.getTerm(item["terminal"]))
+    if term is None:
+        raise ValueError(f"{what}: no terminal {item.get('term_id', item.get('terminal'))!r} "
+                         f"on {design.getName()}")
+    if isinstance(term, naja.SNLBusTerm):
+        lo, hi = sorted((term.getMSB(), term.getLSB()))
+        bits = [item["bit"]] if "bit" in item else list(range(lo, hi + 1))
+    else:
+        bits = [None]
+    return [(ids, term, bit) for bit in bits]
+
+
+def _net_driver_pin(ids, term, bit, what):
+    # The pin a "net" style item is sent with: one the viewer draws on that
+    # net whatever shows it -- a top-level port, else an output leaf pin (a
+    # driver: a trace's partial net lists its drivers), else a leaf pin.
+    term_id, bit, _ = _pin_of(term, bit, what)
+    start = protocol.resolve_start_point(_top_design(), ids, term_id, bit)
+    if start is None:
+        raise ValueError(f"{what}: the pin does not resolve in the loaded design")
+    equi = naja.SNLEquipotential(start, mode=naja.SNLEquipotential.Mode.TraverseAssigns)
+    for top_term in equi.getTerms():
+        return [], top_term
+    leaves = list(equi.getInstTermOccurrences())
+    if not leaves:
+        return ids, term.getBusTermBit(bit) if isinstance(term, naja.SNLBusTerm) else term
+    leaves.sort(key=lambda occ: occ.getInstTerm().getDirection() != naja.SNLTerm.Direction.Output)
+    occ = leaves[0]
+    return (list(occ.getPath().getInstanceIDs()) + [occ.getInstTerm().getInstance().getID()],
+            occ.getInstTerm().getBitTerm())
+
+
+def style_response(items):
+    """protocol.style_response() for the design in the current NLUniverse,
+    with every item resolved here, so a bad one raises ValueError instead
+    of being skipped by the viewer:
+
+    - an item may name its object by "target" instead of "path"/"id_path"
+      (and, for a pin, "terminal"/"term_id"/"bit"): an instance as
+      show_instance() takes it, or a pin as show_net() does (one bit);
+    - a "net" item is sent once per bit (a bus pin without "bit": every
+      bit), each on its net's driver -- a top-level port, else an output
+      leaf pin -- the pin the viewer draws whatever part of the net it
+      shows, even through a hierarchical pin or an assign."""
+    if isinstance(items, dict):
+        items = items.get("items", [])
+    resolved = []
+    for n, raw in enumerate(items):
+        what = f"style item {n}"
+        if not isinstance(raw, dict):
+            raise TypeError(f"{what}: a style item is a dict, got {type(raw).__name__}")
+        item = dict(raw)
+        kind = item.get("kind", "instance")
+        if "target" in item:
+            target = item.pop("target")
+            for key in ("path", "id_path", "terminal", "term_id", "bit"):
+                item.pop(key, None)
+            if kind == "instance":
+                names, ids = instance_paths(target)
+                item.update(path=names, id_path=ids)
+            else:
+                pin = net_pin(target)
+                item.update(path=pin["path"], id_path=pin["id_path"], term_id=pin["term_id"])
+                if pin["bit"] is not None:
+                    item["bit"] = pin["bit"]
+        item = protocol.style_response([item])["items"][0]  # checked, normalized
+        if kind == "instance":
+            if "id_path" in item:
+                if ids_to_names(item["id_path"]) is None:
+                    raise ValueError(f"{what}: instance id path {item['id_path']} does not "
+                                     "resolve in the loaded design")
+            elif names_to_ids(item.get("path", [])) is None:
+                raise ValueError(f"{what}: no instance {item.get('path')!r} in the loaded design")
+            resolved.append(item)
+            continue
+        pins = _style_pin_terms(item, what)
+        if kind == "term":
+            resolved.append(item)
+            continue
+        attrs = {k: v for k, v in item.items()
+                 if k not in ("path", "id_path", "terminal", "term_id", "bit")}
+        for ids, term, bit in pins:
+            pin_ids, pin_term = _net_driver_pin(ids, term, bit, what)
+            term_id, pin_bit, _ = _pin_of(pin_term, None, what)
+            entry = {**attrs, "id_path": pin_ids, "path": ids_to_names(pin_ids),
+                     "term_id": term_id}
+            if pin_bit is not None:
+                entry["bit"] = pin_bit
+            resolved.append(entry)
+    return {"response": "style_response", "items": resolved}
+
+
 def trace_color(color):
     """Normalize a trace color -- "#rrggbb" or an (r, g, b) tuple of 0-255
     ints -- to "#rrggbb". The viewer refuses near-black colors (the
@@ -340,7 +444,8 @@ class ViewerSession:
     exclusive access to the universe (default: fn() under a private RLock).
     `dispatch(fn)` calls fn() -- a selection notification -- eventually, in
     the order given (default: right away, on the calling thread).
-    `diagnosis` pre-loads diagnosis items, sent after the first root load.
+    `diagnosis` pre-loads diagnosis items, sent after the first root load;
+    `style` style items (see style_response()), the same way.
     `source_roots` lists the directories relative source file references
     are looked up in, `source_maps` (FROM, TO) path prefixes to rewrite for
     files recorded on another machine (see protocol.resolve_source_file()).
@@ -361,7 +466,7 @@ class ViewerSession:
     """
 
     def __init__(self, push=None, run=None, diagnosis=None, dispatch=None, source_roots=(),
-                 source_maps=(), review=None):
+                 source_maps=(), review=None, style=None):
         self._push = push
         self.review = review
         # Stamped now and at each design_changed(): the design the viewer
@@ -374,6 +479,7 @@ class ViewerSession:
         self._generation = 0
         self._diagnosis_push = (protocol.diagnosis_response(diagnosis)
                                 if diagnosis is not None else None)
+        self._style_push = style_response(style) if style is not None else None
         self._focus_push = None
         # show_net() pushes since the view was last cleared, in order: they
         # are re-sent after the focus, which clears the view when drawn.
@@ -419,7 +525,8 @@ class ViewerSession:
             # check and the answer.
             with self._state_lock:
                 generation = self._generation
-                pushes = [p for p in (self._diagnosis_push, self._focus_push) if p]
+                pushes = [p for p in (self._diagnosis_push, self._style_push,
+                                      self._focus_push) if p]
                 pushes += self._net_pushes
                 if self._svg_callbacks:
                     # An export asked before the view was up got lost with
@@ -568,6 +675,19 @@ class ViewerSession:
             generation = self._generation
         self._send(self._stamp(message, generation))
 
+    def style(self, items):
+        """Style nets, instances and pins in the view -- colors, widths,
+        fills, labels -- now and after every reload, until the next call
+        or design_changed() (see style_response() for the items, resolved
+        here: a bad one raises ValueError). Replaces the previous styling;
+        pass [] to clear. Diagnosis colors win over styles, styles over
+        trace colors."""
+        message = style_response(items)
+        with self._state_lock:
+            self._style_push = message
+            generation = self._generation
+        self._send(self._stamp(message, generation))
+
     def show_instance(self, target):
         """Reveal, select and draw one instance, now and after every
         reload (see instance_paths() for what `target` can be)."""
@@ -619,7 +739,7 @@ class ViewerSession:
             generation = self._generation
         self._send(self._stamp(protocol.export_svg(), generation))
 
-    def design_changed(self, diagnosis=None, instance=None):
+    def design_changed(self, diagnosis=None, instance=None, style=None):
         """Start the next design generation: the viewer(s) reload the design
         from the root, and whatever they asked about or selected in the
         previous one is dropped (see the class docstring). Call it right
@@ -628,11 +748,13 @@ class ViewerSession:
 
         The diagnoses and focused instance kept so far name the old design,
         so they are replaced by `diagnosis` and `instance` (resolved against
-        the new design; None: none), sent after the new root loads. The
+        the new design; None: none), sent after the new root loads; so
+        are the styles, by `style`. The
         selection is cleared: selection callbacks get (None, None).
         Returns the new generation."""
         diagnosis_push = (protocol.diagnosis_response(diagnosis)
                           if diagnosis is not None else None)
+        style_push = style_response(style) if style is not None else None
         focus_push = None
         if instance is not None:
             names, ids = instance_paths(instance)
@@ -644,6 +766,7 @@ class ViewerSession:
             generation = self._generation
             self._source_paths = dataclasses.replace(self._source_paths, loaded_at=time.time())
             self._diagnosis_push, self._focus_push = diagnosis_push, focus_push
+            self._style_push = style_push
             self._net_pushes = []  # they name the old design
             had_selection = self.selected_id_path is not None or self.selected_path is not None
             self.selected_path = self.selected_id_path = None

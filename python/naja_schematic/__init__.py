@@ -18,15 +18,17 @@ from .protocol import diagnosis_response, handle_request
 from .render import RenderError, export_svg, export_svgs
 from .review import Review
 from .server import ViewerServer
+from .session import style_response
 
 
-def show(instance=None, *, height=600, diagnosis=None, review=None):
+def show(instance=None, *, height=600, diagnosis=None, style=None, review=None):
     """Display a view of the loaded design in the current notebook; see
     naja_schematic.widget.show()."""
     # Imported lazily: the CLI/server path doesn't need anywidget/IPython.
     from .widget import show as _show
-    return _show(instance, height=height, diagnosis=diagnosis, review=review)
+    return _show(instance, height=height, diagnosis=diagnosis, style=style, review=review)
 
 
-__all__ = ["__version__", "show", "handle_request", "diagnosis_response", "ViewerServer", "Review",
+__all__ = ["__version__", "show", "handle_request", "diagnosis_response", "style_response",
+           "ViewerServer", "Review",
            "export_svg", "export_svgs", "RenderError"]

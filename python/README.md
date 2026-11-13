@@ -42,6 +42,21 @@ view.annotate([{"kind": "instance", "path": ["u_sub"], "severity": "error",
 view
 ```
 
+Nets, instances and pins can also be styled -- a color and width for a
+net's wires, a fill for a box, labels -- kept across reloads and in SVG
+exports. A `"net"` item colors the whole net through the pin it names;
+`"target"` takes anything `show_instance()`/`show_net()` take:
+
+```python
+view.style([
+    {"kind": "net", "target": ([], "en"), "color": "#ff7f0e", "width": 3, "label": "en"},
+    {"kind": "net", "target": (["drv_0"], "O"), "color": "#1f77b4"},
+    {"kind": "instance", "target": ["s0"], "fill": "#1f77b455"},  # a tint
+])
+```
+
+Diagnosis colors win over styles, and styles over trace colors.
+
 The view and your najaeda code can point each other at instances.
 `show_instance()` takes a najaeda `Instance` or a naja `SNLPath`, a list
 of instance ids (as `Instance.pathIDs`) or a list of instance names (a plain string is one
@@ -104,6 +119,7 @@ naja_schematic.export_svg(
     "cone.svg",
     nets=[top.get_term("y")],                       # nets, each a colored trace
     traces=[(["u1"], "D")],                         # fan-in cones, back to flops and ports
+    style=[{"kind": "net", "target": top.get_term("y"), "color": "#ff7f0e"}],  # as view.style()
 )
 svgs = naja_schematic.export_svgs([                 # several drawings, one renderer
     {"instances": [["u1", "u2"]], "path": "u2.svg"},
@@ -120,7 +136,7 @@ in Python included. From a shell:
 
 ```bash
 naja-schematic render --verilog design.v --py-primitives prims.py --top top \
-  --instance u1/u2 --net u1:A[3] --trace u3:D --net y --svg out.svg
+  --instance u1/u2 --net u1:A[3] --trace u3:D --net y --style styles.json --svg out.svg
 ```
 
 `--instance`, `--net` and `--trace` are repeatable. A pin is `INST:TERM`,
@@ -151,6 +167,7 @@ server.start()
 server.open_browser()             # or hand server.url to the user
 
 server.annotate(items)            # diagnosis overlay, kept across reloads
+server.style(items)               # colors, widths, fills, labels, kept across reloads
 server.show_instance([3, 7])      # instance ids, names, or a najaeda Instance
 server.show_net(term, color="#ff8800")  # a net as a colored trace (a najaeda Term, ...)
 svg = server.export_svg("view.svg")     # the schematic as SVG, from a viewer

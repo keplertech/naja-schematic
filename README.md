@@ -69,6 +69,9 @@ your own tool).
   opened at the highlighted line.
 - **Diagnosis overlay**: color and annotate flagged instances, pins and
   nets from a JSON report, e.g. from a formal equivalence check.
+- **Host styling**: colors, widths, fills and labels a script or tool puts
+  on nets, instances and pins (e.g. a report's nets of interest), kept in
+  SVG exports.
 - **SVG export** of the schematic, from the File menu or headless (no
   browser, no display) from the command line or Python.
 - Loads gate-level Verilog (with Liberty), SystemVerilog, VHDL
@@ -90,6 +93,7 @@ plus options, in any order. Their flags differ slightly:
 | `--liberty a.lib --liberty b.lib` | `--liberty a.lib b.lib` | Liberty cell libraries (Verilog only) |
 | | `--py-primitives prims.py` | Primitives defined in Python: a `.py` file or module whose `load(db)` builds them (repeatable) |
 | `--diagnosis report.json` | `--diagnosis report.json` | Show a diagnosis report on the design |
+| `--style styles.json` | `--style styles.json` | Color, widen, fill and label nets, instances and pins (`{"items": [...]}`, see `style_response` in [CLAUDE.md](CLAUDE.md)) |
 | `--yosys-src` | `--yosys-src` | Read Yosys `(* src *)` attributes, so Show Sources leads back to the RTL (Verilog only) |
 | `--source-root dir` | `--source-root dir` | Where to look for relative source paths (repeatable) |
 | `--source-map FROM=TO` | `--source-map FROM=TO` | Rewrite source paths recorded on another machine (repeatable) |
