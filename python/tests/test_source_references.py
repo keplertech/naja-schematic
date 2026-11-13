@@ -174,16 +174,22 @@ def test_stale_files(sources, tmp_path):
     (tmp_path / "rtl").mkdir()
     copy = tmp_path / "rtl" / "alu.v"
     copy.write_text((CASES_DIR / "sources" / "rtl" / "alu.v").read_text())
+    # Modification times are set well clear of the load time: time.time()
+    # can be coarser than the file system's clock (Windows), so "now" on
+    # both sides may compare either way.
+    def touch(offset):
+        when = time.time() + offset
+        os.utime(copy, (when, when))
     request = json.dumps({"request": "load_source", "kind": "instance",
                           "id_path": [0, 0], "role": "origin", "index": 0})
+    touch(-5)
     session = ViewerSession(source_roots=[str(tmp_path)])
     stale = lambda: json.loads(session.answer(request)[0])["stale"]  # noqa: E731
     assert stale() is False
-    later = time.time() + 5
-    os.utime(copy, (later, later))
+    touch(5)
     assert stale() is True
     # design_changed() starts a new design: its ranges are newer than the file.
-    os.utime(copy, (time.time(), time.time()))
+    touch(-5)
     session.design_changed()
     assert stale() is False
     # Unknown load time (a bare SourcePaths): never stale.
