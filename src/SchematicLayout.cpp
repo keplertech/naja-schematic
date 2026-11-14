@@ -5,6 +5,7 @@
 #include <climits>
 #include <cmath>
 #include <memory>
+#include <tuple>
 
 namespace SchematicLayout {
 
@@ -80,13 +81,32 @@ std::string shortenMiddle(const std::string& name, const NameWidthFn& width, flo
 }
 
 std::string shownName(const InstanceShape& s, const NameWidthFn& width) {
-    if (s.isHierGroup || s.modelName == "port") return "";
+    if (s.isHierGroup || s.modelName == "port" || s.hideName) return "";
     return shortenMiddle(s.label.empty() ? s.name : s.label, width, kNameMaxW);
 }
 
+std::string shownModel(const InstanceShape& s, const NameWidthFn& width) {
+    if (!s.showModel || s.model.empty() || s.isHierGroup || s.modelName == "port") return "";
+    return shortenMiddle(s.model, width, kNameMaxW);
+}
+
 float footprintWidth(const InstanceShape& s, const NameWidthFn& width) {
+    float w = s.w;
     const std::string name = shownName(s, width);
-    return name.empty() ? s.w : std::max(s.w, width(name));
+    if (!name.empty()) w = std::max(w, width(name));
+    const std::string model = shownModel(s, width);
+    if (!model.empty()) w = std::max(w, width(model));
+    return w;
+}
+
+float footprintHeight(const InstanceShape& s, const NameWidthFn& width) {
+    return s.h + (shownModel(s, width).empty() ? 0.f : kNameH);
+}
+
+std::optional<RouteRect> modelRect(const InstanceShape& s, const NameWidthFn& width) {
+    const std::string model = shownModel(s, width);
+    if (model.empty()) return std::nullopt;
+    return RouteRect{ s.x, s.y + s.h, s.x + width(model), s.y + s.h + kNameH };
 }
 
 std::optional<RouteRect> nameRect(const InstanceShape& s, const NameWidthFn& width) {
@@ -206,7 +226,8 @@ float lowerMedian(std::vector<float> v) {
 }
 } // namespace
 
-Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vector<PlaceNet>& nets) {
+Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vector<PlaceNet>& nets,
+                           int maxSinkRows) {
     const int n = int(nodes.size());
     Placement out;
     out.pos.assign(n, ImVec2(0.f, 0.f));
@@ -313,6 +334,34 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
             std::stable_sort(keyed.begin(), keyed.end(),
                              [](const auto& a, const auto& b) { return a.first < b.first; });
             for (size_t i = 0; i < keyed.size(); ++i) layer[i] = keyed[i].second;
+            renumber();
+        }
+    }
+
+    // 6 (before the columns are measured). Sink grid: a column with too
+    //    many sinks is dealt into several, each a level of its own.
+    if (maxSinkRows > 0) {
+        std::vector<std::vector<int>> wrapped;
+        for (const auto& layer : layers) {
+            std::vector<int> sinks, others;
+            for (int v : layer) {
+                bool drives = nodes[v].drivesOutput;
+                for (int e : outEdges[v]) if (!isBack[e]) drives = true;
+                (drives ? others : sinks).push_back(v);
+            }
+            if (int(sinks.size()) <= maxSinkRows) { wrapped.push_back(layer); continue; }
+            const size_t cols = (sinks.size() + size_t(maxSinkRows) - 1) / size_t(maxSinkRows);
+            const size_t per  = (sinks.size() + cols - 1) / cols;
+            for (size_t c = 0; c * per < sinks.size(); ++c)
+                wrapped.emplace_back(sinks.begin() + long(c * per),
+                                     sinks.begin() + long(std::min(sinks.size(), (c + 1) * per)));
+            if (!others.empty()) wrapped.push_back(others);
+        }
+        if (wrapped.size() != layers.size()) {
+            layers = std::move(wrapped);
+            maxLevel = int(layers.size()) - 1;
+            for (int l = 0; l <= maxLevel; ++l)
+                for (int v : layers[l]) out.level[v] = l;
             renumber();
         }
     }
@@ -677,6 +726,134 @@ std::vector<RoutedNet> routeNets(const std::vector<RouteNet>& nets,
     return out;
 }
 // ---------------------------------------------------------------------------
+// Fanout summaries
+// ---------------------------------------------------------------------------
+namespace {
+std::string baseName(const std::string& label) {
+    const auto b = label.rfind('[');
+    return b != std::string::npos && !label.empty() && label.back() == ']' ? label.substr(0, b) : label;
+}
+} // namespace
+
+FanoutPlan planFanout(const std::vector<FanoutNet>& nets, int maxSinks, FanoutGroupBy groupBy,
+                      const std::set<InstancePath>& pinned, const FanoutExpandedFn& expanded) {
+    FanoutPlan plan;
+    plan.groupOf.resize(nets.size());
+    for (size_t ni = 0; ni < nets.size(); ++ni) plan.groupOf[ni].assign(nets[ni].receivers.size(), -1);
+    if (maxSinks <= 0) return plan;
+
+    auto isSink = [](const Item& it) { return !it.isTerm; };
+    std::set<InstancePath> shown = pinned;
+    for (const auto& net : nets)
+        for (const auto& d : net.drivers) if (!d.isTerm) shown.insert(d.path);
+    // Nets with few enough sinks draw them all.
+    std::vector<size_t> big;
+    for (size_t ni = 0; ni < nets.size(); ++ni) {
+        const auto& rs = nets[ni].receivers;
+        const size_t n = size_t(std::count_if(rs.begin(), rs.end(), isSink));
+        if (n <= size_t(maxSinks)) {
+            for (const auto& r : rs) if (isSink(r)) shown.insert(r.path);
+        } else {
+            big.push_back(ni);
+        }
+    }
+    // A big net draws the sinks already shown, then the first others up to
+    // maxSinks; the rest are candidates for its groups.
+    std::vector<std::vector<size_t>> candidates(nets.size());
+    for (size_t ni : big) {
+        const auto& rs = nets[ni].receivers;
+        size_t drawn = 0;
+        for (const auto& r : rs) if (isSink(r) && shown.count(r.path)) ++drawn;
+        for (size_t ri = 0; ri < rs.size(); ++ri) {
+            if (!isSink(rs[ri]) || shown.count(rs[ri].path)) continue;
+            if (drawn < size_t(maxSinks)) { shown.insert(rs[ri].path); ++drawn; }
+            else                           candidates[ni].push_back(ri);
+        }
+    }
+    auto keyOf = [&](const Item& r) {
+        FanoutGroupKey k;
+        switch (groupBy) {
+            case FanoutGroupBy::Model:
+                k.text = r.pathModels.empty() ? "" : r.pathModels.back();
+                break;
+            case FanoutGroupBy::Hierarchy:
+                k.module.assign(r.path.begin(), r.path.end() - (r.path.empty() ? 0 : 1));
+                break;
+            case FanoutGroupBy::Role:
+                k.clock = r.clock;
+                if (!r.clock) k.text = baseName(r.label);
+                break;
+        }
+        return k;
+    };
+    // Group the candidates; an instance drawn for another reason (or in a
+    // group expanded, or alone in its group) is drawn here too, which can
+    // make it drawn on another net: repeat until nothing changes.
+    std::vector<std::map<FanoutGroupKey, std::vector<size_t>>> byKey(nets.size());
+    for (bool changed = true; changed;) {
+        changed = false;
+        for (size_t ni : big) {
+            auto& groups = byKey[ni];
+            groups.clear();
+            for (size_t ri : candidates[ni]) {
+                const Item& r = nets[ni].receivers[ri];
+                if (!shown.count(r.path)) groups[keyOf(r)].push_back(ri);
+            }
+            for (auto& [key, members] : groups) {
+                std::set<InstancePath> insts;
+                for (size_t ri : members) insts.insert(nets[ni].receivers[ri].path);
+                if (insts.size() >= 2 && !(expanded && expanded(ni, key))) continue;
+                for (const auto& p : insts) changed |= shown.insert(p).second;
+            }
+        }
+    }
+    for (size_t ni : big) {
+        for (const auto& [key, members] : byKey[ni]) {
+            FanoutGroup g;
+            g.net = ni;
+            g.key = key;
+            std::set<InstancePath> insts;
+            for (size_t ri : members) {
+                const Item& r = nets[ni].receivers[ri];
+                if (shown.count(r.path)) continue;
+                g.receivers.push_back(ri);
+                insts.insert(r.path);
+            }
+            if (insts.size() < 2) continue;  // (drawn: see the loop above)
+            g.count = insts.size();
+            // The pin they share, if they do; the deepest module holding them all.
+            const Item& first = nets[ni].receivers[g.receivers.front()];
+            g.pin   = baseName(first.label);
+            g.clock = true;
+            size_t common = first.path.size() - 1;
+            for (size_t ri : g.receivers) {
+                const Item& r = nets[ni].receivers[ri];
+                if (baseName(r.label) != g.pin) g.pin.clear();
+                g.clock = g.clock && r.clock;
+                size_t k = 0;
+                while (k < common && k + 1 < r.path.size() && r.path[k] == first.path[k]) ++k;
+                common = k;
+            }
+            if (groupBy == FanoutGroupBy::Role && g.clock && g.pin.empty()) g.pin = "clock";
+            g.module.assign(first.path.begin(), first.path.begin() + long(common));
+            g.moduleModels.assign(first.pathModels.begin(),
+                                  first.pathModels.begin() + long(std::min(common, first.pathModels.size())));
+            std::string what;
+            switch (groupBy) {
+                case FanoutGroupBy::Model:     what = key.text.empty() ? "cells" : key.text; break;
+                case FanoutGroupBy::Hierarchy: what = key.module.empty() ? "(top)" : displayPath(key.module); break;
+                case FanoutGroupBy::Role:      what = key.clock ? "clock" : key.text; break;
+            }
+            g.label = what + " \xC3\x97" + std::to_string(g.count);  // U+00D7 multiplication sign
+            const int gi = int(plan.groups.size());
+            for (size_t ri : g.receivers) plan.groupOf[ni][ri] = gi;
+            plan.groups.push_back(std::move(g));
+        }
+    }
+    return plan;
+}
+
+// ---------------------------------------------------------------------------
 // Hierarchy grouping
 // ---------------------------------------------------------------------------
 namespace {
@@ -707,9 +884,11 @@ void measureGroup(GroupNode& node, bool isRoot, const NameWidthFn& nameWidth) {
     }
     for (auto [leaf, level] : node.leaves) {
         // The frame already names the module: a leaf in it shows its own name.
-        if (!isRoot && !leaf->path.empty()) leaf->label = displayName(leaf->path.back());
+        // (A fanout summary keeps its own label: its path is made up.)
+        if (!isRoot && !leaf->path.empty() && !leaf->isSummary) leaf->label = displayName(leaf->path.back());
         float lv = float(level);
-        elems.push_back({ nullptr, leaf, lv, leaf->y, footprintWidth(*leaf, nameWidth), leaf->h });
+        elems.push_back({ nullptr, leaf, lv, leaf->y, footprintWidth(*leaf, nameWidth),
+                          footprintHeight(*leaf, nameWidth) });
         node.levelMin = std::min(node.levelMin, lv);
         node.levelMax = std::max(node.levelMax, lv);
         node.sortY    = std::min(node.sortY, leaf->y);

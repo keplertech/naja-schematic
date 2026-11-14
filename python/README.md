@@ -104,10 +104,11 @@ Python before the design: a `.py` file, or an importable module, whose
 `load(db)` creates them on the design's `NLDB` (as
 `najaeda.primitives.xilinx` does for `--xilinx`).
 
-## SVG export, no browser
+## SVG and PNG export, no browser
 
 `export_svg()` draws part of the design loaded in najaeda as an SVG
-schematic, with no browser and no display (e.g. in CI):
+schematic, with no browser and no display (e.g. in CI). `export_png()`
+makes the same drawing as a PNG image:
 
 ```python
 import naja_schematic
@@ -120,6 +121,13 @@ naja_schematic.export_svg(
     nets=[top.get_term("y")],                       # nets, each a colored trace
     traces=[(["u1"], "D")],                         # fan-in cones, back to flops and ports
     style=[{"kind": "net", "target": top.get_term("y"), "color": "#ff7f0e"}],  # as view.style()
+)
+png = naja_schematic.export_png(top.get_child_instance("u1"), "u1.png",
+                                scale=3)                # 3 pixels per SVG pixel, drawn sharp
+naja_schematic.export_svg(
+    nets=[top.get_term("clk")], path="clk.svg",
+    view_options={"instance_label": "both",         # name above each box, cell model under it
+                  "max_sinks": 16, "group_by": "model"},  # a net's sinks past 16: "DFF x812"
 )
 svgs = naja_schematic.export_svgs([                 # several drawings, one renderer
     {"instances": [["u1", "u2"]], "path": "u2.svg"},
@@ -136,8 +144,16 @@ in Python included. From a shell:
 
 ```bash
 naja-schematic render --verilog design.v --py-primitives prims.py --top top \
-  --instance u1/u2 --net u1:A[3] --trace u3:D --net y --style styles.json --svg out.svg
+  --instance u1/u2 --net u1:A[3] --trace u3:D --net y --style styles.json --svg out.svg \
+  --png out.png --scale 3 --instance-label both --max-sinks 16
 ```
+
+`view_options` (and the flags `--instance-label`, `--sink-rows`,
+`--max-sinks`, `--group-by`) set how the schematic is drawn: see
+[How the schematic is drawn](../README.md#how-the-schematic-is-drawn). In
+a notebook they're `show(view_options=...)` / `view.view_options(...)`,
+and on a server `ViewerServer(view_options=...)`, the same flags on
+`naja-schematic`.
 
 `--instance`, `--net` and `--trace` are repeatable. A pin is `INST:TERM`,
 `INST:TERM[BIT]`, or `TERM` for a top-level port; an instance path `u1/u2`

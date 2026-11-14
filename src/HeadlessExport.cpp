@@ -8,6 +8,7 @@
 #include "AppLogic.h"
 #include "HeadlessView.h"
 #include "LocalSNLProvider.h"
+#include "SchematicView.h"
 #include "SelectionStore.h"
 #include "TraceStore.h"
 
@@ -58,9 +59,13 @@ std::optional<json> parseTermArg(const std::string& arg, std::string& error) {
 }
 
 int runHeadlessExport(LocalSNLProvider* provider, const HeadlessExportOptions& options) {
-  if (!endsWith(options.outPath, ".svg")) {
+  if (!options.outPath.empty() && !endsWith(options.outPath, ".svg")) {
     std::cerr << "--export writes SVG: give a .svg path (convert to PDF with e.g. "
-                 "`rsvg-convert -f pdf out.svg -o out.pdf`)\n";
+                 "`rsvg-convert -f pdf out.svg -o out.pdf`; --png writes PNG)\n";
+    return 1;
+  }
+  if (!options.pngPath.empty() && !endsWith(options.pngPath, ".png")) {
+    std::cerr << "--png writes PNG: give a .png path\n";
     return 1;
   }
   if (!provider->hasDesign()) {
@@ -117,20 +122,29 @@ int runHeadlessExport(LocalSNLProvider* provider, const HeadlessExportOptions& o
   view.settle();
 
   // Nothing is written when part of the request failed: a script must not
-  // take a partial drawing for the one it asked for.
-  const std::string svg = status == 0 ? view.exportSvg() : std::string();
-  if (status != 0) {
-    // already reported
-  } else if (svg.empty()) {
-    std::cerr << "--export: nothing to draw\n";
-    status = 1;
-  } else {
-    std::ofstream out(options.outPath, std::ios::binary);
-    out << svg;
+  // take a partial drawing for the one it asked for. Nor when one of the
+  // two files can't be made.
+  std::string svg, png;
+  if (status == 0 && !options.outPath.empty()) {
+    svg = view.exportSvg();
+    if (svg.empty()) { std::cerr << "--export: nothing to draw\n"; status = 1; }
+  }
+  if (status == 0 && !options.pngPath.empty()) {
+    png = view.exportPng(options.pngScale);
+    if (png.empty()) {
+      std::cerr << "--png: nothing to draw, or the image would exceed "
+                << SchematicView::kMaxPngPixels / 1e6 << " Mpixels (lower --scale)\n";
+      status = 1;
+    }
+  }
+  for (const auto& [path, bytes] : { std::pair{ options.outPath, &svg }, std::pair{ options.pngPath, &png } }) {
+    if (status != 0 || path.empty()) continue;
+    std::ofstream out(path, std::ios::binary);
+    out << *bytes;
     if (out) {
-      std::cerr << "Schematic exported to " << options.outPath << "\n";
+      std::cerr << "Schematic exported to " << path << "\n";
     } else {
-      std::cerr << "--export: could not write " << options.outPath << "\n";
+      std::cerr << "could not write " << path << "\n";
       status = 1;
     }
   }

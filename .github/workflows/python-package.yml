@@ -31,7 +31,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -41,7 +41,7 @@ jobs:
           submodules: true
 
       - name: Set up Emscripten
-        uses: mymindstorm/setup-emsdk@v14
+        uses: emscripten-core/setup-emsdk@v16
         with:
           version: latest
 
@@ -61,7 +61,7 @@ jobs:
           test "v$version" = "${GITHUB_REF_NAME}" || {
             echo "Tag ${GITHUB_REF_NAME} does not match __version__ $version"; exit 1; }
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -77,12 +77,12 @@ jobs:
           ls dist/*-py3-none-any.whl
           ! unzip -l dist/*.whl | grep -q 'naja_schematic/bin/'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dist-pure
           path: dist/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: bundle
           path: python/naja_schematic/static/naja-schematic.js
@@ -97,7 +97,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             container: quay.io/pypa/manylinux_2_28_x86_64
             platform: manylinux_2_28_x86_64
           - os: ubuntu-24.04-arm
@@ -127,7 +127,7 @@ jobs:
           /opt/python/cp312-cp312/bin/python -m pip install cmake ninja build
           echo "/opt/python/cp312-cp312/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         if: matrix.container == ''
         with:
           python-version: "3.12"
@@ -137,10 +137,26 @@ jobs:
         run: python -m pip install cmake ninja build
 
       - name: Set up MSVC (Windows)
+        # What vcvarsall.bat x64 sets (cl, link, dumpbin, INCLUDE, LIB...),
+        # kept for the next steps. Inline: no action doing it runs on
+        # Node.js 24 yet.
         if: runner.os == 'Windows'
-        uses: ilammy/msvc-dev-cmd@v1
+        shell: pwsh
+        run: |
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" `
+              -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              -property installationPath
+          if (-not $vs) { throw "no Visual Studio with the C++ x64 tools" }
+          $vcvars = Join-Path $vs "VC\Auxiliary\Build\vcvarsall.bat"
+          # Only what it adds or changes.
+          cmd /c "`"$vcvars`" x64 >nul && set" | ForEach-Object {
+            if ($_ -match '^([^=]+)=(.*)$' -and
+                [Environment]::GetEnvironmentVariable($Matches[1]) -ne $Matches[2]) {
+              "$($Matches[1])=$($Matches[2])" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            }
+          }
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: bundle
           path: python/naja_schematic/static/
@@ -183,7 +199,7 @@ jobs:
           python -m zipfile -l dist/*.whl | grep -q 'naja_schematic/bin/naja-schematic-render'
           python -m zipfile -l dist/*.whl | grep -q 'naja_schematic/static/naja-schematic.js'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: dist-${{ matrix.platform }}
           path: dist/
@@ -197,7 +213,7 @@ jobs:
       fail-fast: false
       matrix:
         # One runner per platform wheel: each tests the wheel built for it.
-        os: [ ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest ]
+        os: [ ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest ]
         python-version: [ "3.10", "3.13" ]
         # Oldest najaeda the package declares support for, and the newest.
         najaeda: [ "==0.7.35", "" ]
@@ -205,11 +221,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: dist-*
           merge-multiple: true
@@ -259,12 +275,12 @@ jobs:
   publish:
     needs: [ build, platform-wheels, test ]
     if: startsWith(github.ref, 'refs/tags/v')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: pypi
     permissions:
       id-token: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: dist-*
           merge-multiple: true
@@ -283,14 +299,14 @@ jobs:
     if: >-
       !cancelled() && (needs.publish.result == 'success' ||
       (needs.publish.result == 'skipped' && !startsWith(github.ref, 'refs/tags/v')))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       PIP_NO_CACHE_DIR: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           # Colab's runtime Python.
           python-version: "3.12"

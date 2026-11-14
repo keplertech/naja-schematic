@@ -14,6 +14,7 @@
 #include "INetlistProvider.h"
 #include "DiagnosisStore.h"
 #include "SchematicLayout.h"
+#include "ViewOptions.h"
 #include "SchematicInteraction.h"
 #include "ReviewStore.h"
 #include "ReviewView.h"
@@ -74,6 +75,8 @@ static int                g_ctxInstanceId    = -1;
 // Which pin (if any) the popup targets; takes precedence over the instance
 // box the pin sits on. -1 = none.
 static int                g_ctxPortId        = -1;
+// Shape id of the fanout summary right-clicked, or -1.
+static int                g_ctxSummaryId     = -1;
 
 // The review badge of an instance box or module frame (ReviewStore).
 static void setReviewBadge(InstanceShape& shape) {
@@ -354,6 +357,25 @@ static std::optional<InstancePath> g_pendingZoomGroup;
 
 // Instances shown on their own (showInstance), by instance path.
 static std::map<InstancePath, EquipotentialView::StartInstance> g_startInstances;
+
+// Fanout summaries (SchematicLayout::planFanout): the groups the user
+// expanded, by the net (its first driver pin, or a top-level port by name)
+// and the group's key; and which drawn shape stands for which group. A
+// summary's made-up path segment ids start at kSummaryIdBase, far above any
+// naja instance id; such a path is never sent to the host.
+using FanoutNetKey = std::tuple<InstancePath, std::string, unsigned, int>;
+using FanoutRef    = std::pair<FanoutNetKey, FanoutGroupKey>;
+static std::set<FanoutRef>       g_expandedFanouts;
+static std::map<int, FanoutRef>  g_summaryByShapeId;
+static constexpr unsigned        kSummaryIdBase = 0xF0000000u;
+
+static FanoutNetKey fanoutNetKey(const FanoutNet& net) {
+    const auto& items = net.drivers.empty() ? net.receivers : net.drivers;
+    if (items.empty()) return {};
+    const Item& it = items.front();
+    if (it.isTerm) return { InstancePath{}, it.label, 0u, -1 };
+    return { it.path, "", it.termChildId, it.termBit.value_or(-1) };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -652,6 +674,7 @@ void EquipotentialView::zoomIn()    { g_pendingZoomSteps++; }
 void EquipotentialView::zoomOut()   { g_pendingZoomSteps--; }
 void EquipotentialView::fitView()   { g_pendingFit = true; }
 std::string EquipotentialView::exportSvg() { return g_schematic.exportSvg(); }
+std::string EquipotentialView::exportPng(float scale) { return g_schematic.exportPng(scale); }
 bool EquipotentialView::hasSchematic() { return !g_schematic.instances.empty(); }
 void EquipotentialView::clearNets() { g_pendingClear = true; }
 
@@ -672,6 +695,7 @@ void EquipotentialView::resetLayout() {
     g_focus.reset();
     g_focusPin.reset();
     g_addOnResolve.clear();
+    g_expandedFanouts.clear();
     g_pendingFit   = true;
 }
 
@@ -831,6 +855,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
         g_ctxInstanceId = -1;
         g_ctxPortId     = -1;
+        g_ctxSummaryId  = -1;
         if (auto hit = SchematicInteraction::pickPin(g_schematic.instances, wp, g_schematic.transform.scale))
             if (g_portEquiByPortId.count(hit->portId)) g_ctxPortId = hit->portId;
         for (auto rit = g_schematic.instances.rbegin(); rit != g_schematic.instances.rend(); ++rit) {
@@ -838,6 +863,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (wp.x < rit->x || wp.x > rit->x + rit->w) continue;
             if (wp.y < rit->y || wp.y > rit->y + rit->h) continue;
             if (g_occInfoByShapeId.count(rit->id)) g_ctxInstanceId = rit->id;
+            if (g_summaryByShapeId.count(rit->id)) g_ctxSummaryId = rit->id;
             break;
         }
         if (g_ctxPortId >= 0) g_ctxInstanceId = -1;
@@ -846,6 +872,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     auto canvasMenuItems = [] {
         if (ImGui::MenuItem("Clear all nets")) g_pendingClear = true;
         if (ImGui::MenuItem("Fit view"))       g_schematic.requestFit(true);
+        if (!g_expandedFanouts.empty() && ImGui::MenuItem("Collapse Fanout Groups")) g_expandedFanouts.clear();
         ImGui::Separator();
         if (ImGui::MenuItem("Show Hierarchy", nullptr, g_showHierarchy)) setShowHierarchy(!g_showHierarchy);
     };
@@ -887,6 +914,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             auto busIt = g_expandedBusGroupByPortId.find(g_ctxPortId);
             if (busIt != g_expandedBusGroupByPortId.end() && ImGui::MenuItem("Collapse Bus"))
                 g_expandedBuses.erase(busIt->second);
+        } else if (auto sumIt = g_summaryByShapeId.find(g_ctxSummaryId); sumIt != g_summaryByShapeId.end()) {
+            const auto* shape = g_schematic.findInstanceById(g_ctxSummaryId);
+            const std::string item = "Expand " + std::to_string(shape ? shape->summaryCount : 0) + " Sinks";
+            if (ImGui::MenuItem(item.c_str())) g_expandedFanouts.insert(sumIt->second);
+            ImGui::Separator();
+            canvasMenuItems();
         } else if (occIt != g_occInfoByShapeId.end()) {
             if (occIt->second.hasSources && ImGui::MenuItem("Show Sources") && g_provider) {
                 json req;
@@ -975,6 +1008,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 if (rit->w <= 0.f || rit->h <= 0.f) continue;
                 if (wp.x < rit->x || wp.x > rit->x + rit->w) continue;
                 if (wp.y < rit->y || wp.y > rit->y + rit->h) continue;
+                // A fanout summary: expand it into its sinks.
+                if (auto sumIt = g_summaryByShapeId.find(rit->id); sumIt != g_summaryByShapeId.end()) {
+                    g_expandedFanouts.insert(sumIt->second);
+                    break;
+                }
                 auto occIt = g_occInfoByShapeId.find(rit->id);
                 if (occIt != g_occInfoByShapeId.end())
                     SelectionStore::select(occIt->second.path, SelectionStore::Origin::Schematic);
@@ -1070,6 +1108,27 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     std::vector<bool> faintByEi(equipotentials.size(), false);
     std::map<InstancePath, std::vector<int>> traceIdsByInstance;
 
+    // Every net's ends, and the sinks gathered into fanout summaries: never
+    // an instance shown on its own, selected, diagnosed or styled.
+    const ViewOptions& viewOptions = ViewOptions::current();
+    std::vector<FanoutNet> fanNets(equipotentials.size());
+    std::set<InstancePath> pinned;
+    for (const auto& [path, start] : g_startInstances) pinned.insert(path);
+    if (SelectionStore::hasSelection()) pinned.insert(SelectionStore::selected());
+    for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
+        Equipotential* eq = equipotentials[ei];
+        if (!eq || (eq->terms.empty() && eq->occurrences.empty())) continue;
+        buildItems(eq, fanNets[ei].drivers, fanNets[ei].receivers);
+        for (const auto& r : fanNets[ei].receivers)
+            if (!r.isTerm && (DiagnosisStore::instanceColor(r.path) != 0 || !StyleStore::instanceStyle(r.path).empty()))
+                pinned.insert(r.path);
+    }
+    std::vector<FanoutNetKey> fanNetKeys;
+    for (const auto& net : fanNets) fanNetKeys.push_back(fanoutNetKey(net));
+    const FanoutPlan fanPlan = planFanout(
+        fanNets, viewOptions.maxSinks, viewOptions.groupBy, pinned,
+        [&](size_t ni, const FanoutGroupKey& key) { return g_expandedFanouts.count({ fanNetKeys[ni], key }) > 0; });
+
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
         if (!eq || (eq->terms.empty() && eq->occurrences.empty())) continue;
@@ -1077,14 +1136,16 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (TraceStore::isVisible(id)) traceIdsByEi[ei].push_back(id);
         faintByEi[ei] = !eq->direct && !eq->traceIds.empty() && traceIdsByEi[ei].empty();
 
-        std::vector<Item> drivers, receivers;
-        buildItems(eq, drivers, receivers);
+        const std::vector<Item>& drivers   = fanNets[ei].drivers;
+        const std::vector<Item>& receivers = fanNets[ei].receivers;
         totalItems += int(drivers.size() + receivers.size());
         if (!drivers.empty()) netLabelByEi[ei] = drivers[0].label;
 
         for (int pass = 0; pass < 2; ++pass) {
             const auto& items = pass == 0 ? drivers : receivers;
-            for (const auto& item : items) {
+            for (size_t ii = 0; ii < items.size(); ++ii) {
+                const Item& item = items[ii];
+                if (pass == 1 && fanPlan.groupOf[ei][ii] >= 0) continue;  // in a summary
                 if (item.isTerm) {
                     int pid = nextPortId++;
                     equiEnds[ei].push_back({ true, {}, item.label, pid, -1, pass == 0 });
@@ -1154,8 +1215,34 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         mi.pathIds      = start.pathIds;
     }
 
+    // Each fanout summary: a one-pin box on its net, under a made-up path
+    // in the deepest module holding its sinks (so Show Hierarchy frames it
+    // with them).
+    std::map<InstancePath, size_t> summaryOfPath;
+    for (size_t gi = 0; gi < fanPlan.groups.size(); ++gi) {
+        const FanoutGroup& g = fanPlan.groups[gi];
+        InstancePath path = g.module;
+        path.push_back(InstanceRef{ kSummaryIdBase + unsigned(gi), "" });
+        summaryOfPath[path] = gi;
+        auto& mi = minsts[path];
+        mi.initialized  = true;
+        mi.path         = path;
+        mi.pathModels   = g.moduleModels;
+        mi.pathModels.push_back("");
+        mi.bitTermCount = 1;
+        PortSlot ps;
+        ps.portId    = nextPortId++;
+        ps.name      = g.pin;
+        ps.direction = Direction::Input;
+        ps.clock     = g.clock;
+        mi.ports.push_back(ps);
+        equiEnds[g.net].push_back({ false, path, "", ps.portId, -1, false });
+        totalItems += 1;
+    }
+
     // Pass 2: build InstanceShapes from merged data
     std::map<InstancePath, int> pathToInstId;
+    g_summaryByShapeId.clear();
     // Per-bit port id (as assigned in pass 1, or freshly allocated below for
     // an expanded-instance port not backed by a loaded equipotential) ->
     // the port id actually drawn, i.e. itself, or the id of the merged bus
@@ -1178,8 +1265,20 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             inst.diagOutline = TraceStore::convergenceColor();
         inst.selected    = SelectionStore::isSelected(key);
         setReviewBadge(inst);
-        g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.hasSources };
         pathToInstId[key] = inst.id;
+        if (auto sit = summaryOfPath.find(key); sit != summaryOfPath.end()) {
+            const FanoutGroup& g = fanPlan.groups[sit->second];
+            inst.isSummary    = true;
+            inst.summaryCount = int(g.count);
+            inst.name         = g.label;
+            inst.label        = g.label;
+            g_summaryByShapeId[inst.id] = { fanNetKeys[g.net], g.key };
+        } else {
+            g_occInfoByShapeId[inst.id] = { key, mi.designRef, mi.hasSources };
+            inst.model     = mi.pathModels.empty() ? "" : mi.pathModels.back();
+            inst.showModel = viewOptions.instanceLabel != InstanceLabel::Name;
+            inst.hideName  = viewOptions.instanceLabel == InstanceLabel::Model && !inst.model.empty();
+        }
 
         // Hierarchy embedding: this box's model has sub-instances, so it can
         // be expanded in place. If it's toggled open, either grow it now to
@@ -1377,7 +1476,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     std::vector<PlaceNode> placeNodes;
     for (const auto& inst : g_schematic.instances) {
         nodeOfShape[inst.id] = int(placeNodes.size());
-        placeNodes.push_back({ footprintWidth(inst, instanceNameWidth), inst.h });
+        placeNodes.push_back({ footprintWidth(inst, instanceNameWidth),
+                               footprintHeight(inst, instanceNameWidth) });
     }
     std::vector<PlaceNet> placeNets;
     for (const auto& ends : equiEnds) {
@@ -1398,7 +1498,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         }
         if (!pn.drivers.empty() && !pn.receivers.empty()) placeNets.push_back(std::move(pn));
     }
-    const Placement placement = layeredPlacement(placeNodes, placeNets);
+    const Placement placement = layeredPlacement(placeNodes, placeNets, viewOptions.sinkRows);
     for (auto& inst : g_schematic.instances) {
         const ImVec2 pos = placement.pos[nodeOfShape[inst.id]];
         inst.x = pos.x;
@@ -1647,6 +1747,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
             obstacles.push_back({ inst.x, inst.y, inst.x + inst.w, inst.y + inst.h });
             if (auto name = nameRect(inst, instanceNameWidth)) obstacles.push_back(*name);
+            if (auto model = modelRect(inst, instanceNameWidth)) obstacles.push_back(*model);
         }
         std::map<std::pair<int, int>, size_t> routeOfSource;
         std::vector<RouteNet> routeNetsIn;
@@ -1713,6 +1814,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
 
     static int lastTotal = -1;
+    static std::string lastViewOptions;
+    if (const std::string vo = viewOptions.toJson().dump(); vo != lastViewOptions) {
+        if (!lastViewOptions.empty()) g_schematic.requestFit(true);
+        lastViewOptions = vo;
+    }
     if (totalItems != lastTotal) {
         if (g_skipNextAutoFit) {
             g_skipNextAutoFit = false;
@@ -1856,6 +1962,14 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (inst.w <= 0.0f || inst.h <= 0.0f) continue; // skip zero-size term stubs
             if (wp.x < inst.x || wp.x > inst.x + inst.w) continue;
             if (wp.y < inst.y || wp.y > inst.y + inst.h) continue;
+            if (inst.isSummary) {
+                ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+                ImGui::BeginTooltip();
+                ImGui::Text("%d sinks of this net, gathered: %s", inst.summaryCount, inst.name.c_str());
+                ImGui::TextDisabled("Click: show them");
+                ImGui::EndTooltip();
+                break;
+            }
             auto it = g_occInfoByShapeId.find(inst.id);
             if (it == g_occInfoByShapeId.end()) break;
             overBox = true;

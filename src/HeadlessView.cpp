@@ -8,15 +8,32 @@
 #include "GUIData.h"
 #include "ShowNetStore.h"
 
+// The headless view is its own renderer backend: it supports dynamic font
+// textures (ImGuiBackendFlags_RendererHasTextures), as the GUI backends do,
+// so text is measured at the exact size it's drawn at -- like on screen --
+// and the PNG export can bake the font at its scaled size. The pixels stay
+// in memory (RasterPainter reads them there): honoring a texture request is
+// just acknowledging it.
+static void serviceTextures() {
+  for (ImTextureData* tex : ImGui::GetPlatformIO().Textures) {
+    if (tex->Status == ImTextureStatus_WantCreate || tex->Status == ImTextureStatus_WantUpdates) {
+      tex->SetTexID(ImTextureID(intptr_t(tex->UniqueID) + 1));
+      tex->SetStatus(ImTextureStatus_OK);
+    } else if (tex->Status == ImTextureStatus_WantDestroy) {
+      tex->SetTexID(ImTextureID_Invalid);
+      tex->SetStatus(ImTextureStatus_Destroyed);
+    }
+  }
+}
+
 HeadlessView::HeadlessView(INetlistProvider* provider) {
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.IniFilename = nullptr;
   io.DisplaySize = ImVec2(1600.0f, 1000.0f);
   io.DeltaTime   = 1.0f / 60.0f;
+  io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
   setupFonts();
-  unsigned char* pixels; int w, h;
-  io.Fonts->GetTexDataAsRGBA32(&pixels, &w, &h);
 
   state_.guiData  = new GUIData();
   state_.provider = provider;
@@ -45,9 +62,15 @@ void HeadlessView::settle(int frames) {
     EquipotentialView::renderSchematic(gui.equipotentials_);
     ImGui::End();
     ImGui::Render();
+    serviceTextures();
   }
 }
 
 std::string HeadlessView::exportSvg() const { return EquipotentialView::exportSvg(); }
+std::string HeadlessView::exportPng(float scale) const {
+  const std::string png = EquipotentialView::exportPng(scale);
+  serviceTextures();  // the export may have baked glyphs at new sizes
+  return png;
+}
 
 #endif // __EMSCRIPTEN__

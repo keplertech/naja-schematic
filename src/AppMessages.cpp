@@ -29,6 +29,7 @@ using json = nlohmann::json;
 #include "TraceStore.h"
 #include "ShowNetStore.h"
 #include "ReviewStore.h"
+#include "ViewOptions.h"
 #include "CousineFont.h"
 #include "DroidSansFont.h"
 
@@ -420,6 +421,21 @@ void setupProvider(AppState& state) {
       ReviewStore::setResponse(j);
     } else if (resp == "export_svg") {
       state.svgExportRequested = true;
+    } else if (resp == "export_png") {
+      // The same drawing as PNG, "scale" pixels per SVG pixel (default 1).
+      const json& scale = j.contains("scale") ? j["scale"] : json(1.0);
+      if (!scale.is_number() || !(scale.get<double>() > 0.0) || scale.get<double>() > 64.0) {
+        Console::Error("export_png: \"scale\" must be a number in (0, 64], got " + scale.dump());
+        state.pngScale = 1.0f;
+      } else {
+        state.pngScale = scale.get<float>();
+      }
+      state.pngExportRequested = true;
+    } else if (resp == "view_options") {
+      // Host push: how the schematic is drawn (ViewOptions): the text on
+      // an instance, the fanout grid and summaries. Keys absent are kept.
+      std::string error;
+      if (!ViewOptions::current().apply(j, error)) Console::Error("view_options: " + error);
     } else if (resp == "show_net") {
       // Host push (show_net()): the net on one pin, as a one-net trace --
       // a tree "Show Equipotential" the host asked for (see ShowNetStore).

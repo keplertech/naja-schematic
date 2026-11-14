@@ -446,6 +446,8 @@ class ViewerSession:
     the order given (default: right away, on the calling thread).
     `diagnosis` pre-loads diagnosis items, sent after the first root load;
     `style` style items (see style_response()), the same way.
+    `view_options` (a dict, see protocol.view_options()) sets how the
+    viewer draws the schematic: sent after every root load too.
     `source_roots` lists the directories relative source file references
     are looked up in, `source_maps` (FROM, TO) path prefixes to rewrite for
     files recorded on another machine (see protocol.resolve_source_file()).
@@ -466,7 +468,7 @@ class ViewerSession:
     """
 
     def __init__(self, push=None, run=None, diagnosis=None, dispatch=None, source_roots=(),
-                 source_maps=(), review=None, style=None):
+                 source_maps=(), review=None, style=None, view_options=None):
         self._push = push
         self.review = review
         # Stamped now and at each design_changed(): the design the viewer
@@ -480,6 +482,8 @@ class ViewerSession:
         self._diagnosis_push = (protocol.diagnosis_response(diagnosis)
                                 if diagnosis is not None else None)
         self._style_push = style_response(style) if style is not None else None
+        self._view_options_push = (protocol.view_options(view_options)
+                                   if view_options is not None else None)
         self._focus_push = None
         # show_net() pushes since the view was last cleared, in order: they
         # are re-sent after the focus, which clears the view when drawn.
@@ -525,8 +529,9 @@ class ViewerSession:
             # check and the answer.
             with self._state_lock:
                 generation = self._generation
-                pushes = [p for p in (self._diagnosis_push, self._style_push,
-                                      self._focus_push) if p]
+                # The view options first: they shape what the others draw.
+                pushes = [p for p in (self._view_options_push, self._diagnosis_push,
+                                      self._style_push, self._focus_push) if p]
                 pushes += self._net_pushes
                 if self._svg_callbacks:
                     # An export asked before the view was up got lost with
@@ -685,6 +690,21 @@ class ViewerSession:
         message = style_response(items)
         with self._state_lock:
             self._style_push = message
+            generation = self._generation
+        self._send(self._stamp(message, generation))
+
+    def view_options(self, options=None, **kwargs):
+        """Set how the viewer draws the schematic -- the text on an
+        instance, the fanout grid and summaries (see
+        protocol.view_options() for the keys) -- now and after every
+        reload. Keys not given keep their value; a bad one raises
+        ValueError (TypeError for an unknown key). Not reset by
+        design_changed(): it's not about the design."""
+        message = protocol.view_options(options, **kwargs)
+        with self._state_lock:
+            kept = dict(self._view_options_push or {})
+            kept.update(message)
+            self._view_options_push = kept
             generation = self._generation
         self._send(self._stamp(message, generation))
 

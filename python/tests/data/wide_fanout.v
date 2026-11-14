@@ -1,0 +1,55 @@
+// One LUT driving a wide net: 40 flops (30 in a submodule) and 6 LUTs.
+// For the fanout grid and summaries (view options sink_rows, max_sinks).
+module bank(input clk, input d, output [29:0] q);
+  FDRE f0 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[0]));
+  FDRE f1 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[1]));
+  FDRE f2 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[2]));
+  FDRE f3 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[3]));
+  FDRE f4 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[4]));
+  FDRE f5 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[5]));
+  FDRE f6 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[6]));
+  FDRE f7 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[7]));
+  FDRE f8 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[8]));
+  FDRE f9 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[9]));
+  FDRE f10 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[10]));
+  FDRE f11 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[11]));
+  FDRE f12 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[12]));
+  FDRE f13 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[13]));
+  FDRE f14 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[14]));
+  FDRE f15 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[15]));
+  FDRE f16 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[16]));
+  FDRE f17 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[17]));
+  FDRE f18 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[18]));
+  FDRE f19 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[19]));
+  FDRE f20 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[20]));
+  FDRE f21 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[21]));
+  FDRE f22 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[22]));
+  FDRE f23 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[23]));
+  FDRE f24 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[24]));
+  FDRE f25 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[25]));
+  FDRE f26 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[26]));
+  FDRE f27 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[27]));
+  FDRE f28 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[28]));
+  FDRE f29 (.C(clk), .CE(1'b1), .R(1'b0), .D(d), .Q(q[29]));
+endmodule
+module top(input clk, input a, output [9:0] q, output [29:0] bq, output [5:0] y);
+  wire n;
+  LUT1 #(.INIT(2'h2)) drv (.I0(a), .O(n));
+  FDRE s0 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[0]));
+  FDRE s1 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[1]));
+  FDRE s2 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[2]));
+  FDRE s3 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[3]));
+  FDRE s4 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[4]));
+  FDRE s5 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[5]));
+  FDRE s6 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[6]));
+  FDRE s7 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[7]));
+  FDRE s8 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[8]));
+  FDRE s9 (.C(clk), .CE(1'b1), .R(1'b0), .D(n), .Q(q[9]));
+  bank u_bank (.clk(clk), .d(n), .q(bq));
+  LUT1 #(.INIT(2'h1)) g0 (.I0(n), .O(y[0]));
+  LUT1 #(.INIT(2'h1)) g1 (.I0(n), .O(y[1]));
+  LUT1 #(.INIT(2'h1)) g2 (.I0(n), .O(y[2]));
+  LUT1 #(.INIT(2'h1)) g3 (.I0(n), .O(y[3]));
+  LUT1 #(.INIT(2'h1)) g4 (.I0(n), .O(y[4]));
+  LUT1 #(.INIT(2'h1)) g5 (.I0(n), .O(y[5]));
+endmodule

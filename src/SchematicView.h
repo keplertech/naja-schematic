@@ -98,6 +98,12 @@ public:
     // units around it, without transient interaction feedback (hover,
     // pending pins); the selection is kept. "" when there is nothing to draw.
     std::string exportSvg(float margin = 24.0f) const;
+    // The same drawing as a PNG file's bytes, `scale` pixels per SVG pixel
+    // (RasterPainter: every stroke, radius and font size scaled with it,
+    // over a white background). "" when nothing is drawn, or when the image
+    // would be larger than kMaxPngPixels.
+    std::string exportPng(float scale = 1.0f, float margin = 24.0f) const;
+    static constexpr double kMaxPngPixels = 120e6;
     // Set on the copy exportSvg() draws: skips transient interaction feedback.
     bool exporting = false;
 

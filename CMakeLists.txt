@@ -83,6 +83,9 @@ set(CORE_SOURCES
   src/SchematicInteraction.cpp
   src/SchematicView.cpp
   src/SvgPainter.cpp
+  src/RasterPainter.cpp
+  src/PngWriter.cpp
+  src/ViewOptions.cpp
   src/DiagnosisStore.cpp
   src/DiagnosisView.cpp
   src/SourceStore.cpp
@@ -116,6 +119,9 @@ set(HEADLESS_SOURCES
   src/SchematicInteraction.cpp
   src/SchematicView.cpp
   src/SvgPainter.cpp
+  src/RasterPainter.cpp
+  src/PngWriter.cpp
+  src/ViewOptions.cpp
   src/DiagnosisStore.cpp
   src/SourceStore.cpp
   src/SourceView.cpp
@@ -333,6 +339,12 @@ if(NOT EMSCRIPTEN_BUILD)
       src/EquipotentialView.cpp
       src/SchematicView.cpp
       src/SvgPainter.cpp
+      src/RasterPainter.cpp
+      src/PngWriter.cpp
+      src/ViewOptions.cpp
+  src/RasterPainter.cpp
+  src/PngWriter.cpp
+  src/ViewOptions.cpp
       src/VerilogLanguage.cpp
       ${IMGUI_DIR}/imgui.cpp
       ${IMGUI_DIR}/imgui_draw.cpp

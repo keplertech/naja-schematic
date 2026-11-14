@@ -114,6 +114,23 @@ class Schematic(anywidget.AnyWidget):
         """
         self._session.style(items)
 
+    def view_options(self, options=None, **kwargs):
+        """Set how the schematic is drawn, kept across reloads (keys not
+        given keep their value):
+
+        - instance_label: "name" (above a box, the default), "model" (its
+          cell model under it) or "both";
+        - sink_rows: a column of more sinks than this becomes a grid
+          (default 8; 0: never);
+        - max_sinks: a net with more sinks draws the first ones and gathers
+          the rest into summary boxes, which expand when clicked (default
+          32; 0: never). Its driver is always drawn;
+        - group_by: how sinks are gathered: "model" (the default),
+          "hierarchy" or "role" (the receiving pin).
+
+        Kept in SVG exports."""
+        self._session.view_options(options, **kwargs)
+
     def show_instance(self, target):
         """Bring one hierarchical instance into view.
 
@@ -195,7 +212,7 @@ class Schematic(anywidget.AnyWidget):
 
 
 def show(instance=None, *, height=600, diagnosis=None, style=None, source_roots=(),
-         source_maps=(), review=None):
+         source_maps=(), review=None, view_options=None):
     """Display a view of the design currently loaded with najaeda.
 
     Evaluate it as the last expression of a cell (or pass it to
@@ -208,8 +225,8 @@ def show(instance=None, *, height=600, diagnosis=None, style=None, source_roots=
     `source_maps`, (FROM, TO) path prefixes to rewrite for files recorded on
     another machine, e.g. [("/home/ci/flow", "/work/flow")]. `review`, a
     naja_schematic.Review, shows its threads and lets the viewer add to it.
-    `diagnosis` and `style` are passed to Schematic.annotate() and
-    Schematic.style().
+    `diagnosis`, `style` and `view_options` are passed to
+    Schematic.annotate(), Schematic.style() and Schematic.view_options().
     """
     # (anywidget itself turns on Colab's custom widget manager.)
     view = Schematic(height=height, source_roots=source_roots, source_maps=source_maps,
@@ -218,6 +235,8 @@ def show(instance=None, *, height=600, diagnosis=None, style=None, source_roots=
         view.annotate(diagnosis)
     if style is not None:
         view.style(style)
+    if view_options is not None:
+        view.view_options(view_options)
     if instance is not None:
         view.show_instance(instance)
     return view

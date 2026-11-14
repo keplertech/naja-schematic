@@ -140,7 +140,12 @@ where no path or `[]` means a top-level port. It's resolved to term ids by
 `LocalSNLProvider::termRequest()` (native only, no protocol change). The
 exit code is non-zero, and nothing is written, if the design didn't load,
 anything didn't resolve, or there's nothing to draw. `--diagnosis` is
-accepted, but tints nothing while `kDiagnosisUIHidden` is set.
+accepted, but tints nothing while `kDiagnosisUIHidden` is set. `--png
+<out.png>` (with or instead of `--export`) writes the same drawing as PNG,
+`--scale S` pixels per SVG pixel (`SchematicView::exportPng()`, see
+`RasterPainter` below). The view-option flags (`--instance-label`,
+`--sink-rows`, `--max-sinks`, `--group-by`; see `view_options` under Wire
+protocol) apply to the GUI and the export.
 
 ```bash
 naja-schematic-standalone design.v --liberty cells.lib --export cone.svg \
@@ -710,6 +715,22 @@ the same `id_path`/`path` pair as diagnosis items:
   observes the ids, so moving between anonymous siblings fires it). The other hosts only log it (`protocol.py`) or ignore it
   (`LocalSNLProvider`).
 
+`export_png` is its PNG twin, `{"response":"export_png","scale":3}`,
+answered by `{"request":"png_exported","png":"<base64 PNG>"}` (`""`:
+nothing drawn, or over `SchematicView::kMaxPngPixels`). render.py
+intercepts it (`Renderer.render_outputs()`); the session doesn't.
+
+`view_options` is a server push setting how the viewer draws, not what:
+`{"response":"view_options","instance_label":"name|model|both",
+"sink_rows":8,"max_sinks":32,"group_by":"model|hierarchy|role"}`, keys
+absent kept (`ViewOptions::apply()`; `protocol.view_options()` validates,
+`DEFAULT_VIEW_OPTIONS` mirrors the C++ defaults). Not cleared by a root
+load; the session re-sends it after each `root_response` anyway, first.
+render.py sends it in full at the start of every drawing. Also the View
+menu (Instance Labels, Fanout) and the CLIs' flags. Fanout summaries are
+pseudo-instances under a made-up path segment (id >= `kSummaryIdBase` in
+`EquipotentialView.cpp`), never sent to the host; see `planFanout()`.
+
 `export_svg` is a server push too, `{"response":"export_svg"}`, from
 `Schematic.export_svg()` (`ViewerSession.export_svg()`): the viewer sets
 `AppState::svgExportRequested` and, at the first frame its schematic shows
@@ -1096,6 +1117,12 @@ path the host read, used by the native "Open in Editor".
     channel routing's vertical constraints, plus a spine that detours around
     boxes, labels and other spines. Junction dots mark real branch points.
   - `layoutHierarchyGroups()`: module frames.
+  - Fanout: `layeredPlacement(..., maxSinkRows)` deals a column's sinks
+    (nodes driving nothing placed) into a grid of columns, each its own
+    level; `planFanout()` picks which sinks of a wide net are drawn and
+    gathers the rest into groups (never a driver, a pinned instance, an
+    expanded group or a group of one). The model label is a `kNameH` row
+    under the symbol (`shownModel()`, `modelRect()`, `footprintHeight()`).
 
   Changes to how the schematic is laid out belong here, with a test;
   `EquipotentialView` only turns the result into drawn shapes, and
@@ -1107,6 +1134,19 @@ path the host read, used by the native "Open in Editor".
   so it never overlaps a box, another name or a wire. The view measures it
   with its font (`instanceNameWidth()`); past `kNameMaxW` it's shortened in
   the middle (`shortenMiddle()`), and layout and drawing use the same text.
+- **`ViewOptions`** — global (static) drawing options: instance label
+  (name / model under the box / both), `sinkRows`, `maxSinks`,
+  `groupBy`. Read by `EquipotentialView` while building shapes, so they
+  reach every export. `tests/FanoutTest.cpp`.
+- **`RasterPainter`** / **`PngWriter`** — the PNG export: the painter
+  records the drawing S times larger into an `ImDrawList` (geometric AA,
+  text baked by the dynamic font atlas at the scaled size; it must call
+  `_SetPixelDensity()` or this ImGui culls every stroke), then fills its
+  triangles in software over white; `PngWriter` encodes RGB with its own
+  deflate (fixed Huffman + LZ77, no zlib). `HeadlessView` acts as a
+  texture-capable backend (`ImGuiBackendFlags_RendererHasTextures`,
+  `serviceTextures()`), so headless text is measured at exact sizes like
+  the GUI. `tests/RasterTest.cpp` (with a small inflate).
 - **`SchematicPainter`** — what `SchematicView` draws with: the subset of
   `ImDrawList` it uses, same names and argument order.
   `ImDrawListPainter` paints on screen. `SvgPainter` (`SvgPainter.cpp`)

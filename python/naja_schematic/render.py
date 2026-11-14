@@ -1,5 +1,5 @@
-"""SVG export with no browser and no display: export_svg(), export_svgs()
-and the `naja-schematic render` command.
+"""SVG and PNG export with no browser and no display: export_svg(),
+export_svgs(), export_png() and the `naja-schematic render` command.
 
 The drawing is made by naja-schematic-render, the viewer built with no
 window (no SDL, GL or naja; shipped in the platform wheels in bin/). It is
@@ -13,14 +13,18 @@ with their full modeling (gate symbols, clock pins, traces crossing them).
 What to draw is pushed as the host pushes it to a viewer: focus_instance
 (an instance alone, every pin open; with "add" for the next ones), show_net
 (a net as a colored one-net trace, or with "trace" its fan-in cone), then
-export_svg. Targets are resolved here first, so one that doesn't resolve
-raises ValueError and nothing is drawn.
+export_svg and/or export_png. Every drawing starts with the view options
+(protocol.view_options(): instance labels, fanout grid and summaries) in
+full, so one drawing's options never carry over to the next. Targets are
+resolved here first, so one that doesn't resolve raises ValueError and
+nothing is drawn.
 
 The universe is read on the calling thread, while export_svg() runs: in an
 application serving it to viewers too, call it under that server's lock
 (ViewerServer.lock).
 """
 import argparse
+import base64
 import collections
 import json
 import logging
@@ -96,13 +100,20 @@ def _as_list(targets):
     return [targets]
 
 
-def drawing_pushes(targets=None, *, nets=None, instances=None, traces=None, style=None):
-    """The pushes drawing these targets on a fresh view, ending with
-    export_svg: the styling (`style`, see session.style_response()), the
-    instances (the first one alone, the next ones added), then the nets,
-    then the traces. Raises ValueError (TypeError
-    for an unsupported kind) for one that doesn't resolve, RenderError
-    when there is nothing to draw. See export_svg() for the targets."""
+def drawing_pushes(targets=None, *, nets=None, instances=None, traces=None, style=None,
+                   view_options=None, svg=True, png_scale=None):
+    """The pushes drawing these targets on a fresh view: the view options
+    (`view_options` over protocol.DEFAULT_VIEW_OPTIONS), the styling
+    (`style`, see session.style_response()), the instances (the first one
+    alone, the next ones added), then the nets, then the traces; ending
+    with export_svg (unless svg=False) and export_png when `png_scale` is
+    given. Raises ValueError (TypeError for an unsupported kind) for one
+    that doesn't resolve, RenderError when there is nothing to draw. See
+    export_svg() for the targets."""
+    if not svg and png_scale is None:
+        raise RenderError("no output asked for: SVG and/or PNG")
+    options = protocol.view_options({**protocol.DEFAULT_VIEW_OPTIONS, **(view_options or {})})
+    png_push = protocol.export_png(png_scale) if png_scale is not None else None
     inst_targets, net_targets = [], []
     for target in _as_list(targets):
         (net_targets if _is_net_target(target) else inst_targets).append(target)
@@ -112,7 +123,7 @@ def drawing_pushes(targets=None, *, nets=None, instances=None, traces=None, styl
     if not (inst_targets or net_targets or trace_targets):
         raise RenderError("nothing to draw: give instances, nets or traces")
 
-    pushes = [protocol.design_changed()]  # a clean view: no tree, schematic or selection
+    pushes = [protocol.design_changed(), options]  # a clean view: no tree, schematic or selection
     if style is not None:
         # After design_changed: the root load it starts clears the styling,
         # and is answered before the next push is handled.
@@ -129,7 +140,10 @@ def drawing_pushes(targets=None, *, nets=None, instances=None, traces=None, styl
             label = pin["label"].removesuffix(" (net)") if trace else pin["label"]
             pushes.append(protocol.show_net(pin["id_path"], pin["term_id"], pin["bit"],
                                             path=pin["path"], label=label, trace=trace))
-    pushes.append(protocol.export_svg())
+    if svg:
+        pushes.append(protocol.export_svg())
+    if png_push is not None:
+        pushes.append(png_push)
     return pushes
 
 
@@ -197,6 +211,11 @@ class Renderer:
         returns the SVG. Raises RenderError when nothing got drawn, or when
         it takes more than `timeout` seconds (None: no limit; the renderer
         is then stopped)."""
+        return self.render_outputs(pushes, timeout)["svg"]
+
+    def render_outputs(self, pushes, timeout=DEFAULT_TIMEOUT):
+        """As render(), returning every output the pushes ask for:
+        {"svg": str, "png": bytes}, as asked."""
         timer = None
         if timeout is not None:
             timer = threading.Timer(timeout, self._timed_out)
@@ -218,7 +237,9 @@ class Renderer:
         self._proc.kill()
 
     def _render(self, pushes):
-        pending, svg, errors = list(pushes), None, []
+        pending, outputs, errors = list(pushes), {}, []
+        wanted = {p["response"].removeprefix("export_") for p in pushes
+                  if p.get("response") in ("export_svg", "export_png")}
         if self._idle:
             self._idle = False
             self._write(pending)
@@ -237,7 +258,12 @@ class Renderer:
                 pending = None
                 continue
             if kind == "svg_exported":
-                svg = message.get("svg") or ""
+                outputs["svg"] = message.get("svg") or ""
+                self._write([])
+                continue
+            if kind == "png_exported":
+                data = message.get("png") or ""
+                outputs["png"] = base64.b64decode(data) if data else b""
                 self._write([])
                 continue
             try:
@@ -249,9 +275,12 @@ class Renderer:
             self._write(replies)
         if errors:
             raise RenderError("; ".join(errors))
-        if not svg:
+        if any(not outputs.get(kind) for kind in wanted):
+            if "png" in wanted and not outputs.get("png") and (outputs.get("svg") or "svg" not in wanted):
+                raise RenderError("nothing was drawn, or the PNG would be over 120 million "
+                                  "pixels: lower the scale")
             raise RenderError("nothing was drawn")
-        return svg
+        return outputs
 
 
 def _write_svg(path, svg):
@@ -260,7 +289,8 @@ def _write_svg(path, svg):
 
 
 def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=None,
-               style=None, timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=()):
+               style=None, view_options=None, timeout=DEFAULT_TIMEOUT, source_roots=(),
+               source_maps=()):
     """Draw part of the design in the current NLUniverse as an SVG
     schematic, with no browser or display; returns the SVG, also written to
     `path` when given.
@@ -287,13 +317,18 @@ def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=Non
     sinks tinted, with no SVG post-processing. A style color wins over the
     nets' and traces' own colors.
 
+    `view_options` sets how the drawing is made, over the defaults (see
+    protocol.view_options()): e.g. {"instance_label": "both"} puts each
+    cell's model under its box, {"max_sinks": 16, "group_by": "model"}
+    gathers a net's sinks past the 16th into summary boxes.
+
     Raises ValueError (TypeError for an unsupported kind) when a target
     doesn't resolve -- nothing is drawn then -- and RenderError when there
     is no renderer, nothing to draw, or the drawing takes more than
     `timeout` seconds. `source_roots`/`source_maps` are as for
     ViewerSession (they don't change the drawing)."""
     pushes = drawing_pushes(targets, nets=nets, instances=instances, traces=traces,
-                            style=style)
+                            style=style, view_options=view_options)
     with Renderer(source_roots, source_maps) as renderer:
         svg = renderer.render(pushes, timeout)
     if path is not None:
@@ -301,14 +336,34 @@ def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=Non
     return svg
 
 
+def export_png(targets=None, path=None, *, scale=1.0, nets=None, instances=None,
+               traces=None, style=None, view_options=None, timeout=DEFAULT_TIMEOUT,
+               source_roots=(), source_maps=()):
+    """export_svg()'s drawing as a PNG image: returns its bytes, also
+    written to `path` when given. `scale` is the number of pixels per SVG
+    pixel (0 < scale <= 64): text, strokes and shapes are drawn at that
+    resolution, not enlarged, over a white background. The other
+    arguments are export_svg()'s. Raises RenderError also when the image
+    would be over 120 million pixels."""
+    pushes = drawing_pushes(targets, nets=nets, instances=instances, traces=traces,
+                            style=style, view_options=view_options, svg=False,
+                            png_scale=scale)
+    with Renderer(source_roots, source_maps) as renderer:
+        png = renderer.render_outputs(pushes, timeout)["png"]
+    if path is not None:
+        Path(path).write_bytes(png)
+    return png
+
+
 def export_svgs(jobs, *, timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=()):
     """Several export_svg() drawings with one renderer process; returns
     their SVGs, in order. Each job is a dict of export_svg()'s arguments:
-    "targets", "path", "nets", "instances", "traces", "style". Every job is
+    "targets", "path", "nets", "instances", "traces", "style",
+    "view_options". Every job is
     resolved before anything is drawn, and files are written only once
     all are drawn: a bad target raises without writing any. `timeout`
     applies to each drawing."""
-    keys = {"targets", "path", "nets", "instances", "traces", "style"}
+    keys = {"targets", "path", "nets", "instances", "traces", "style", "view_options"}
     plans = []
     for i, job in enumerate(jobs):
         if not isinstance(job, dict):
@@ -320,7 +375,8 @@ def export_svgs(jobs, *, timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=(
         try:
             pushes = drawing_pushes(job.get("targets"), nets=job.get("nets"),
                                     instances=job.get("instances"),
-                                    traces=job.get("traces"), style=job.get("style"))
+                                    traces=job.get("traces"), style=job.get("style"),
+                                    view_options=job.get("view_options"))
         except (ValueError, TypeError, RenderError) as e:
             raise type(e)(f"job {i}: {e}") from e
         plans.append((job.get("path"), pushes))
@@ -461,14 +517,19 @@ def _pin_on(ids, terminal, bit, text):
 
 
 def build_arg_parser():
-    from .server import add_design_arguments
+    from .server import add_design_arguments, add_view_arguments
 
     parser = argparse.ArgumentParser(
         prog="naja-schematic render",
-        description="Draw part of a netlist as an SVG schematic, with no browser or "
-                    "display. Exits non-zero, writing nothing, if a target doesn't "
-                    "resolve.")
-    parser.add_argument("--svg", required=True, metavar="FILE", help="SVG file to write")
+        description="Draw part of a netlist as an SVG and/or PNG schematic, with no "
+                    "browser or display. Exits non-zero, writing nothing, if a target "
+                    "doesn't resolve.")
+    parser.add_argument("--svg", metavar="FILE", help="SVG file to write")
+    parser.add_argument("--png", metavar="FILE",
+                        help="PNG file to write (the same drawing, as an image)")
+    parser.add_argument("--scale", type=float, default=1.0, metavar="S",
+                        help="PNG pixels per SVG pixel, 0 < S <= 64 (default 1): drawn "
+                             "at that resolution, not enlarged")
     parser.add_argument("--instance", action="append", default=[], metavar="PATH",
                         dest="instances",
                         help="Instance drawn as a box with every pin open (repeatable): "
@@ -487,18 +548,27 @@ def build_arg_parser():
                              "widths, fills, labels on nets, instances and pins) drawn "
                              "into the SVG")
     parser.add_argument("--verbose", "-v", action="store_true", help="Log to stderr")
+    add_view_arguments(parser)
     add_design_arguments(parser)
     return parser
 
 
 def main(argv=None):
-    from .server import check_design_arguments, load_design, load_style_file
+    from .server import (check_design_arguments, load_design, load_style_file,
+                         view_options_from_args)
 
     parser = build_arg_parser()
     args = parser.parse_args(argv)
     check_design_arguments(parser, args)
+    if not (args.svg or args.png):
+        parser.error("no output: give --svg and/or --png")
+    if not 0 < args.scale <= 64:
+        parser.error(f"--scale: expected a number in (0, 64], got {args.scale}")
+    if args.scale != 1.0 and not args.png:
+        parser.error("--scale applies to --png")
     if not (args.instances or args.nets or args.traces):
         parser.error("nothing to draw: give --instance, --net and/or --trace")
+    view_options = view_options_from_args(args)
     logging.basicConfig(stream=sys.stderr, format="%(message)s",
                         level=logging.DEBUG if args.verbose else logging.INFO)
     try:
@@ -531,8 +601,18 @@ def main(argv=None):
         raise SystemExit(1)
 
     try:
-        export_svg(None, args.svg, nets=nets, instances=instances, traces=traces, style=style)
+        pushes = drawing_pushes(None, nets=nets, instances=instances, traces=traces,
+                                style=style, view_options=view_options, svg=bool(args.svg),
+                                png_scale=args.scale if args.png else None)
+        with Renderer() as renderer:
+            outputs = renderer.render_outputs(pushes)
     except (ValueError, TypeError, RenderError) as e:
         raise SystemExit(f"render: {e}")
-    log.info("Schematic written to %s", args.svg)
+    # Written once both are drawn: a failure leaves neither.
+    if args.svg:
+        _write_svg(args.svg, outputs["svg"])
+        log.info("Schematic written to %s", args.svg)
+    if args.png:
+        Path(args.png).write_bytes(outputs["png"])
+        log.info("Schematic written to %s", args.png)
     return 0

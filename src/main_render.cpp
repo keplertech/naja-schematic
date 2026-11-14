@@ -15,7 +15,8 @@
 // design_changed to reset the view between drawings), or closes stdin to
 // end the process. An export_svg push is answered, once its schematic has
 // settled, by {"request":"svg_exported","svg":"..."} ("" if nothing is
-// drawn).
+// drawn). Likewise an export_png push ({"scale": S}) is answered by
+// {"request":"png_exported","png":"<base64 PNG>"} ("" if nothing is drawn).
 //
 // stdout is the protocol channel only: fd 1 is pointed at stderr, so
 // stray output (Console::Log, with NAJA_SCHEMATIC_RENDER_VERBOSE=1) can't
@@ -41,6 +42,7 @@
 #include "Console.h"
 #include "HeadlessView.h"
 #include "INetlistProvider.h"
+#include "PngWriter.h"
 
 using json = nlohmann::json;
 
@@ -128,6 +130,14 @@ int main(int argc, char** argv) {
       reply["svg"]     = view.exportSvg();
       provider.send(reply.dump());
       continue;  // settle again: the reply may have carried pushes
+    }
+    if (state.pngExportRequested) {
+      state.pngExportRequested = false;
+      json reply;
+      reply["request"] = "png_exported";
+      reply["png"]     = PngWriter::base64(view.exportPng(state.pngScale));
+      provider.send(reply.dump());
+      continue;
     }
     if (!provider.exchange(R"({"request":"render_idle"})")) break;
   }

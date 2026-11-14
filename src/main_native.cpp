@@ -8,6 +8,7 @@
 #include <backends/imgui_impl_sdl2.h>
 #include <backends/imgui_impl_opengl3.h>
 #include <algorithm>
+#include <cstdlib>
 #include <iostream>
 #include <string>
 
@@ -16,14 +17,18 @@
 #include "GUIData.h"
 #include "LocalSNLProvider.h"
 #include "Console.h"
+#include "ViewOptions.h"
 
 int main(int argc, char* argv[]) {
   // CLI usage: naja-schematic-standalone [<design>...] [--liberty <path>]... [--diagnosis <path>]
   //                                     [--style <path>]
   //                                     [--source-root <dir>]... [--source-map FROM=TO]...
   //                                     [--yosys-src] [--top <name>]
-  //                                     [--export <out.svg> [--focus <json>]
-  //                                      [--trace <json>]... [--equipotential <json>]...]
+  //                                     [--instance-label name|model|both]
+  //                                     [--sink-rows N] [--max-sinks N]
+  //                                     [--group-by model|hierarchy|role]
+  //                                     [--export <out.svg>] [--png <out.png> [--scale S]]
+  //                                     [--focus <json>] [--trace <json>]... [--equipotential <json>]...
   // <design> is loaded by extension (.sv/.v/.vhd/.vhdl/otherwise-assumed-SNL-directory);
   // only VHDL takes several, all .vhd/.vhdl, in any order;
   // --top (.sv and VHDL) forces the top module/entity instead of inferring it;
@@ -43,8 +48,12 @@ int main(int argc, char* argv[]) {
   // --source-root adds a directory relative source file references (Show
   // Sources) are looked up in (repeatable, tried in order, then the current
   // directory);
-  // --export draws the schematic to an SVG file and exits, with no window
-  // (see HeadlessExport.h for what --focus/--trace/--equipotential take).
+  // --instance-label, --sink-rows, --max-sinks and --group-by set how the
+  // schematic is drawn (ViewOptions.h; also in the View menu);
+  // --export draws the schematic to an SVG file and exits, with no window,
+  // --png to a PNG file, --scale pixels per SVG pixel (default 1); both
+  // can be given (see HeadlessExport.h for what --focus/--trace/
+  // --equipotential take).
   auto* provider = new LocalSNLProvider();
 
   std::vector<std::string> designPaths;
@@ -61,6 +70,34 @@ int main(int argc, char* argv[]) {
     if (arg == "--export" && i + 1 < argc) {
       exportOptions.outPath = argv[++i];
       exporting = true;
+    } else if (arg == "--png" && i + 1 < argc) {
+      exportOptions.pngPath = argv[++i];
+      exporting = true;
+    } else if (arg == "--scale" && i + 1 < argc) {
+      const std::string text = argv[++i];
+      char* end = nullptr;
+      const double scale = std::strtod(text.c_str(), &end);
+      if (end == text.c_str() || *end || !(scale > 0.0) || scale > 64.0) {
+        std::cerr << "--scale expects a number in (0, 64], got " << text << "\n";
+        return 1;
+      }
+      exportOptions.pngScale = float(scale);
+    } else if ((arg == "--instance-label" || arg == "--sink-rows" || arg == "--max-sinks" ||
+                arg == "--group-by") && i + 1 < argc) {
+      // ViewOptions keys are the flags' names with '_' for '-'.
+      std::string key = arg.substr(2);
+      std::replace(key.begin(), key.end(), '-', '_');
+      const std::string text = argv[++i];
+      nlohmann::json value = text;
+      if (key == "sink_rows" || key == "max_sinks") {
+        char* end = nullptr;
+        const long n = std::strtol(text.c_str(), &end, 10);
+        value = (end != text.c_str() && !*end) ? nlohmann::json(n) : nlohmann::json(text);
+      }
+      if (!ViewOptions::current().apply({ { key, value } }, error)) {
+        std::cerr << arg << ": " << error << "\n";
+        return 1;
+      }
     } else if (arg == "--focus" && i + 1 < argc) {
       exportOptions.focus = parseFocusArg(argv[++i], error);
       if (!exportOptions.focus) { std::cerr << error << "\n"; return 1; }
@@ -139,12 +176,12 @@ int main(int argc, char* argv[]) {
   const bool drawRequested = exportOptions.focus || !exportOptions.traces.empty() ||
                              !exportOptions.equipotentials.empty();
   if (drawRequested && !exporting) {
-    std::cerr << "--focus/--trace/--equipotential only apply with --export\n";
+    std::cerr << "--focus/--trace/--equipotential only apply with --export or --png\n";
     return 1;
   }
   if (exporting) {
     if (designPath.empty()) {
-      std::cerr << "--export needs a design to load\n";
+      std::cerr << "--export/--png needs a design to load\n";
       return 1;
     }
     exportOptions.diagnosisPath = diagnosisPath;
