@@ -28,7 +28,7 @@ jobs:
         run: mkdir -p flex_include && cp /usr/include/FlexLexer.h flex_include
 
       - name: Set up Emscripten
-        uses: mymindstorm/setup-emsdk@v14
+        uses: emscripten-core/setup-emsdk@v16
         with:
           version: latest
 
