@@ -101,6 +101,7 @@ set(CORE_SOURCES
   src/ReviewStore.cpp
   src/ReviewView.cpp
   src/AppMessages.cpp
+  src/AppFont.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
   # Read-only code view of the Source tab (SourceView).
@@ -134,6 +135,7 @@ set(HEADLESS_SOURCES
   src/ReviewStore.cpp
   src/ReviewView.cpp
   src/AppMessages.cpp
+  src/AppFont.cpp
   src/HeadlessView.cpp
   ${IMGUI_DIR}/imgui.cpp
   ${IMGUI_DIR}/imgui_draw.cpp
@@ -321,6 +323,7 @@ if(NOT EMSCRIPTEN_BUILD)
 
     add_executable(naja-schematic-tests
       src/Console.cpp
+      src/AppFont.cpp
       src/Types.cpp
       src/GUIData.cpp
       src/NetlistTree.cpp

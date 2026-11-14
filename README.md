@@ -147,7 +147,8 @@ A bare list of items works too. Each item has:
   ids (needed for anonymous instances).
 - Any of `color` (`"#rrggbb"` or `"#rrggbbaa"`), `width` (wires and pins,
   in SVG pixels at 1x), `fill` (instances; a translucent fill tints the
-  box) and `label` (replaces the drawn name).
+  box) and `label` (replaces the drawn name; on a net, drawn above the
+  wire right past its driver, in space the layout leaves for it).
 
 Items on one object merge in order. A diagnosis color beats a style
 color, and a style color beats a trace color. The browser server and
@@ -214,12 +215,13 @@ These only change exports (SVG and PNG), never the canvas:
 |---|---|---|
 | `--title TEXT` | default none | Text in a band above the drawing |
 | `--caption TEXT` | default none | Text in a band below the drawing |
-| `--legend` | off by default | A color swatch and label below the drawing for each trace, and each net a style labels |
+| `--legend` | off by default | A color swatch and label below the drawing for each color drawn: a net's style label and color when a style labels it, else its trace's |
 | `--hide-ui-glyphs` | off by default | No hollow stubs on open pins, no "•••" on boxes showing some of their pins |
 
 An exported SVG is structured, so a script or a page can find what's in it
 without reading geometry. Every net is a `<g class="net">` (wires, junction
-dots, bus marks, label) with `data-net`, `data-driver` (`u1/u2:Q`, or a
+dots, bus marks, label) with `data-net` (the net's name at its driver's
+level, `name[3]` for a bus bit), `data-driver` (`u1/u2:Q`, or a
 top-level port's name) and `data-driver-id-path`; every box a
 `<g class="instance">` with `data-path` (`u1/u2`), `data-id-path` (`3,7`)
 and `data-model`; every top-level port flag a `<g class="port">` with

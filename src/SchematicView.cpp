@@ -396,6 +396,10 @@ float instanceNameWidth(const std::string& name) {
     return ImGui::GetFont()->CalcTextSizeA(kInstanceLabelBaseSize, FLT_MAX, 0.0f, name.c_str()).x;
 }
 
+float netLabelWidth(const std::string& label) {
+    return ImGui::GetFont()->CalcTextSizeA(SchematicLayout::kNetLabelFontSize, FLT_MAX, 0.0f, label.c_str()).x;
+}
+
 // Review badges: a disc with the count of open threads, in the worst open
 // severity's color -- on an instance box's (or module frame's) top-right
 // corner, and next to a pin with threads on its term: above the end of its
@@ -1166,9 +1170,23 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
         for (const auto& j : route.junctions)
             dl->AddCircleFilled(worldToScreen(j, canvasPos, canvasSize), route.isBus ? dotR * 1.5f : dotR, colorAt(j));
 
+    // A host style's label, in the net's color, right past the driver pin
+    // and above the wire: in the room the layout made for it.
+    if (route.hasLabel && !route.labelText.empty()) {
+        const float fontSize = labelFontSize(SchematicLayout::kNetLabelFontSize, transform.scale);
+        if (fontSize > 0.0f) {
+            ImFont* font = ImGui::GetFont();
+            const ImVec2 at = worldToScreen(route.labelAt, canvasPos, canvasSize);
+            const float textH = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, route.labelText.c_str()).y;
+            dl->AddText(font, fontSize, ImVec2(at.x, at.y - textH), route.color, route.labelText.c_str());
+        }
+    }
+
     // Bus slash mark on the longest horizontal run, plus the
-    // net name if we have one -- or the host style's label, on any net.
-    if (!route.isBus && route.label.empty()) return;
+    // net name if we have one -- or the host style's label when it has no
+    // place by its driver pin.
+    const bool labelOnRun = !route.label.empty() && !route.hasLabel;
+    if (!route.isBus && !labelOnRun) return;
     const SchematicLayout::RouteSegment* best = nullptr;
     for (const auto& seg : route.segments)
         if (std::abs(seg.a.y - seg.b.y) < 0.5f &&
@@ -1182,13 +1200,14 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
                     ImVec2(mid.x + slashLen * 0.35f, mid.y - slashLen * 0.5f),
                     route.color, thickness * 0.5f);
     }
-    const std::string& text = route.label.empty() ? route.netName : route.label;
+    const std::string& text = labelOnRun ? route.label : route.isBus && route.label.empty() ? route.netName
+                                                                                            : std::string();
     float fontSize = labelFontSize(kPortLabelBaseSize, transform.scale);
     if (!text.empty() && fontSize > 0.0f) {
         ImFont* font = ImGui::GetFont();
         ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text.c_str());
         // A style label in the net's color, centered on the run.
-        const bool styled = !route.label.empty();
+        const bool styled = labelOnRun;
         ImVec2 at = styled ? ImVec2(mid.x - ts.x * 0.5f, mid.y - ts.y - thickness * 0.5f - 2.0f)
                            : ImVec2(mid.x + 6.0f, mid.y - ts.y - 3.0f);
         dl->AddText(font, fontSize, at, styled ? route.color : kPinLabelColor, text.c_str());

@@ -143,6 +143,13 @@ void from_json(const json& j, NetsResponseJson& n) {
   }
 }
 
+// An equipotential pin's optional "net"/"net_id" (see BitTerm::net).
+static void readPinNet(const json& j, BitTerm& term) {
+  if (j.contains("net") && j["net"].is_string()) term.net = j["net"].get<std::string>();
+  if (j.contains("net_id") && j["net_id"].is_number_integer() && j["net_id"].get<long long>() >= 0)
+    term.netId = j["net_id"].get<unsigned>();
+}
+
 void from_json(const json& j, Equipotential& e) {
   if (j.contains("terms") && j["terms"].is_array()) {
     for (const auto& termJson : j["terms"]) {
@@ -163,6 +170,7 @@ void from_json(const json& j, Equipotential& e) {
       } else {
         term.bit = std::nullopt;
       }
+      readPinNet(termJson, term);
 
       e.terms.push_back(std::move(term));
     }
@@ -208,6 +216,8 @@ void from_json(const json& j, Equipotential& e) {
       } else {
         term.bit = std::nullopt;
       }
+
+      readPinNet(occJson, term);
 
       Console::Log("Parsed term in occurrence: " + term.getString());
 

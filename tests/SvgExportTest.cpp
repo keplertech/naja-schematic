@@ -3,6 +3,7 @@
 // EquipotentialView in a headless ImGui context -- and a golden file holding
 // the drawing as it was before the groups existed: an export with no
 // decoration must still draw exactly that, group tags aside.
+#include "AppFont.h"
 #include "EquipotentialView.h"
 #include "SchematicView.h"
 #include "SelectionStore.h"
@@ -11,6 +12,7 @@
 #include "ViewOptions.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>  // ImTextCharFromUtf8
 #include <cstdio>
 #include <cmath>
 #include <cstdlib>
@@ -18,6 +20,7 @@
 #include <fstream>
 #include <map>
 #include <regex>
+#include <set>
 #include <sstream>
 #include <gtest/gtest.h>
 
@@ -47,6 +50,7 @@ class SvgExport : public ::testing::Test {
     io.DisplaySize = ImVec2(1200.f, 800.f);
     io.DeltaTime   = 1.f / 60.f;
     io.IniFilename = nullptr;
+    if (appFont()) addAppFont(io.Fonts);
     unsigned char* px; int w, h;
     io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
     EquipotentialView::setProvider(&provider);
@@ -67,6 +71,10 @@ class SvgExport : public ::testing::Test {
     for (auto* eq : eqs) delete eq;
     ImGui::DestroyContext();
   }
+
+  // The app's font (DroidSans + symbols) rather than ImGui's default, which
+  // the golden file was drawn with.
+  virtual bool appFont() const { return false; }
 
   void add(Equipotential eq) { eqs.push_back(new Equipotential(std::move(eq))); }
 
@@ -373,4 +381,159 @@ TEST_F(SvgExport, PngHasTheSameDecorations) {
   const auto decorated = dims(EquipotentialView::exportPng(1.0f));
   EXPECT_EQ(decorated, svgDims(svg()));
   EXPECT_GT(decorated.second, plain.second);
+}
+
+// ---------------------------------------------------------------------------
+// A fanout fix report, drawn with the app's font: net labels in room of
+// their own, a legend of the colors drawn, nets named by their net, and
+// every character of every label with a glyph of its own.
+// ---------------------------------------------------------------------------
+namespace {
+
+class FanoutFixExport : public SvgExport {
+ protected:
+  bool appFont() const override { return true; }
+
+  // en -> en_reg.D, en_reg_fo1.D; each copy's Q (nets en_q, en_q_fo1) to
+  // four flops; every net traced, and styled with a label.
+  void fanoutFix() {
+    auto pin = [](BitTerm& t, const std::string& net) { t.net = net; };
+    Equipotential en{ true, {}, {} };
+    en.terms.push_back(BitTerm{ "en", 0, Direction::Input, std::nullopt });
+    pin(en.terms.back(), "en");
+    for (unsigned i = 0; i < 2; ++i) {
+      en.occurrences.push_back(occ({ { i, i ? "en_reg_fo1" : "en_reg" } }, "FDRE", "D", 3, Direction::Input, 5));
+      pin(en.occurrences.back().term, "en");
+    }
+    en.traceIds = { TraceStore::begin("en (net)") };
+    add(en);
+    for (unsigned i = 0; i < 2; ++i) {
+      const std::string reg = i ? "en_reg_fo1" : "en_reg", net = i ? "en_q_fo1" : "en_q";
+      Equipotential q{ true, {}, {} };
+      q.occurrences.push_back(occ({ { i, reg } }, "FDRE", "Q", 4, Direction::Output, 5));
+      pin(q.occurrences.back().term, net);
+      for (unsigned k = 0; k < 4; ++k) {
+        q.occurrences.push_back(occ({ { 10 + 4 * i + k, "s" + std::to_string(4 * i + k) } }, "FDRE", "CE", 1,
+                                    Direction::Input, 5));
+        pin(q.occurrences.back().term, net);
+      }
+      q.traceIds = { TraceStore::begin(reg + "/Q (net)") };
+      add(q);
+    }
+    std::vector<std::string> errors;
+    StyleStore::setStyles(StyleStore::parse(nlohmann::json::parse(R"js({"items": [
+        {"kind": "net", "id_path": [], "terminal": "en", "color": "#1f77b4", "label": "en (shared input)"},
+        {"kind": "net", "id_path": [0], "terminal": "Q", "color": "#d62728", "label": "en_reg → 4 loads"},
+        {"kind": "net", "id_path": [1], "terminal": "Q", "color": "#2ca02c",
+         "label": "en_reg_fo1 → 4 loads"}]})js"), &errors));
+    ASSERT_TRUE(errors.empty()) << errors[0];
+    ViewOptions::current().instanceLabel = InstanceLabel::Both;
+    ViewOptions::current().title   = "After fix_fanout ≤ ± Ω";
+    ViewOptions::current().caption = "fanout 12 → 3 × 4";
+    ViewOptions::current().legend  = true;
+    frame(3);
+  }
+};
+
+bool overlaps(const SchematicLayout::RouteRect& a, const SchematicLayout::RouteRect& b) {
+  constexpr float eps = 0.01f;
+  return a.x0 < b.x1 - eps && b.x0 < a.x1 - eps && a.y0 < b.y1 - eps && b.y0 < a.y1 - eps;
+}
+
+std::string unescape(std::string s) {
+  for (const auto& [from, to] : std::vector<std::pair<std::string, std::string>>{
+           { "&lt;", "<" }, { "&gt;", ">" }, { "&quot;", "\"" }, { "&apos;", "'" }, { "&amp;", "&" } })
+    for (size_t at = s.find(from); at != std::string::npos; at = s.find(from, at + to.size()))
+      s.replace(at, from.size(), to);
+  return s;
+}
+
+} // namespace
+
+TEST_F(FanoutFixExport, NetLabelsNeverSitUnderABoxANameOrAFlag) {
+  fanoutFix();
+  using namespace SchematicLayout;
+  int labels = 0;
+  for (const auto& r : sv().routes) {
+    if (!r.hasLabel) continue;
+    ++labels;
+    const RouteRect label{ r.labelAt.x, r.labelAt.y - kNetLabelH, r.labelAt.x + netLabelWidth(r.labelText),
+                           r.labelAt.y };
+    for (const auto& inst : sv().instances) {
+      if (inst.isHierGroup) continue;
+      if (inst.modelName == "port") {
+        // A flag points left of its tip, the label starts right of it.
+        EXPECT_GT(label.x0, inst.x) << r.labelText << " vs port " << inst.ports[0].name;
+        continue;
+      }
+      std::vector<RouteRect> taken{ { inst.x, inst.y, inst.x + inst.w, inst.y + inst.h } };
+      if (auto n = nameRect(inst, instanceNameWidth)) taken.push_back(*n);
+      if (auto m = modelRect(inst, instanceNameWidth)) taken.push_back(*m);
+      for (const auto& t : taken)
+        EXPECT_FALSE(overlaps(label, t)) << r.labelText << " vs " << inst.name;
+    }
+    // Nor under another net's vertical trunk.
+    for (const auto& other : sv().routes)
+      for (const auto& seg : other.segments)
+        if (std::abs(seg.a.x - seg.b.x) < 0.5f)
+          EXPECT_FALSE(overlaps(label, { seg.a.x - 0.5f, std::min(seg.a.y, seg.b.y), seg.a.x + 0.5f,
+                                         std::max(seg.a.y, seg.b.y) }))
+              << r.labelText << " vs a trunk of " << other.netName;
+  }
+  EXPECT_EQ(labels, 3);
+}
+
+TEST_F(FanoutFixExport, TheLegendListsTheColorsDrawn) {
+  fanoutFix();
+  // One entry per net: its style's label and color, never the trace's
+  // (the style color is what every wire of it shows).
+  std::vector<std::string> labels;
+  std::set<ImU32> legendColors, drawn;
+  for (const auto& e : sv().legend) {
+    labels.push_back(e.label);
+    legendColors.insert(e.color);
+  }
+  for (const auto& r : sv().routes) drawn.insert(r.color);
+  EXPECT_EQ(labels, (std::vector<std::string>{ "en (shared input)", "en_reg → 4 loads",
+                                               "en_reg_fo1 → 4 loads" }));
+  EXPECT_EQ(legendColors, drawn);
+
+  // Without the style, each net is its trace's color and label.
+  StyleStore::clear();
+  frame(2);
+  labels.clear(); legendColors.clear(); drawn.clear();
+  for (const auto& e : sv().legend) { labels.push_back(e.label); legendColors.insert(e.color); }
+  for (const auto& r : sv().routes) drawn.insert(r.color);
+  EXPECT_EQ(labels, (std::vector<std::string>{ "en (net)", "en_reg/Q (net)", "en_reg_fo1/Q (net)" }));
+  EXPECT_EQ(legendColors, drawn);
+}
+
+TEST_F(FanoutFixExport, ANetGroupIsNamedByItsNet) {
+  fanoutFix();
+  std::map<std::string, std::string> nets;
+  for (const auto& g : groups(svg(), "net")) nets[g.at("data-driver")] = g.at("data-net");
+  EXPECT_EQ(nets, (std::map<std::string, std::string>{
+                      { "en", "en" }, { "en_reg:Q", "en_q" }, { "en_reg_fo1:Q", "en_q_fo1" } }));
+}
+
+TEST_F(FanoutFixExport, EveryCharacterDrawnHasAGlyph) {
+  fanoutFix();
+  const std::string out = svg();
+  ImFontBaked* font = ImGui::GetIO().Fonts->Fonts[0]->GetFontBaked(13.f);
+  std::regex text(">([^<>]+)</text>");
+  int checked = 0;
+  for (auto it = std::sregex_iterator(out.begin(), out.end(), text); it != std::sregex_iterator(); ++it) {
+    const std::string s = unescape((*it)[1]);
+    for (const char* p = s.c_str(); *p;) {
+      unsigned int c = 0;
+      p += ImTextCharFromUtf8(&c, p, nullptr);
+      EXPECT_NE(font->FindGlyphNoFallback(ImWchar(c)), nullptr) << "U+" << std::hex << c << " in " << s;
+      ++checked;
+    }
+  }
+  EXPECT_GT(checked, 100);
+  // And the symbols labels commonly use.
+  for (unsigned c : { 0x2192u, 0x2190u, 0x2194u, 0x21D2u, 0x2264u, 0x2265u, 0x2260u, 0x00B1u, 0x00B5u, 0x03A9u,
+                      0x00B0u, 0x2026u, 0x00D7u, 0x03B1u, 0x0394u, 0x2713u, 0x221Eu })
+    EXPECT_NE(font->FindGlyphNoFallback(ImWchar(c)), nullptr) << "U+" << std::hex << c;
 }

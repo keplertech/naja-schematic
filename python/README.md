@@ -159,7 +159,7 @@ naja_schematic.export_svg(
 naja_schematic.export_svg(
     traces=[(["u1"], "D")], path="report.svg",
     title="Fan-in of u1/D", caption="after the edit",  # bands above / below the drawing
-    legend=True,                                     # a swatch per trace and labeled net
+    legend=True,                                     # a swatch per color drawn
     hide_ui_glyphs=True,                             # no open-pin stubs or "more pins" dots
 )
 svgs = naja_schematic.export_svgs([                 # several drawings, one renderer
