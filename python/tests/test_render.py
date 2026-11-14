@@ -111,7 +111,7 @@ def test_export_svg_draws_instances_nets_and_traces(top, tmp_path):
     out = tmp_path / "view.svg"
     svg = export_svg(["r"], out, traces=[(["r"], "D")], nets=[([], "clk")])
     assert svg.startswith("<svg") or svg.startswith("<?xml")
-    assert out.read_text() == svg
+    assert out.read_text(encoding="utf-8") == svg
     texts = _texts(svg)
     # The flop, and the cone back through u_sub's LUT2 to the d ports.
     assert {"r", "u_and"} <= texts
@@ -123,7 +123,7 @@ def test_export_svgs_one_process_several_drawings(top, tmp_path):
     a, b = tmp_path / "a.svg", tmp_path / "b.svg"
     svgs = export_svgs([{"instances": ["r"], "path": a},
                         {"traces": [(["u_sub", "u_and"], "O")], "path": b}])
-    assert len(svgs) == 2 and a.read_text() == svgs[0] and b.read_text() == svgs[1]
+    assert len(svgs) == 2 and a.read_text(encoding="utf-8") == svgs[0] and b.read_text(encoding="utf-8") == svgs[1]
     # Each drawing starts from a clean view.
     assert "u_and" not in _texts(svgs[0]) and "r" not in _texts(svgs[1])
     assert "u_and" in _texts(svgs[1])
@@ -214,7 +214,7 @@ def test_render_cli_with_python_primitives(tmp_path):
     result = _cli("render", *PY_DESIGN, "--trace", "u_ff:D", "--instance", "u_ff",
                   "--svg", str(out))
     assert result.returncode == 0, result.stderr
-    texts = _texts(out.read_text())
+    texts = _texts(out.read_text(encoding="utf-8"))
     # The cone crosses both Python-defined AND gates back to the ports.
     assert {"u_ff", "u_and", "u_and2", "a", "b"} <= texts
 
@@ -269,7 +269,7 @@ def test_render_cli_gathers_a_wide_fanout(tmp_path):
                   "--instance-label", "both", "--svg", str(svg_out), "--png", str(png_out),
                   "--scale", "2")
     assert result.returncode == 0, result.stderr
-    svg = svg_out.read_text()
+    svg = svg_out.read_text(encoding="utf-8")
     texts = _texts(svg)
     # The driver, the first 8 sinks, and the other 38 in two summaries
     # (the 6 LUTs are past the first 8 too): by model, the default.
@@ -283,14 +283,14 @@ def test_render_cli_gathers_a_wide_fanout(tmp_path):
     result = _cli("render", *WIDE, "--net", "drv:O", "--max-sinks", "8", "--group-by",
                   "hierarchy", "--svg", str(by_module))
     assert result.returncode == 0, result.stderr
-    texts = _texts(by_module.read_text())
+    texts = _texts(by_module.read_text(encoding="utf-8"))
     assert any(t.startswith("u_bank \u00d7") for t in texts)
 
     # No limit: every sink drawn.
     every = tmp_path / "every.svg"
     result = _cli("render", *WIDE, "--net", "drv:O", "--max-sinks", "0", "--svg", str(every))
     assert result.returncode == 0, result.stderr
-    assert {f"g{i}" for i in range(6)} <= _texts(every.read_text())
+    assert {f"g{i}" for i in range(6)} <= _texts(every.read_text(encoding="utf-8"))
 
 
 def test_render_cli_output_flags(tmp_path):
