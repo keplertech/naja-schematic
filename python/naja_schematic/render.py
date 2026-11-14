@@ -283,13 +283,24 @@ class Renderer:
         return outputs
 
 
+def _with_decorations(view_options, title, caption, legend, hide_ui_glyphs):
+    """`view_options` with the export decorations given as arguments (None:
+    not given) over it."""
+    given = {key: value for key, value in (("title", title), ("caption", caption),
+                                           ("legend", legend),
+                                           ("hide_ui_glyphs", hide_ui_glyphs))
+             if value is not None}
+    return {**(view_options or {}), **given} if given else view_options
+
+
 def _write_svg(path, svg):
     # newline="": the same bytes on every platform (no CRLF on Windows).
     Path(path).write_text(svg, encoding="utf-8", newline="")
 
 
 def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=None,
-               style=None, view_options=None, timeout=DEFAULT_TIMEOUT, source_roots=(),
+               style=None, view_options=None, title=None, caption=None, legend=None,
+               hide_ui_glyphs=None, timeout=DEFAULT_TIMEOUT, source_roots=(),
                source_maps=()):
     """Draw part of the design in the current NLUniverse as an SVG
     schematic, with no browser or display; returns the SVG, also written to
@@ -322,13 +333,33 @@ def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=Non
     cell's model under its box, {"max_sinks": 16, "group_by": "model"}
     gathers a net's sinks past the 16th into summary boxes.
 
+    `title` and `caption` put text in a band above / below the drawing,
+    `legend=True` a swatch and label below it for each trace and each net
+    a style labels, `hide_ui_glyphs=True` leaves out the open-pin stubs
+    and "more pins" dots, which mean something only in a viewer: the
+    view_options keys of the same names (protocol.view_options()), given
+    here for short.
+
+    The SVG is structured: each drawn net is a <g class="net"> (its
+    wires, junction dots, bus marks and label) with data-net, data-driver
+    ("u1/u2:Q", or a top-level port's name), data-driver-id-path ("3,7")
+    and data-label (a style label); each box a <g class="instance"> with
+    data-path ("u1/u2"), data-id-path and data-model; each top-level port
+    flag a <g class="port"> with data-name and data-direction; each
+    fanout summary a <g class="summary"> with data-group and data-count;
+    each module frame a <g class="module">. When a name makes the text
+    path ambiguous (it holds "/" or ":", or is anonymous), data-path-json
+    / data-driver-json give it as JSON as well.
+
     Raises ValueError (TypeError for an unsupported kind) when a target
     doesn't resolve -- nothing is drawn then -- and RenderError when there
     is no renderer, nothing to draw, or the drawing takes more than
     `timeout` seconds. `source_roots`/`source_maps` are as for
     ViewerSession (they don't change the drawing)."""
     pushes = drawing_pushes(targets, nets=nets, instances=instances, traces=traces,
-                            style=style, view_options=view_options)
+                            style=style,
+                            view_options=_with_decorations(view_options, title, caption,
+                                                           legend, hide_ui_glyphs))
     with Renderer(source_roots, source_maps) as renderer:
         svg = renderer.render(pushes, timeout)
     if path is not None:
@@ -337,17 +368,21 @@ def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=Non
 
 
 def export_png(targets=None, path=None, *, scale=1.0, nets=None, instances=None,
-               traces=None, style=None, view_options=None, timeout=DEFAULT_TIMEOUT,
+               traces=None, style=None, view_options=None, title=None, caption=None,
+               legend=None, hide_ui_glyphs=None, timeout=DEFAULT_TIMEOUT,
                source_roots=(), source_maps=()):
     """export_svg()'s drawing as a PNG image: returns its bytes, also
     written to `path` when given. `scale` is the number of pixels per SVG
     pixel (0 < scale <= 64): text, strokes and shapes are drawn at that
     resolution, not enlarged, over a white background. The other
-    arguments are export_svg()'s. Raises RenderError also when the image
-    would be over 120 million pixels."""
+    arguments are export_svg()'s (title, caption and legend drawn the same
+    way). Raises RenderError also when the image would be over 120 million
+    pixels."""
     pushes = drawing_pushes(targets, nets=nets, instances=instances, traces=traces,
-                            style=style, view_options=view_options, svg=False,
-                            png_scale=scale)
+                            style=style,
+                            view_options=_with_decorations(view_options, title, caption,
+                                                           legend, hide_ui_glyphs),
+                            svg=False, png_scale=scale)
     with Renderer(source_roots, source_maps) as renderer:
         png = renderer.render_outputs(pushes, timeout)["png"]
     if path is not None:
@@ -359,11 +394,12 @@ def export_svgs(jobs, *, timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=(
     """Several export_svg() drawings with one renderer process; returns
     their SVGs, in order. Each job is a dict of export_svg()'s arguments:
     "targets", "path", "nets", "instances", "traces", "style",
-    "view_options". Every job is
+    "view_options", "title", "caption", "legend", "hide_ui_glyphs". Every job is
     resolved before anything is drawn, and files are written only once
     all are drawn: a bad target raises without writing any. `timeout`
     applies to each drawing."""
-    keys = {"targets", "path", "nets", "instances", "traces", "style", "view_options"}
+    keys = {"targets", "path", "nets", "instances", "traces", "style", "view_options",
+            *protocol.EXPORT_DECORATIONS}
     plans = []
     for i, job in enumerate(jobs):
         if not isinstance(job, dict):
@@ -376,7 +412,10 @@ def export_svgs(jobs, *, timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=(
             pushes = drawing_pushes(job.get("targets"), nets=job.get("nets"),
                                     instances=job.get("instances"),
                                     traces=job.get("traces"), style=job.get("style"),
-                                    view_options=job.get("view_options"))
+                                    view_options=_with_decorations(
+                                        job.get("view_options"), job.get("title"),
+                                        job.get("caption"), job.get("legend"),
+                                        job.get("hide_ui_glyphs")))
         except (ValueError, TypeError, RenderError) as e:
             raise type(e)(f"job {i}: {e}") from e
         plans.append((job.get("path"), pushes))
@@ -546,7 +585,10 @@ def build_arg_parser():
     parser.add_argument("--style", metavar="FILE",
                         help="Style JSON ({\"items\": [...]} or a bare array: colors, "
                              "widths, fills, labels on nets, instances and pins) drawn "
-                             "into the SVG")
+                             "into the SVG. An item names its object by "
+                             "\"target\": --instance/--net text (\"u1/u2\", \"u1:A[3]\", "
+                             "\"y\") or a [path, terminal(, bit)] list; or by "
+                             "\"path\"/\"id_path\" (+ \"terminal\", \"bit\")")
     parser.add_argument("--verbose", "-v", action="store_true", help="Log to stderr")
     add_view_arguments(parser)
     add_design_arguments(parser)

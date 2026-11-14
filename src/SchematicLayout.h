@@ -34,6 +34,7 @@ inline constexpr float kLeftMargin = 20.0f;
 inline constexpr float kChannelMin = 50.0f;  // narrowest routing channel between columns
 inline constexpr float kTrackPitch = 10.0f;  // extra channel width per vertical wire track
 inline constexpr float kPortGap    = 50.0f;  // top-level ports -> nearest box
+inline constexpr float kBandGap    = kRowSpacing + 2.0f * kPinPitch;  // between two drivers' sink bands
 
 // Hierarchy grouping (module frames around traced leaves).
 // Grid multiples, so leaves inside frames keep their pins on the grid.
@@ -61,6 +62,13 @@ using NameWidthFn = std::function<float(const std::string&)>;
 // `name` fitted into maxW: whole if it fits, else its head and tail around
 // "...". Empty when not even the ellipsis fits.
 std::string shortenMiddle(const std::string& name, const NameWidthFn& width, float maxW);
+
+// Natural order: runs of digits compare by value, so "i_lut_111" comes
+// before "i_lut_1037" (and "u2" before "u10"); otherwise byte order. Equal
+// values with different spellings ("07", "7") fall back to byte order.
+bool naturalLess(const std::string& a, const std::string& b);
+// naturalLess() on instance names, level by level; ids break ties.
+bool naturalPathLess(const InstancePath& a, const InstancePath& b);
 
 // The name drawn above `s` (its label, else its name, shortened to
 // kNameMaxW), or "" for shapes drawn without one (frames, top-level ports,
@@ -132,16 +140,25 @@ inline constexpr float kOperatorGlyphW = 2.f * kPinPitch;
 //      to (straight wires), keeping the column order and spacing.
 //   6. a column with more than `maxSinkRows` sinks -- nodes nothing placed
 //      is driven by (a net's loads: flops, a summary box) -- is wrapped into
-//      a grid: the sinks, in their order, are dealt into as few columns of
-//      at most that many as needed (balanced), placed before the column's
-//      other nodes, which keep the last column next to what they drive.
-//      Each grid column is a level of its own (Placement::level), with a
-//      channel before it like any other. 0: no limit.
+//      a grid, placed before the column's other nodes, which keep the last
+//      column next to what they drive. The grid has a band of rows per
+//      driver (a sink's nearest one), in column order: each band's sinks,
+//      in their order, are dealt into as few columns of at most that many
+//      as needed (balanced), starting from the grid's first column, and the
+//      band is placed level with its driver, below the band above it
+//      (kBandGap apart), rows aligned across its columns. So no driver's
+//      wires cross another driver's sinks. Each grid column is a level of
+//      its own (Placement::level), with a channel before it like any
+//      other. 0: no limit.
 // Pure geometry: the result depends only on the inputs, in their order.
 // ---------------------------------------------------------------------------
 struct PlaceNode {
     float w = 0.f, h = 0.f;
     bool  drivesOutput = false;  // drives a net that reaches a top-level output
+    // Order among sinks the crossing reduction can't tell apart (same
+    // barycenter: e.g. the loads of one driver pin): lower first. The
+    // caller's, e.g. the natural order of the names (naturalLess).
+    int   rank = 0;
 };
 struct PlacePin {
     int   node = 0;
@@ -222,6 +239,7 @@ struct Item {
     unsigned               termChildId = 0;
     std::optional<int>     termBit;
     bool                   clock = false;  // a sequential cell's clock pin
+    std::string            role;           // naja's term role, "" = data (BitTerm::role)
     std::vector<unsigned>  pathIds;
     // Only meaningful for instance occurrences (isTerm == false): whether
     // this instance's model has sub-instances worth expanding into a nested
@@ -251,13 +269,19 @@ void buildItems(const Equipotential* eq, std::vector<Item>& drivers, std::vector
 // as itself on every net. Top-level ports are never gathered.
 //
 // A group is keyed by what it gathers: the model (Model), the module
-// holding the sinks (Hierarchy), or the receiving pin -- every clock pin
-// together, else by base name (Role).
+// holding the sinks (Hierarchy), the receiving pin's naja role, by
+// fanoutRoleGroup() (Role), or the receiving pin -- every clock pin
+// together, else by base name (Pin).
 // ---------------------------------------------------------------------------
+// The group a receiving pin falls in with group_by "role", by its naja
+// term role: "clock" (also a pin naja models as a clock with no role set),
+// "reset", "set", "enable", "scan", "address", else "data".
+std::string fanoutRoleGroup(const Item& receiver);
+
 struct FanoutGroupKey {
-    std::string  text;     // Model: the model; Role: the pin's base name
+    std::string  text;     // Model: the model; Role: fanoutRoleGroup(); Pin: the pin's base name
     InstancePath module;   // Hierarchy: the module containing the sinks
-    bool         clock = false;  // Role: the clock pins
+    bool         clock = false;  // Pin: the clock pins
     auto tie() const { return std::tie(text, module, clock); }
     bool operator<(const FanoutGroupKey& o) const { return tie() < o.tie(); }
     bool operator==(const FanoutGroupKey& o) const { return tie() == o.tie(); }

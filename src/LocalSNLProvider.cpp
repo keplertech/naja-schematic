@@ -228,6 +228,37 @@ static std::string termName(const SNLTerm* t) {
   return t->getName().getString();
 }
 
+// naja's term role as sent in "role", or nullptr for a data pin
+// (DataInput, DataOutput, or no role set: Other). Kept in step with
+// _TERM_ROLE_NAMES in protocol.py.
+static const char* termRoleName(SNLDesignModeling::SNLTermRole role) {
+  using Role = SNLDesignModeling::SNLTermRole;
+  switch (role) {
+    case Role::Clock:              return "clock";
+    case Role::AsyncReset:         return "async_reset";
+    case Role::AsyncSet:           return "async_set";
+    case Role::SyncReset:          return "sync_reset";
+    case Role::SyncSet:            return "sync_set";
+    case Role::Enable:             return "enable";
+    case Role::MemoryReadAddress:  return "memory_read_address";
+    case Role::MemoryReadData:     return "memory_read_data";
+    case Role::MemoryWriteAddress: return "memory_write_address";
+    case Role::MemoryWriteData:    return "memory_write_data";
+    case Role::MemoryWriteEnable:  return "memory_write_enable";
+    case Role::ScanInput:          return "scan_input";
+    case Role::ScanEnable:         return "scan_enable";
+    default:                       return nullptr;
+  }
+}
+
+// Only sent when set, like "clock": a pin naja gives a non-data role
+// (fanout summaries grouped by role).
+template <typename Term>
+static void setTermRole(json& t, const Term* term) {
+  if (const char* role = termRoleName(SNLDesignModeling::getTermRole(term))) t["role"] = role;
+  else t.erase("role");
+}
+
 // Build a bit-term JSON node (shared by terms and occurrence entries).
 static json bitTermJson(const SNLBitTerm* bt) {
   json t = {
@@ -239,6 +270,7 @@ static json bitTermJson(const SNLBitTerm* bt) {
     t["bit"] = static_cast<int>(btb->getBit());
   // Only sent when set: marks a flip-flop's clock pin (see drawDffInstance).
   if (SNLDesignModeling::isClock(bt)) t["clock"] = true;
+  setTermRole(t, bt);
   return t;
 }
 
@@ -864,6 +896,9 @@ static json equipotentialJson(const SNLEquipotential& equi,
                                    static_cast<unsigned>(theInst->getID()),
                                    designName(theInst->getModel())}));
     auto entry = bitTermJson(bt);
+    // The instance's own role: a parameterized primitive can take it from
+    // the instance's parameters.
+    setTermRole(entry, it);
     entry["path"] = std::move(pathArr);
     if (auto* model = theInst->getModel()) {
       entry["design_ref"] = {

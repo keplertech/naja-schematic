@@ -19,6 +19,7 @@ const char* ViewOptions::name(FanoutGroupBy v) {
   switch (v) {
     case FanoutGroupBy::Hierarchy: return "hierarchy";
     case FanoutGroupBy::Role:      return "role";
+    case FanoutGroupBy::Pin:       return "pin";
     default:                       return "model";
   }
 }
@@ -49,7 +50,22 @@ bool ViewOptions::apply(const json& message, std::string& error) {
     if (s == "model")          next.groupBy = FanoutGroupBy::Model;
     else if (s == "hierarchy") next.groupBy = FanoutGroupBy::Hierarchy;
     else if (s == "role")      next.groupBy = FanoutGroupBy::Role;
-    else { error = "group_by: expected \"model\", \"hierarchy\" or \"role\", got " + v.dump(); return false; }
+    else if (s == "pin")       next.groupBy = FanoutGroupBy::Pin;
+    else { error = "group_by: expected \"model\", \"hierarchy\", \"role\" or \"pin\", got " + v.dump(); return false; }
+  }
+  for (auto [key, field] : { std::pair{ "hide_ui_glyphs", &next.hideUiGlyphs },
+                             std::pair{ "legend", &next.legend },
+                             std::pair{ "convergence_outline", &next.convergenceOutline } }) {
+    if (!message.contains(key)) continue;
+    const json& v = message[key];
+    if (!v.is_boolean()) { error = std::string(key) + ": expected true or false, got " + v.dump(); return false; }
+    *field = v.get<bool>();
+  }
+  for (auto [key, field] : { std::pair{ "title", &next.title }, std::pair{ "caption", &next.caption } }) {
+    if (!message.contains(key)) continue;
+    const json& v = message[key];
+    if (!v.is_string()) { error = std::string(key) + ": expected a string, got " + v.dump(); return false; }
+    *field = v.get<std::string>();
   }
   *this = next;
   return true;
@@ -59,5 +75,17 @@ json ViewOptions::toJson() const {
   return { { "instance_label", name(instanceLabel) },
            { "sink_rows", sinkRows },
            { "max_sinks", maxSinks },
-           { "group_by", name(groupBy) } };
+           { "group_by", name(groupBy) },
+           { "convergence_outline", convergenceOutline },
+           { "hide_ui_glyphs", hideUiGlyphs },
+           { "title", title },
+           { "caption", caption },
+           { "legend", legend } };
+}
+
+json ViewOptions::layoutJson() const {
+  json j = toJson();
+  for (const char* key : { "convergence_outline", "hide_ui_glyphs", "title", "caption", "legend" })
+    j.erase(key);
+  return j;
 }

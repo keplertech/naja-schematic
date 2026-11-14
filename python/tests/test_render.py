@@ -15,6 +15,8 @@ import pytest
 
 from naja_schematic import RenderError, export_png, export_svg, export_svgs
 from naja_schematic import protocol, render
+from najaeda import naja
+from protocol_cases import build_design, check_case, load_spec, substitute
 
 DATA = Path(__file__).parent / "data"
 
@@ -182,6 +184,102 @@ def test_instance_labels(top):
     assert "FDRE" in model and "r" not in model
 
 
+# -- SVG structure and export decorations ------------------------------------------
+
+def _groups(svg, cls):
+    import xml.etree.ElementTree as ET
+    ns = "{http://www.w3.org/2000/svg}"
+    root = ET.fromstring(svg.encode("utf-8"))  # well-formed XML, or this raises
+    return [g for g in root.iter(ns + "g") if g.get("class") == cls]
+
+
+def _group_texts(g):
+    return {t.text for t in g.iter("{http://www.w3.org/2000/svg}text")}
+
+
+@needs_renderer
+def test_svg_groups_name_every_net_instance_and_port(top):
+    svg = export_svg(["r"], traces=[(["r"], "D")], nets=[([], "clk")])
+    instances = {g.get("data-path"): g for g in _groups(svg, "instance")}
+    # The flop and the LUT the cone crosses, by path, ids and model.
+    assert {"r", "u_sub/u_and"} <= set(instances)
+    r = instances["r"]
+    assert r.get("data-id-path") == ",".join(map(str, render.parse_instance_arg("r")))
+    assert r.get("data-model") == "FDRE"
+    assert "r" in _group_texts(r) and "D" in _group_texts(r)  # its name and pins
+    lut = instances["u_sub/u_and"]
+    assert lut.get("data-id-path") == ",".join(map(str, render.parse_instance_arg("u_sub/u_and")))
+    assert lut.get("data-model") == "LUT2"
+    assert lut.get("data-path-json") is None  # plain names: no JSON needed
+    # The module frame around the LUT.
+    assert "u_sub" in {g.get("data-path") for g in _groups(svg, "module")}
+
+    # Every top-level port flag drawn.
+    ports = {g.get("data-name"): g.get("data-direction") for g in _groups(svg, "port")}
+    assert ports.get("clk") == "input" and {"d[0]", "d[1]"} <= set(ports), ports
+
+    # Every net is a group naming its driver, holding its wires.
+    nets = _groups(svg, "net")
+    assert nets and all(g.get("data-driver") for g in nets)
+    drivers = {g.get("data-driver"): g for g in nets}
+    assert "clk" in drivers                                   # a top-level port
+    assert "u_sub/u_and:O" in drivers                         # an instance pin
+    assert drivers["u_sub/u_and:O"].get("data-driver-id-path") == \
+        lut.get("data-id-path")
+    assert all(any(e.tag.endswith(("line", "polyline")) for e in g.iter()) for g in nets)
+
+
+@needs_renderer
+def test_export_decorations(top, tmp_path):
+    import math
+    plain = export_svg(["r"], nets=[([], "clk")])
+    assert not _groups(plain, "title") and not _groups(plain, "legend")
+    decorated = export_svg(["r"], nets=[([], "clk")], title="Clock of r",
+                           caption="line 1\nline 2", legend=True)
+    assert _group_texts(_groups(decorated, "title")[0]) == {"Clock of r"}
+    assert _group_texts(_groups(decorated, "caption")[0]) == {"line 1", "line 2"}
+    entries = [g.get("data-label") for g in _groups(decorated, "legend-entry")]
+    assert entries == ["clk (net)"], entries
+    assert _svg_size(decorated)[1] > _svg_size(plain)[1] + 30
+    # The drawing itself is the same: same groups.
+    for cls in ("net", "instance", "port"):
+        assert len(_groups(decorated, cls)) == len(_groups(plain, cls))
+    # The PNG has the same page.
+    png = export_png(["r"], nets=[([], "clk")], title="Clock of r", caption="line 1\nline 2",
+                     legend=True)
+    w, h = _svg_size(decorated)
+    assert _png_size(png) == (math.ceil(w), math.ceil(h))
+    # hide_ui_glyphs: r's open pins lose their stubs.
+    hidden = export_svg(["r"], nets=[([], "clk")], hide_ui_glyphs=True)
+    def circles(svg):
+        return sum(1 for g in _groups(svg, "instance") for e in g.iter() if e.tag.endswith("circle"))
+    assert circles(hidden) == 0 < circles(plain)
+    # export_svgs takes them per job.
+    svgs = export_svgs([{"instances": ["r"], "title": "A"}, {"instances": ["r"]}])
+    assert _groups(svgs[0], "title") and not _groups(svgs[1], "title")
+
+
+def test_decoration_view_options():
+    message = protocol.view_options(title="T", caption="", legend=True, hide_ui_glyphs=False)
+    assert message == {"response": "view_options", "title": "T", "caption": "", "legend": True,
+                       "hide_ui_glyphs": False}
+    for bad in ({"legend": "yes"}, {"hide_ui_glyphs": 1}, {"title": 3}):
+        with pytest.raises(ValueError):
+            protocol.view_options(bad)
+    assert set(protocol.EXPORT_DECORATIONS) <= set(protocol.DEFAULT_VIEW_OPTIONS)
+
+
+def test_decoration_flags():
+    from naja_schematic.server import add_view_arguments, view_options_from_args
+    import argparse
+    parser = argparse.ArgumentParser()
+    add_view_arguments(parser)
+    assert view_options_from_args(parser.parse_args([])) is None
+    args = parser.parse_args(["--title", "T", "--caption", "C", "--legend", "--hide-ui-glyphs"])
+    assert view_options_from_args(args) == {"title": "T", "caption": "C", "legend": True,
+                                            "hide_ui_glyphs": True}
+
+
 def test_session_keeps_view_options_across_reloads(top):
     from naja_schematic.session import ViewerSession
     sent = []
@@ -271,11 +369,12 @@ def test_render_cli_gathers_a_wide_fanout(tmp_path):
     assert result.returncode == 0, result.stderr
     svg = svg_out.read_text(encoding="utf-8")
     texts = _texts(svg)
-    # The driver, the first 8 sinks, and the other 38 in two summaries
-    # (the 6 LUTs are past the first 8 too): by model, the default.
-    assert {"drv", "LUT1"} <= texts
-    assert "FDRE \u00d732" in texts and "LUT1 \u00d76" in texts
-    assert not {f"g{i}" for i in range(6)} & texts
+    # The driver, the first 8 sinks in natural name order (g0..g5, s0, s1),
+    # and the other 38 flops (s2..s9, u_bank's 30) in one summary: by model,
+    # the default.
+    assert {"drv", "LUT1", "s0", "s1"} <= texts
+    assert {f"g{i}" for i in range(6)} <= texts
+    assert "FDRE \u00d738" in texts and "s2" not in texts
     w, h = _svg_size(svg)
     assert _png_size(png_out.read_bytes()) == (int(w * 2 + 0.999), int(h * 2 + 0.999))
 
@@ -293,6 +392,81 @@ def test_render_cli_gathers_a_wide_fanout(tmp_path):
     assert {f"g{i}" for i in range(6)} <= _texts(every.read_text(encoding="utf-8"))
 
 
+# -- group_by "role": the receiving pin's naja term role ------------------------
+
+ROLE_SPEC = load_spec("role_protocol_cases.json")
+
+
+@pytest.fixture(scope="module")
+def roles(top):
+    # NLUniverse is process-global: build next to the session's design and
+    # make it the top design for this module only.
+    u = naja.NLUniverse.get()
+    previous = u.getTopDesign()
+    designs = build_design(ROLE_SPEC["design"])
+    u.setTopDesign(designs[ROLE_SPEC["design"]["top"]])
+    yield designs
+    u.setTopDesign(previous)
+    designs[ROLE_SPEC["design"]["top"]].getDB().destroy()
+
+
+@pytest.mark.parametrize("case", ROLE_SPEC["cases"], ids=[c["name"] for c in ROLE_SPEC["cases"]])
+def test_term_roles_shared_protocol_case(roles, case):
+    replies = protocol.handle_request(substitute(case["request"], roles))
+    check_case(case, json.loads(json.dumps(replies)))
+
+
+def test_term_role_names_cover_every_naja_role():
+    # Every non-data role naja has is sent by name (termRoleName() in C++).
+    data = {"DataInput", "DataOutput", "Other"}
+    naja_roles = {r for r in dir(naja.SNLTermRole) if not r.startswith("_")} - data
+    assert naja_roles <= set(protocol._TERM_ROLE_NAMES)
+
+
+def test_group_by_values():
+    assert protocol.view_options(group_by="role")["group_by"] == "role"
+    assert protocol.view_options(group_by="pin")["group_by"] == "pin"
+    with pytest.raises(ValueError, match="group_by"):
+        protocol.view_options(group_by="name")
+
+
+ROLE_DESIGN = ("--verilog", "role_fanout.v", "--py-primitives", "py_prims.py")
+
+
+def _summaries(texts):
+    # {"clock": 12, ...} from the "<what> ×<n>" summary labels.
+    out = {}
+    for t in texts:
+        what, sep, n = t.rpartition(" \u00d7")
+        if sep and n.isdigit():
+            out[what] = int(n)
+    return out
+
+
+@needs_renderer
+def test_render_cli_groups_sinks_by_role(tmp_path):
+    # 34 sinks: 12 clock, 6 reset, 5 enable pins of flops, and 7 flop D
+    # pins plus 4 AND inputs with no role (data). 2 drawn, 32 gathered.
+    out = tmp_path / "role.svg"
+    result = _cli("render", *ROLE_DESIGN, "--net", "drv:Y", "--max-sinks", "2",
+                  "--group-by", "role", "--svg", str(out))
+    assert result.returncode == 0, result.stderr
+    groups = _summaries(_texts(out.read_text(encoding="utf-8")))
+    assert set(groups) == {"clock", "reset", "enable", "data"}, groups
+    assert sum(groups.values()) == 32
+    assert 10 <= groups["clock"] <= 12 and 4 <= groups["reset"] <= 6
+    assert 3 <= groups["enable"] <= 5 and 9 <= groups["data"] <= 11
+
+    # "pin": by pin name, the clock pins together.
+    out = tmp_path / "pin.svg"
+    result = _cli("render", *ROLE_DESIGN, "--net", "drv:Y", "--max-sinks", "2",
+                  "--group-by", "pin", "--svg", str(out))
+    assert result.returncode == 0, result.stderr
+    groups = _summaries(_texts(out.read_text(encoding="utf-8")))
+    assert set(groups) == {"clock", "R", "L", "D", "A"}, groups
+    assert sum(groups.values()) == 32
+
+
 def test_render_cli_output_flags(tmp_path):
     result = _cli("render", *PY_DESIGN, "--instance", "u_ff")
     assert result.returncode == 2 and "--svg and/or --png" in result.stderr
@@ -302,3 +476,18 @@ def test_render_cli_output_flags(tmp_path):
     result = _cli("render", *PY_DESIGN, "--instance", "u_ff", "--png", str(tmp_path / "x.png"),
                   "--group-by", "colour")
     assert result.returncode == 2 and "--group-by" in result.stderr
+
+
+
+def test_convergence_outline_option():
+    assert protocol.DEFAULT_VIEW_OPTIONS["convergence_outline"] is True
+    assert protocol.view_options(convergence_outline=False)["convergence_outline"] is False
+    with pytest.raises(ValueError):
+        protocol.view_options(convergence_outline="no")
+    from naja_schematic.server import add_view_arguments, view_options_from_args
+    import argparse
+    parser = argparse.ArgumentParser()
+    add_view_arguments(parser)
+    assert view_options_from_args(parser.parse_args(["--no-convergence-outline"])) == \
+        {"convergence_outline": False}
+    assert "applied when this flag is not given" in " ".join(parser.format_help().split())

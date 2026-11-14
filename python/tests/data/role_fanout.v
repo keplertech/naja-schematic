@@ -1,0 +1,40 @@
+// One net driving the clock, reset, enable and data pins of PY_FFRE flops
+// (and PY_AND2 inputs): the fanout summaries of group_by "role".
+module top(input a, input b, output [29:0] q, output [3:0] y);
+  wire n;
+  PY_AND2 drv (.A(a), .B(b), .Y(n));
+  PY_FFRE f0 (.D(a), .CK(n), .R(b), .L(b), .Q(q[0]));
+  PY_FFRE f1 (.D(a), .CK(n), .R(b), .L(b), .Q(q[1]));
+  PY_FFRE f2 (.D(a), .CK(n), .R(b), .L(b), .Q(q[2]));
+  PY_FFRE f3 (.D(a), .CK(n), .R(b), .L(b), .Q(q[3]));
+  PY_FFRE f4 (.D(a), .CK(n), .R(b), .L(b), .Q(q[4]));
+  PY_FFRE f5 (.D(a), .CK(n), .R(b), .L(b), .Q(q[5]));
+  PY_FFRE f6 (.D(a), .CK(n), .R(b), .L(b), .Q(q[6]));
+  PY_FFRE f7 (.D(a), .CK(n), .R(b), .L(b), .Q(q[7]));
+  PY_FFRE f8 (.D(a), .CK(n), .R(b), .L(b), .Q(q[8]));
+  PY_FFRE f9 (.D(a), .CK(n), .R(b), .L(b), .Q(q[9]));
+  PY_FFRE f10 (.D(a), .CK(n), .R(b), .L(b), .Q(q[10]));
+  PY_FFRE f11 (.D(a), .CK(n), .R(b), .L(b), .Q(q[11]));
+  PY_FFRE f12 (.D(a), .CK(b), .R(n), .L(b), .Q(q[12]));
+  PY_FFRE f13 (.D(a), .CK(b), .R(n), .L(b), .Q(q[13]));
+  PY_FFRE f14 (.D(a), .CK(b), .R(n), .L(b), .Q(q[14]));
+  PY_FFRE f15 (.D(a), .CK(b), .R(n), .L(b), .Q(q[15]));
+  PY_FFRE f16 (.D(a), .CK(b), .R(n), .L(b), .Q(q[16]));
+  PY_FFRE f17 (.D(a), .CK(b), .R(n), .L(b), .Q(q[17]));
+  PY_FFRE f18 (.D(a), .CK(b), .R(b), .L(n), .Q(q[18]));
+  PY_FFRE f19 (.D(a), .CK(b), .R(b), .L(n), .Q(q[19]));
+  PY_FFRE f20 (.D(a), .CK(b), .R(b), .L(n), .Q(q[20]));
+  PY_FFRE f21 (.D(a), .CK(b), .R(b), .L(n), .Q(q[21]));
+  PY_FFRE f22 (.D(a), .CK(b), .R(b), .L(n), .Q(q[22]));
+  PY_FFRE f23 (.D(n), .CK(b), .R(b), .L(b), .Q(q[23]));
+  PY_FFRE f24 (.D(n), .CK(b), .R(b), .L(b), .Q(q[24]));
+  PY_FFRE f25 (.D(n), .CK(b), .R(b), .L(b), .Q(q[25]));
+  PY_FFRE f26 (.D(n), .CK(b), .R(b), .L(b), .Q(q[26]));
+  PY_FFRE f27 (.D(n), .CK(b), .R(b), .L(b), .Q(q[27]));
+  PY_FFRE f28 (.D(n), .CK(b), .R(b), .L(b), .Q(q[28]));
+  PY_FFRE f29 (.D(n), .CK(b), .R(b), .L(b), .Q(q[29]));
+  PY_AND2 g0 (.A(n), .B(a), .Y(y[0]));
+  PY_AND2 g1 (.A(n), .B(a), .Y(y[1]));
+  PY_AND2 g2 (.A(n), .B(a), .Y(y[2]));
+  PY_AND2 g3 (.A(n), .B(a), .Y(y[3]));
+endmodule

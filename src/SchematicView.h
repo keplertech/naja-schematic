@@ -97,6 +97,10 @@ public:
     // The whole schematic as an SVG document, at 1x with `margin` world
     // units around it, without transient interaction feedback (hover,
     // pending pins); the selection is kept. "" when there is nothing to draw.
+    // Each net, instance, port flag, summary and module frame is a <g> with
+    // data-* attributes naming it (the drawing itself is unchanged). The
+    // export decorations of ViewOptions::current() apply (title band above,
+    // legend and caption below, hide_ui_glyphs); exportPng() draws the same.
     std::string exportSvg(float margin = 24.0f) const;
     // The same drawing as a PNG file's bytes, `scale` pixels per SVG pixel
     // (RasterPainter: every stroke, radius and font size scaled with it,
@@ -106,6 +110,19 @@ public:
     static constexpr double kMaxPngPixels = 120e6;
     // Set on the copy exportSvg() draws: skips transient interaction feedback.
     bool exporting = false;
+    // Set on the export copy by ViewOptions' hide_ui_glyphs: leaves out the
+    // "more pins" dots of a partial box and the hollow stubs of open pins,
+    // which only mean something to a viewer's user (clicks).
+    bool hideUiGlyphs = false;
+
+    // One row of an export's legend (ViewOptions' legend): a net color and
+    // what it stands for -- a visible trace's label, or a host style's
+    // label on a net. Filled by EquipotentialView with the shapes.
+    struct LegendEntry {
+        ImU32       color = 0;
+        std::string label;
+    };
+    std::vector<LegendEntry> legend;
 
     bool computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const;
 
@@ -121,7 +138,15 @@ public:
     // Every badge shown at the current zoom (hidden with the labels).
     std::vector<ReviewBadge> reviewBadges(const ImVec2& canvasPos, const ImVec2& canvasSize) const;
 
+    // The <g> attributes the export gives an instance box, port flag,
+    // fanout summary or module frame, and a net (named by its driver pin).
+    static SchematicPainter::GroupAttrs instanceGroup(const InstanceShape& inst);
+    static SchematicPainter::GroupAttrs netGroup(const std::string& netName, const SchematicNetRef& driver,
+                                                 const std::string& label);
+
 private:
+    bool exportSheet(float margin, SchematicView& sheet, ImVec2& size) const;
+
     bool needsFit_ = true;
     bool hasUserInteraction_ = false;
     bool hasFitRect_ = false;

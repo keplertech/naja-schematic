@@ -58,9 +58,13 @@ TEST_F(StyleStoreTest, MalformedItemsAreSkippedAndReported) {
       {{"kind", "wire"}, {"path", {"u1"}}},                               // unknown kind
       {{"kind", "instance"}, {"path", {""}}},                             // anonymous by name
       {{"kind", "instance"}, {"id_path", {1}}, {"fill", "#00ff0080"}},    // fine
+      {{"kind", "instance"}, {"target", "u1/u2"}, {"fill", "#00ff0080"}}, // the host resolves it
+      {{"kind", "net"}, {"target", {json::array(), "en"}}},               // same
   }), &errors);
   EXPECT_EQ(items.size(), 1u);
-  EXPECT_EQ(errors.size(), 4u);
+  ASSERT_EQ(errors.size(), 6u);
+  EXPECT_NE(errors[4].find("\"target\" is resolved by the naja-schematic Python host"),
+            std::string::npos) << errors[4];
 }
 
 TEST_F(StyleStoreTest, InstancesMatchByIdPathElseByNamesAndMergeInOrder) {

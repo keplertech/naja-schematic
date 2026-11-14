@@ -1119,6 +1119,16 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         Equipotential* eq = equipotentials[ei];
         if (!eq || (eq->terms.empty() && eq->occurrences.empty())) continue;
         buildItems(eq, fanNets[ei].drivers, fanNets[ei].receivers);
+        // Sinks in natural name order: the first max_sinks drawn, the rest
+        // summarized, both in the order a reader expects (lut_111 < lut_1037).
+        std::stable_sort(fanNets[ei].receivers.begin(), fanNets[ei].receivers.end(),
+                         [](const Item& a, const Item& b) {
+                             if (a.isTerm != b.isTerm) return a.isTerm;
+                             if (a.isTerm) return naturalLess(a.label, b.label);
+                             if (naturalPathLess(a.path, b.path)) return true;
+                             if (naturalPathLess(b.path, a.path)) return false;
+                             return naturalLess(a.label, b.label);
+                         });
         for (const auto& r : fanNets[ei].receivers)
             if (!r.isTerm && (DiagnosisStore::instanceColor(r.path) != 0 || !StyleStore::instanceStyle(r.path).empty()))
                 pinned.insert(r.path);
@@ -1260,8 +1270,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.primitiveType = mi.primitiveType;
         inst.diagOutline = DiagnosisStore::instanceColor(key);
         applyInstanceStyle(inst);
-        // A gate two visible traces go through: where they converge.
-        if (inst.diagOutline == 0 && traceIdsByInstance[key].size() >= 2)
+        // A gate two visible traces go through: where they converge -- not
+        // on a box the host styles (it marks it its own way), nor when the
+        // convergence_outline view option is off.
+        if (inst.diagOutline == 0 && traceIdsByInstance[key].size() >= 2 &&
+            viewOptions.convergenceOutline && StyleStore::instanceStyle(key).empty())
             inst.diagOutline = TraceStore::convergenceColor();
         inst.selected    = SelectionStore::isSelected(key);
         setReviewBadge(inst);
@@ -1270,6 +1283,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             const FanoutGroup& g = fanPlan.groups[sit->second];
             inst.isSummary    = true;
             inst.summaryCount = int(g.count);
+            inst.summaryGroup = g.key.clock ? "clock"
+                              : viewOptions.groupBy == FanoutGroupBy::Hierarchy ? displayPath(g.key.module)
+                                                                                : g.key.text;
             inst.name         = g.label;
             inst.label        = g.label;
             g_summaryByShapeId[inst.id] = { fanNetKeys[g.net], g.key };
@@ -1478,6 +1494,16 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         nodeOfShape[inst.id] = int(placeNodes.size());
         placeNodes.push_back({ footprintWidth(inst, instanceNameWidth),
                                footprintHeight(inst, instanceNameWidth) });
+    }
+    // Loads of one pin go in natural name order, summaries after them.
+    {
+        std::vector<const InstanceShape*> byName;
+        for (const auto& inst : g_schematic.instances) byName.push_back(&inst);
+        std::stable_sort(byName.begin(), byName.end(), [](const InstanceShape* a, const InstanceShape* b) {
+            if (a->isSummary != b->isSummary) return b->isSummary;
+            return a->isSummary ? naturalLess(a->name, b->name) : naturalPathLess(a->path, b->path);
+        });
+        for (size_t r = 0; r < byName.size(); ++r) placeNodes[size_t(nodeOfShape[byName[r]->id])].rank = int(r);
     }
     std::vector<PlaceNet> placeNets;
     for (const auto& ends : equiEnds) {
@@ -1806,6 +1832,27 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         // Wiring nested in an expanded instance isn't routed: color it here.
         for (auto& n : g_schematic.nets)
             if (!n.routed) n.color = styledWireColor(n.color, n.styleColor, n.traceIds, n.faint);
+        // The export legend: every visible trace drawn, then every net a
+        // host style labels, in its drawn color.
+        {
+            auto& legend = g_schematic.legend;
+            legend.clear();
+            std::set<int> drawnTraces;
+            for (const auto& rt : routeTraces) drawnTraces.insert(rt.ids.begin(), rt.ids.end());
+            for (const auto& n : g_schematic.nets) drawnTraces.insert(n.traceIds.begin(), n.traceIds.end());
+            for (const Trace& t : TraceStore::traces())
+                if (drawnTraces.count(t.id) && TraceStore::isVisible(t.id) && !t.label.empty())
+                    legend.push_back({ TraceStore::color(t.id), t.label });
+            auto addStyled = [&](ImU32 color, const std::string& label) {
+                if (label.empty()) return;
+                for (const auto& e : legend)
+                    if (e.label == label && e.color == color) return;
+                legend.push_back({ color, label });
+            };
+            for (const auto& r : g_schematic.routes) addStyled(r.color, r.label);
+            for (const auto& n : g_schematic.nets)
+                if (!n.routed) addStyled(n.color, n.label);
+        }
         auto routed = routeNets(routeNetsIn, obstacles, keepOut);
         for (size_t i = 0; i < routed.size(); ++i) {
             g_schematic.routes[i].segments  = std::move(routed[i].segments);
@@ -1815,7 +1862,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
 
     static int lastTotal = -1;
     static std::string lastViewOptions;
-    if (const std::string vo = viewOptions.toJson().dump(); vo != lastViewOptions) {
+    if (const std::string vo = viewOptions.layoutJson().dump(); vo != lastViewOptions) {
         if (!lastViewOptions.empty()) g_schematic.requestFit(true);
         lastViewOptions = vo;
     }

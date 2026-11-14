@@ -30,6 +30,12 @@ def _create_terms(design, terms):
             naja.SNLScalarTerm.create(design, _DIRECTIONS[term[1]], term[0])
 
 
+_ROLES = {"clock": "Clock", "data_input": "DataInput", "data_output": "DataOutput",
+          "async_reset": "AsyncReset", "async_set": "AsyncSet", "sync_reset": "SyncReset",
+          "sync_set": "SyncSet", "enable": "Enable", "scan_input": "ScanInput",
+          "scan_enable": "ScanEnable", "memory_write_enable": "MemoryWriteEnable"}
+
+
 def build_design(spec):
     """Build the spec'd netlist with the raw naja API in a DB of its own;
     returns {design name: design}. Instances are created in list order, so
@@ -41,6 +47,8 @@ def build_design(spec):
     for p in spec["primitives"]:
         d = naja.SNLDesign.createPrimitive(prims, p["name"])
         _create_terms(d, p["terms"])
+        for term, role in p.get("roles", {}).items():
+            d.getScalarTerm(term).setRole(getattr(naja.SNLTermRole, _ROLES[role]))
         designs[p["name"]] = d
     lib = naja.NLLibrary.create(db, "case_work")
     for spec_d in spec["designs"]:
@@ -126,6 +134,10 @@ def matches(expected, actual, where="reply"):
         if not isinstance(actual, dict):
             return f"{where}: expected an object, got {actual!r}"
         for key, value in expected.items():
+            if value == "$absent":
+                if key in actual:
+                    return f"{where}: unexpected {key!r} in {actual!r}"
+                continue
             if key not in actual:
                 return f"{where}: missing {key!r}"
             if (err := matches(value, actual[key], f"{where}.{key}")):

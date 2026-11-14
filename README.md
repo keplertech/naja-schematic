@@ -93,7 +93,7 @@ plus options, in any order. Their flags differ slightly:
 | `--liberty a.lib --liberty b.lib` | `--liberty a.lib b.lib` | Liberty cell libraries (Verilog only) |
 | | `--py-primitives prims.py` | Primitives defined in Python: a `.py` file or module whose `load(db)` builds them (repeatable) |
 | `--diagnosis report.json` | `--diagnosis report.json` | Show a diagnosis report on the design |
-| `--style styles.json` | `--style styles.json` | Color, widen, fill and label nets, instances and pins (`{"items": [...]}`, see `style_response` in [CLAUDE.md](CLAUDE.md)) |
+| `--style styles.json` | `--style styles.json` | Color, widen, fill and label nets, instances and pins (see [Style files](#style-files)) |
 | `--yosys-src` | `--yosys-src` | Read Yosys `(* src *)` attributes, so Show Sources leads back to the RTL (Verilog only) |
 | `--source-root dir` | `--source-root dir` | Where to look for relative source paths (repeatable) |
 | `--source-map FROM=TO` | `--source-map FROM=TO` | Rewrite source paths recorded on another machine (repeatable) |
@@ -110,6 +110,51 @@ Source paths are looked up as recorded, then under each `--source-root` in
 order, then in the current directory. `--source-map /home/ci/flow=/work/flow`
 finds a file recorded as `/home/ci/flow/rtl/top.v` at
 `/work/flow/rtl/top.v`.
+
+### Style files
+
+`--style` reads a JSON file listing what to color, widen, fill or label.
+It's kept across reloads and in SVG/PNG exports:
+
+```json
+{"items": [
+  {"kind": "net", "target": "en", "color": "#ff7f0e", "width": 3, "label": "en"},
+  {"kind": "net", "target": "u_ctrl/en_reg:Q", "color": "#1f77b4", "width": 2.5},
+  {"kind": "net", "target": [["u_core", "u_alu"], "A", 3], "color": "#2ca02c"},
+  {"kind": "instance", "target": "u_core/u_alu", "fill": "#2ca02c55", "label": "ALU"},
+  {"kind": "term", "path": ["u_ctrl", "en_reg"], "terminal": "CE", "color": "#d62728"}
+]}
+```
+
+A bare list of items works too. Each item has:
+
+- `kind`: `"net"` (every wire of the net through that pin), `"instance"`
+  (the default; also gate symbols and port flags) or `"term"` (one pin).
+- What it styles, either as a `target` or as `path`/`id_path` plus, for a
+  pin, `terminal`/`term_id` and `bit`:
+  - an instance: `"u1/u2"`, as `naja-schematic render --instance` takes
+    it, or a list of names or ids (`["u1", "u2"]`, `[3, 7]`);
+  - a pin: `"u1/u2:A"`, `"u1/u2:A[3]"`, or `"y"` / `"d[1]"` for a
+    top-level port, as `--net` takes it; or a list `[instance, terminal]`
+    / `[instance, terminal, bit]`, the instance as above and `[]` for a
+    top-level port (`[[], "en"]`); or `{"path": [...], "terminal": "A",
+    "bit": 3}`.
+
+  Text is matched against the design, so an escaped name containing `/`
+  or `:` still resolves. If the text could mean more than one object,
+  the item is refused and you need the list form. `path` is a list of
+  instance names (`[]` = the top), and `id_path` the same with instance
+  ids (needed for anonymous instances).
+- Any of `color` (`"#rrggbb"` or `"#rrggbbaa"`), `width` (wires and pins,
+  in SVG pixels at 1x), `fill` (instances; a translucent fill tints the
+  box) and `label` (replaces the drawn name).
+
+Items on one object merge in order. A diagnosis color beats a style
+color, and a style color beats a trace color. The browser server and
+`naja-schematic render` check every item before drawing: one that doesn't
+resolve is an error, and nothing is drawn. `target` is resolved by those
+Python hosts. The desktop app's `--style` takes `path`/`id_path` and
+`terminal`/`bit` only.
 
 ### Headless SVG export
 
@@ -154,13 +199,35 @@ On the command line they're flags (desktop app, `naja-schematic` server and
 | Option | Values | |
 |---|---|---|
 | `--instance-label` | `name` (default), `model`, `both` | The instance name above a box, its cell model under it, or both |
-| `--sink-rows N` | default 8, 0 = no limit | A column with more sinks (boxes driving nothing shown) than this becomes a grid of columns |
-| `--max-sinks N` | default 32, 0 = no limit | A net with more sinks draws the first N. The rest go into stacked summary boxes ("DFF ×812"), and clicking one shows its sinks |
-| `--group-by` | `model` (default), `hierarchy`, `role` | How sinks are gathered into summaries: by cell model, by the module holding them, or by the pin they're on (clock pins together, other pins by name) |
+| `--sink-rows N` | default 8, 0 = no limit | A column with more sinks (boxes driving nothing shown) than this becomes a grid of columns. With several drivers, each driver's sinks get a band of rows level with it, all bands starting in the same column, so no net's wires cross another net's sinks |
+| `--max-sinks N` | default 32, applied when not given; `0` turns it off | A net with more sinks draws the first N, in natural name order (`lut_111` before `lut_1037`). The rest go into stacked summary boxes ("DFF ×812"), and clicking one shows its sinks. To draw every sink, pass `--max-sinks 0` (`view_options={"max_sinks": 0}`) |
+| `--group-by` | `model` (default), `hierarchy`, `role`, `pin` | How sinks are gathered into summaries: by cell model, by the module holding them, by the role naja gives the pin they're on (`SNLBitTerm.getRole()`: "clock ×812", "reset ×40", "enable ×8", and "data ×165" for pins with a data role or none), or by that pin's name (clock pins together, other pins by name) |
+| `--no-convergence-outline` | outline on by default | A box two or more traces go through gets a near-black outline (never a box a style names). This turns it off (View > Outline Trace Convergence, `convergence_outline`) |
 
 A net's driver is always drawn as a box. So is an instance that is drawn
 for another reason: it drives something shown, is selected, has a
 diagnosis or a style.
+
+These only change exports (SVG and PNG), never the canvas:
+
+| Option | Values | |
+|---|---|---|
+| `--title TEXT` | default none | Text in a band above the drawing |
+| `--caption TEXT` | default none | Text in a band below the drawing |
+| `--legend` | off by default | A color swatch and label below the drawing for each trace, and each net a style labels |
+| `--hide-ui-glyphs` | off by default | No hollow stubs on open pins, no "•••" on boxes showing some of their pins |
+
+An exported SVG is structured, so a script or a page can find what's in it
+without reading geometry. Every net is a `<g class="net">` (wires, junction
+dots, bus marks, label) with `data-net`, `data-driver` (`u1/u2:Q`, or a
+top-level port's name) and `data-driver-id-path`; every box a
+`<g class="instance">` with `data-path` (`u1/u2`), `data-id-path` (`3,7`)
+and `data-model`; every top-level port flag a `<g class="port">` with
+`data-name` and `data-direction`; every summary box a
+`<g class="summary">` with `data-group` and `data-count`; every module
+frame a `<g class="module">`. When a name holds `/` or `:` (escaped
+Verilog names can) or is empty, `data-path-json`/`data-driver-json` give
+the path as JSON too. The groups change nothing in the drawing.
 
 ## Controls
 

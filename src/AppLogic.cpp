@@ -249,7 +249,7 @@ bool appFrame(AppState& state) {
         EquipotentialView::setShowHierarchy(!EquipotentialView::showHierarchy());
       // How the schematic is drawn (ViewOptions; also the host's
       // view_options push and the native --instance-label/--sink-rows/
-      // --max-sinks/--group-by flags).
+      // --max-sinks/--group-by/--no-convergence-outline flags).
       ViewOptions& vo = ViewOptions::current();
       if (ImGui::BeginMenu("Instance Labels")) {
         for (InstanceLabel l : { InstanceLabel::Name, InstanceLabel::Model, InstanceLabel::Both }) {
@@ -264,12 +264,17 @@ bool appFrame(AppState& state) {
         ImGui::SetNextItemWidth(120.0f);
         ImGui::DragInt("Sinks drawn per net", &vo.maxSinks, 0.2f, 0, 100000, vo.maxSinks ? "%d" : "all");
         ImGui::SeparatorText("Gather the others by");
-        for (FanoutGroupBy g : { FanoutGroupBy::Model, FanoutGroupBy::Hierarchy, FanoutGroupBy::Role }) {
-          const char* text = g == FanoutGroupBy::Model ? "Cell Model" : g == FanoutGroupBy::Hierarchy ? "Module" : "Pin (clock / name)";
+        for (FanoutGroupBy g : { FanoutGroupBy::Model, FanoutGroupBy::Hierarchy, FanoutGroupBy::Role, FanoutGroupBy::Pin }) {
+          const char* text = g == FanoutGroupBy::Model     ? "Cell Model"
+                           : g == FanoutGroupBy::Hierarchy ? "Module"
+                           : g == FanoutGroupBy::Role      ? "Pin Role (clock / reset / enable / data)"
+                                                           : "Pin Name";
           if (ImGui::MenuItem(text, "", vo.groupBy == g)) vo.groupBy = g;
         }
         ImGui::EndMenu();
       }
+      if (ImGui::MenuItem("Outline Trace Convergence", "", vo.convergenceOutline))
+        vo.convergenceOutline = !vo.convergenceOutline;
       ImGui::Separator();
       if (ImGui::MenuItem("Clear nets", NAJA_SHORTCUT("K"))) {
         ShowNetStore::forget();

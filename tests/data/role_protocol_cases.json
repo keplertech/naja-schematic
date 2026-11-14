@@ -1,0 +1,54 @@
+{
+  "comment": [
+    "Term roles (naja's SNLDesignModeling::getTermRole()) on the wire, the",
+    "same from both backends: run by python/tests/test_render.py against",
+    "protocol.py and by tests/provider/LocalSNLProviderProtocolTest.cpp",
+    "against LocalSNLProvider. Same format as anonymous_protocol_cases.json;",
+    "a primitive's `roles` gives its terms' roles by wire name, and an",
+    "expected value \"$absent\" means the key must not be there (a data pin",
+    "sends no \"role\")."
+  ],
+  "design": {
+    "primitives": [
+      {"name": "DRV", "terms": [["A", "input"], ["Y", "output"]]},
+      {"name": "FF", "terms": [["D", "input"], ["CK", "input"], ["R", "input"],
+                               ["S", "input"], ["E", "input"], ["Q", "output"]],
+       "roles": {"D": "data_input", "CK": "clock", "R": "async_reset",
+                 "S": "sync_set", "E": "enable", "Q": "data_output"}}
+    ],
+    "designs": [
+      {"name": "top",
+       "terms": [["a", "input"]],
+       "instances": [["drv", "DRV"], ["f_ck", "FF"], ["f_r", "FF"], ["f_s", "FF"],
+                     ["f_e", "FF"], ["f_d", "FF"]],
+       "nets": [{"name": "a", "term": "a", "pins": [[0, "A"]]},
+                {"name": "n", "pins": [[0, "Y"], [1, "CK"], [2, "R"], [3, "S"],
+                                       [4, "E"], [5, "D"]]}]}
+    ],
+    "top": "top"
+  },
+  "cases": [
+    {"name": "each receiving pin carries its naja role, a data pin none",
+     "request": {"request": "load_equipotential", "path": [0], "term_id": 1},
+     "expect": [{"response": "equipotential_response",
+                 "occurrences": [
+                   {"path": [["drv", 0, "DRV"]], "name": "Y", "role": "$absent"},
+                   {"path": [["f_ck", 1, "FF"]], "name": "CK", "role": "clock"},
+                   {"path": [["f_r", 2, "FF"]], "name": "R", "role": "async_reset"},
+                   {"path": [["f_s", 3, "FF"]], "name": "S", "role": "sync_set"},
+                   {"path": [["f_e", 4, "FF"]], "name": "E", "role": "enable"},
+                   {"path": [["f_d", 5, "FF"]], "name": "D", "role": "$absent"}]}],
+     "unordered": ["occurrences"]},
+
+    {"name": "an instance's pins carry their roles too",
+     "request": {"request": "resolve_instance", "id_path": [1]},
+     "expect": [{"response": "instance_resolved", "found": true,
+                 "instance": {"terms": [
+                   {"name": "D", "role": "$absent"},
+                   {"name": "CK", "role": "clock"},
+                   {"name": "R", "role": "async_reset"},
+                   {"name": "S", "role": "sync_set"},
+                   {"name": "E", "role": "enable"},
+                   {"name": "Q", "role": "$absent"}]}}]}
+  ]
+}

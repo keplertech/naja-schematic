@@ -45,17 +45,44 @@ view
 Nets, instances and pins can also be styled -- a color and width for a
 net's wires, a fill for a box, labels -- kept across reloads and in SVG
 exports. A `"net"` item colors the whole net through the pin it names;
-`"target"` takes anything `show_instance()`/`show_net()` take:
+`"target"` takes anything `show_instance()`/`show_net()` take, and also
+the text forms of `naja-schematic render`'s `--instance`/`--net`
+(`"u1/u2"`, `"drv_0:O"`, `"en"` for a top-level port):
 
 ```python
 view.style([
     {"kind": "net", "target": ([], "en"), "color": "#ff7f0e", "width": 3, "label": "en"},
-    {"kind": "net", "target": (["drv_0"], "O"), "color": "#1f77b4"},
+    {"kind": "net", "target": "drv_0:O", "color": "#1f77b4"},
     {"kind": "instance", "target": ["s0"], "fill": "#1f77b455"},  # a tint
 ])
 ```
 
 Diagnosis colors win over styles, and styles over trace colors.
+
+The same items, in a JSON file, are what `--style FILE` reads (on
+`naja-schematic` and `naja-schematic render`). JSON has no tuples: a pin
+there is text, a list `[instance, terminal]` / `[instance, terminal,
+bit]` (`[]` = a top-level port), or `{"path": [...], "terminal": ...,
+"bit": ...}`:
+
+```json
+{"items": [
+  {"kind": "net", "target": [[], "en"], "color": "#ff7f0e", "width": 3, "label": "en"},
+  {"kind": "net", "target": "drv_0:O", "color": "#1f77b4", "width": 2.5},
+  {"kind": "net", "target": [["u_core", "u_alu"], "A", 3], "color": "#2ca02c"},
+  {"kind": "instance", "target": "u_core/u_alu", "fill": "#2ca02c55", "label": "ALU"},
+  {"kind": "term", "path": ["s0"], "terminal": "CE", "color": "#d62728"}
+]}
+```
+
+`kind` is `"net"`, `"instance"` (the default) or `"term"`. Instead of
+`target`, an item can give `path` (instance names, `[]` = the top) or
+`id_path` (instance ids), plus `terminal`/`term_id` and `bit` for a pin.
+The style fields are `color` (`"#rrggbb"`/`"#rrggbbaa"`), `width`,
+`fill` and `label`. Text is matched against the design. Text that names
+nothing, or more than one object, is an error. So is any item that
+doesn't resolve, and then nothing is drawn. See [Style
+files](../README.md#style-files) for details.
 
 The view and your najaeda code can point each other at instances.
 `show_instance()` takes a najaeda `Instance` or a naja `SNLPath`, a list
@@ -129,6 +156,12 @@ naja_schematic.export_svg(
     view_options={"instance_label": "both",         # name above each box, cell model under it
                   "max_sinks": 16, "group_by": "model"},  # a net's sinks past 16: "DFF x812"
 )
+naja_schematic.export_svg(
+    traces=[(["u1"], "D")], path="report.svg",
+    title="Fan-in of u1/D", caption="after the edit",  # bands above / below the drawing
+    legend=True,                                     # a swatch per trace and labeled net
+    hide_ui_glyphs=True,                             # no open-pin stubs or "more pins" dots
+)
 svgs = naja_schematic.export_svgs([                 # several drawings, one renderer
     {"instances": [["u1", "u2"]], "path": "u2.svg"},
     {"traces": [(["u3"], "A", 0)], "path": "u3_a0.svg"},
@@ -149,7 +182,10 @@ naja-schematic render --verilog design.v --py-primitives prims.py --top top \
 ```
 
 `view_options` (and the flags `--instance-label`, `--sink-rows`,
-`--max-sinks`, `--group-by`) set how the schematic is drawn: see
+`--max-sinks`, `--group-by`; for exports only, `--title`, `--caption`,
+`--legend`, `--hide-ui-glyphs`, also `export_svg()`/`export_png()`
+keywords) set how the schematic is drawn, and the SVG's `<g>` groups
+name every net, instance and port in it: see
 [How the schematic is drawn](../README.md#how-the-schematic-is-drawn). In
 a notebook they're `show(view_options=...)` / `view.view_options(...)`,
 and on a server `ViewerServer(view_options=...)`, the same flags on
