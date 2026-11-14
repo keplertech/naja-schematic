@@ -68,6 +68,7 @@ class EquipotentialView {
     static void fitView();
     // The schematic as drawn, as a standalone SVG document ("" if empty).
     static std::string exportSvg();
+    static std::string exportPng(float scale);
     static bool hasSchematic();
     static void clearNets();
     // Returns true (and resets the flag) if the canvas right-click requested a clear.

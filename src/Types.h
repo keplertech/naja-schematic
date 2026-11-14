@@ -476,6 +476,20 @@ struct InstanceShape {
     // not from this enum.
     PrimitiveType primitiveType = PrimitiveType::Unknown;
     std::string modelName;  // "port" for a top-level port stub, else empty
+    // The instance's cell model (the last of its path's model names; "" if
+    // unknown), drawn under the symbol when `showModel` is set -- see
+    // ViewOptions' instance_label. `hideName` leaves the name out (the
+    // "model" choice). Both are part of the symbol's footprint
+    // (SchematicLayout::footprintWidth()/footprintHeight()).
+    std::string model;
+    bool        showModel = false;
+    bool        hideName  = false;
+    // A fanout summary: the `summaryCount` sinks of one net gathered into one
+    // box (ViewOptions' max_sinks/group_by), labeled by `name`. Drawn as a
+    // stack of boxes; clicking it expands it into its sinks. Its `path` is a
+    // made-up one (EquipotentialView), never sent to the host.
+    bool        isSummary    = false;
+    int         summaryCount = 0;
     float x = 0.0f;
     float y = 0.0f;  // world coords (top-left)
     float w = 100.0f;

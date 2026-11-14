@@ -1273,6 +1273,65 @@ def export_svg():
     return {"response": "export_svg"}
 
 
+def export_png(scale=1.0):
+    """Build an export_png push message: the viewer answers, once its
+    schematic shows something, with a png_exported notification carrying
+    the same drawing as export_svg's, as PNG bytes in base64, `scale`
+    pixels per SVG pixel (every stroke, radius and font size scaled with
+    it). render.py intercepts that answer."""
+    if isinstance(scale, bool) or not isinstance(scale, (int, float)) or not 0 < scale <= 64:
+        raise ValueError(f"scale: expected a number in (0, 64], got {scale!r}")
+    return {"response": "export_png", "scale": float(scale)}
+
+
+INSTANCE_LABELS = ("name", "model", "both")
+FANOUT_GROUP_BY = ("model", "hierarchy", "role")
+# What a viewer draws with until told otherwise (ViewOptions in the C++).
+DEFAULT_VIEW_OPTIONS = {"instance_label": "name", "sink_rows": 8, "max_sinks": 32,
+                        "group_by": "model"}
+
+
+def view_options(options=None, **kwargs):
+    """Build a view_options push message: how the viewer draws the
+    schematic (not what it shows), kept until changed -- a root load
+    doesn't reset it. `options` (a dict) and keyword arguments name any of:
+
+    - "instance_label": "name" (the instance name above a box, the
+      default), "model" (its cell model under it, no name) or "both";
+    - "sink_rows": a column holding more sinks (boxes nothing shown is
+      driven by) than this is wrapped into a grid of columns (default 8;
+      0: never);
+    - "max_sinks": a net with more instance sinks than this draws the first
+      ones and gathers the rest into summary boxes ("DFF x812") that expand
+      when clicked; its driver, and a sink shown for another reason, are
+      always drawn (default 32; 0: never);
+    - "group_by": how the gathered sinks are grouped: "model" (the
+      default), "hierarchy" (the module holding them) or "role" (the
+      receiving pin: clock pins together, others by name).
+
+    Keys left out (or None) keep the viewer's current value. Raises
+    ValueError for a bad value, TypeError for an unknown key."""
+    merged = dict(options or {})
+    merged.update(kwargs)
+    unknown = set(merged) - set(DEFAULT_VIEW_OPTIONS)
+    if unknown:
+        raise TypeError(f"unknown view options {sorted(unknown)}: expected "
+                        f"{sorted(DEFAULT_VIEW_OPTIONS)}")
+    message = {"response": "view_options"}
+    for key, value in merged.items():
+        if value is None:
+            continue
+        if key == "instance_label" and value not in INSTANCE_LABELS:
+            raise ValueError(f"instance_label: expected one of {INSTANCE_LABELS}, got {value!r}")
+        if key == "group_by" and value not in FANOUT_GROUP_BY:
+            raise ValueError(f"group_by: expected one of {FANOUT_GROUP_BY}, got {value!r}")
+        if key in ("sink_rows", "max_sinks") and (
+                isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 1000000):
+            raise ValueError(f"{key}: expected a count (0 = no limit), got {value!r}")
+        message[key] = value
+    return message
+
+
 def show_net(id_path, term_id, bit=None, *, path=None, label=None, color=None, add=True,
              trace=False):
     """Build a show_net push message: the viewer draws the net on a pin as

@@ -12,7 +12,9 @@ class LocalSNLProvider;
 // window: the schematic built by the same requests and response handling
 // as the GUI, then SchematicView::exportSvg().
 struct HeadlessExportOptions {
-  std::string outPath;
+  std::string outPath;        // --export: SVG ("" = none)
+  std::string pngPath;        // --png: PNG ("" = none)
+  float       pngScale = 1.0f;  // --scale: PNG pixels per SVG pixel
   std::string diagnosisPath;
   std::string stylePath;  // --style: host styling (StyleStore), drawn in the export
   // One instance drawn alone with every pin open (resolve_instance): a JSON

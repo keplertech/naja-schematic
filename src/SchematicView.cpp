@@ -1,5 +1,7 @@
 #include "SchematicView.h"
 
+#include "RasterPainter.h"
+
 #include <imgui.h>
 #include <algorithm>
 #include <cctype>
@@ -79,6 +81,10 @@ constexpr ImU32 kInstanceLineColor  = IM_COL32(35, 35, 38, 235);
 constexpr ImU32 kPinLineColor       = IM_COL32(40, 40, 40, 235);
 constexpr ImU32 kPinLabelColor      = IM_COL32(45, 45, 50, 235);
 constexpr ImU32 kInstanceNameColor  = IM_COL32(30, 40, 90, 235);
+constexpr ImU32 kInstanceModelColor = IM_COL32(95, 95, 110, 235);
+// World offset of each box drawn behind a fanout summary (fits in kRowSpacing's
+// room under it: kRowSpacing - kNameH = 10).
+constexpr float kSummaryStackStep   = 3.0f;
 // World-space radius of a gate's negation bubble (NAND/NOR/XNOR/INV).
 constexpr float kBubbleR = 4.0f;
 // Top-level design ports get their own tint so they can't be mistaken for an
@@ -481,12 +487,18 @@ static void drawInstanceName(SchematicPainter* dl, const InstanceShape& inst,
                              const SchematicView& sv, ImVec2 rmin) {
     float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
     if (fontSize <= 0.0f) return;
-    const std::string shown = SchematicLayout::shownName(inst, instanceNameWidth);
-    if (shown.empty()) return;
     ImFont* font = ImGui::GetFont();
-    ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, shown.c_str());
-    dl->AddText(font, fontSize, ImVec2(rmin.x, rmin.y - ts.y - 2.0f * sv.transform.scale),
-                kInstanceNameColor, shown.c_str());
+    const std::string shown = SchematicLayout::shownName(inst, instanceNameWidth);
+    if (!shown.empty()) {
+        ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, shown.c_str());
+        dl->AddText(font, fontSize, ImVec2(rmin.x, rmin.y - ts.y - 2.0f * sv.transform.scale),
+                    kInstanceNameColor, shown.c_str());
+    }
+    // The cell model, in the row the layout reserved under the symbol.
+    const std::string model = SchematicLayout::shownModel(inst, instanceNameWidth);
+    if (!model.empty())
+        dl->AddText(font, fontSize, ImVec2(rmin.x, rmin.y + (inst.h + 2.0f) * sv.transform.scale),
+                    kInstanceModelColor, model.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +511,16 @@ static void drawGenericInstance(SchematicPainter* dl, const InstanceShape& inst,
     sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
 
     if (inst.w > 0.0f && inst.h > 0.0f) {
+        // A fanout summary stands for many boxes: two more peek out behind
+        // it, down and to the right.
+        if (inst.isSummary) {
+            for (float k : { 2.0f, 1.0f }) {
+                const ImVec2 d(kSummaryStackStep * k * sv.transform.scale, kSummaryStackStep * k * sv.transform.scale);
+                const ImVec2 a(rmin.x + d.x, rmin.y + d.y), b(rmax.x + d.x, rmax.y + d.y);
+                dl->AddRectFilled(a, b, fillOf(inst, kInstanceFillColor), 0.0f);
+                dl->AddRect(a, b, kInstanceLineColor, 0.0f, 0, 1.0f);
+            }
+        }
         // Flat fill: a neutral "paper" tone shared by every
         // box, not a per-category color -- color stays reserved for
         // diagnosis/selection highlighting rather than decorating every
@@ -1185,9 +1207,10 @@ void shapeWorldExtent(const InstanceShape& inst, ImVec2& outMin, ImVec2& outMax)
         flag = std::max(2.0f * kBoundaryPortHalfHBase, textW + 10.0f) + kBoundaryPortHalfHBase;
     }
     const bool named = !SchematicLayout::shownName(inst, instanceNameWidth).empty();
+    const float stack = inst.isSummary ? 2.0f * kSummaryStackStep : 0.0f;
     outMin = ImVec2(inst.x - flag, inst.y - (named ? SchematicLayout::kNameH : 0.0f));
-    outMax = ImVec2(inst.x + SchematicLayout::footprintWidth(inst, instanceNameWidth) + flag,
-                    inst.y + inst.h);
+    outMax = ImVec2(inst.x + SchematicLayout::footprintWidth(inst, instanceNameWidth) + flag + stack,
+                    inst.y + std::max(SchematicLayout::footprintHeight(inst, instanceNameWidth), inst.h + stack));
 }
 
 bool SchematicView::computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const {
@@ -1402,4 +1425,26 @@ std::string SchematicView::exportSvg(float margin) const {
     SvgPainter svg(size);
     sheet.render(svg, ImVec2(0.0f, 0.0f), size);
     return svg.finish();
+}
+
+std::string SchematicView::exportPng(float scale, float margin) const {
+    ImVec2 lo, hi;
+    if (!(scale > 0.0f) || !computeWorldBounds(lo, hi)) return "";
+    SchematicView sheet = *this;
+    sheet.exporting = true;
+    sheet.hoveredPortId = -1;
+    sheet.transform = Transform{};
+    sheet.transform.offset = ImVec2(lo.x - margin, lo.y - margin);
+    const ImVec2 size(hi.x - lo.x + 2.0f * margin, hi.y - lo.y + 2.0f * margin);
+    if (double(size.x) * scale * double(size.y) * scale > kMaxPngPixels) return "";
+    // Twice: the first drawing bakes the font sizes it needs into the atlas,
+    // which may grow it and so move glyphs drawn before; the second finds
+    // every glyph in place.
+    {
+        RasterPainter warmup(size, scale);
+        sheet.render(warmup, ImVec2(0.0f, 0.0f), size);
+    }
+    RasterPainter raster(size, scale);
+    sheet.render(raster, ImVec2(0.0f, 0.0f), size);
+    return raster.png();
 }

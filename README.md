@@ -131,14 +131,36 @@ A pin is `{"path": ["u1"], "terminal": "A", "bit": 0}`: `path` is the
 instance that holds it (leave it out for a top-level port), `bit` is only
 for buses.
 
+`--png out.png` writes the same drawing as a PNG instead (or as well),
+`--scale 3` pixels per SVG pixel (default 1): text, strokes and shapes
+are drawn at that resolution, not enlarged.
+
 The Python package does the same without the desktop app (see
 [python/README.md](python/README.md#svg-export-no-browser)), also for
 designs whose primitives are defined in Python:
 
 ```bash
 naja-schematic render --verilog design.v --py-primitives prims.py \
-  --trace u1:D --net u2:A[3] --instance u1 --svg cone.svg
+  --trace u1:D --net u2:A[3] --instance u1 --svg cone.svg --png cone.png --scale 3
 ```
+
+### How the schematic is drawn
+
+These options are in the **View** menu, and work the same in every export.
+On the command line they're flags (desktop app, `naja-schematic` server and
+`naja-schematic render`). From Python they're `view_options=` (see
+[python/README.md](python/README.md)).
+
+| Option | Values | |
+|---|---|---|
+| `--instance-label` | `name` (default), `model`, `both` | The instance name above a box, its cell model under it, or both |
+| `--sink-rows N` | default 8, 0 = no limit | A column with more sinks (boxes driving nothing shown) than this becomes a grid of columns |
+| `--max-sinks N` | default 32, 0 = no limit | A net with more sinks draws the first N. The rest go into stacked summary boxes ("DFF ×812"), and clicking one shows its sinks |
+| `--group-by` | `model` (default), `hierarchy`, `role` | How sinks are gathered into summaries: by cell model, by the module holding them, or by the pin they're on (clock pins together, other pins by name) |
+
+A net's driver is always drawn as a box. So is an instance that is drawn
+for another reason: it drives something shown, is selected, has a
+diagnosis or a style.
 
 ## Controls
 
@@ -153,6 +175,7 @@ Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 | Click a bus pin | Show its bits |
 | Double-click a dashed box | Show all of its pins |
 | Click a box | Select the instance (also in the design tree) |
+| Click a stacked (summary) box | Show the sinks it gathers (a net's sinks past *View > Fanout*'s limit) |
 | Click a wire | Select (highlight) its net |
 | Click a box's hierarchy glyph | Show / hide what is inside it |
 | Click a review badge (numbered disc) | Open its thread in the Review tab |

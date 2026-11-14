@@ -12,10 +12,12 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 #include <imgui.h>
 
 #include "Types.h"
+#include "ViewOptions.h"
 
 namespace SchematicLayout {
 
@@ -61,11 +63,22 @@ using NameWidthFn = std::function<float(const std::string&)>;
 std::string shortenMiddle(const std::string& name, const NameWidthFn& width, float maxW);
 
 // The name drawn above `s` (its label, else its name, shortened to
-// kNameMaxW), or "" for shapes drawn without one (frames, top-level ports).
+// kNameMaxW), or "" for shapes drawn without one (frames, top-level ports,
+// a box showing its model only).
 std::string shownName(const InstanceShape& s, const NameWidthFn& width);
 
-// Width of `s`'s footprint: its symbol, or its shown name when wider.
+// The cell model drawn under `s` (shortened to kNameMaxW), or "" when it
+// shows none: in the kNameH row right below the symbol, left-aligned.
+std::string shownModel(const InstanceShape& s, const NameWidthFn& width);
+
+// Width of `s`'s footprint: its symbol, or its shown name or model when
+// wider.
 float footprintWidth(const InstanceShape& s, const NameWidthFn& width);
+
+// Height of `s`'s footprint below its top: the symbol, plus the model's
+// row when it shows one. (The name's row, above, is in the spacing between
+// boxes: kRowSpacing > kNameH.)
+float footprintHeight(const InstanceShape& s, const NameWidthFn& width);
 
 // ---------------------------------------------------------------------------
 // Symbols. A gate (AND/OR/XOR families, INV/BUF, assign, tie cells) is drawn as its
@@ -117,6 +130,13 @@ inline constexpr float kOperatorGlyphW = 2.f * kPinPitch;
 //   5. each column is placed vertically by isotonic regression towards the
 //      heights that put an instance's pins level with the pins they connect
 //      to (straight wires), keeping the column order and spacing.
+//   6. a column with more than `maxSinkRows` sinks -- nodes nothing placed
+//      is driven by (a net's loads: flops, a summary box) -- is wrapped into
+//      a grid: the sinks, in their order, are dealt into as few columns of
+//      at most that many as needed (balanced), placed before the column's
+//      other nodes, which keep the last column next to what they drive.
+//      Each grid column is a level of its own (Placement::level), with a
+//      channel before it like any other. 0: no limit.
 // Pure geometry: the result depends only on the inputs, in their order.
 // ---------------------------------------------------------------------------
 struct PlaceNode {
@@ -135,7 +155,8 @@ struct Placement {
     std::vector<ImVec2> pos;    // top-left per node
     std::vector<int>    level;  // logic level per node (0 = leftmost column)
 };
-Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vector<PlaceNet>& nets);
+Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vector<PlaceNet>& nets,
+                           int maxSinkRows = 0);
 
 // Stacks the top-level port flags of one side of the drawing: each wants the
 // height of the pin it connects to (`desiredY`), and no two may be closer than
@@ -164,6 +185,8 @@ struct RouteRect {
 // The row `s`'s shown name takes above it, if it has one -- an obstacle
 // like the symbol itself.
 std::optional<RouteRect> nameRect(const InstanceShape& s, const NameWidthFn& width);
+// Likewise the row its shown model takes below it.
+std::optional<RouteRect> modelRect(const InstanceShape& s, const NameWidthFn& width);
 struct RoutePin {
     ImVec2 at;
     bool   right = true;   // the wire leaves the pin to the right (else left)
@@ -216,6 +239,52 @@ struct Item {
 };
 
 void buildItems(const Equipotential* eq, std::vector<Item>& drivers, std::vector<Item>& receivers);
+
+// ---------------------------------------------------------------------------
+// Fanout summaries (ViewOptions max_sinks/group_by). A net with more
+// instance sinks than `maxSinks` draws the first ones, and the rest are
+// gathered into groups, one summary box each ("DFF x812"), wired from the
+// driver. Never gathered: a driver of any net, an instance in `pinned` (the
+// caller's: shown on its own, selected, diagnosed...), a sink a net with few
+// enough sinks draws anyway, a group the user expanded (`expanded`), nor a
+// group of a single instance -- an instance drawn for any reason is drawn
+// as itself on every net. Top-level ports are never gathered.
+//
+// A group is keyed by what it gathers: the model (Model), the module
+// holding the sinks (Hierarchy), or the receiving pin -- every clock pin
+// together, else by base name (Role).
+// ---------------------------------------------------------------------------
+struct FanoutGroupKey {
+    std::string  text;     // Model: the model; Role: the pin's base name
+    InstancePath module;   // Hierarchy: the module containing the sinks
+    bool         clock = false;  // Role: the clock pins
+    auto tie() const { return std::tie(text, module, clock); }
+    bool operator<(const FanoutGroupKey& o) const { return tie() < o.tie(); }
+    bool operator==(const FanoutGroupKey& o) const { return tie() == o.tie(); }
+};
+struct FanoutNet {
+    std::vector<Item> drivers, receivers;
+};
+struct FanoutGroup {
+    size_t              net = 0;      // index in the nets given
+    FanoutGroupKey      key;
+    std::string         label;        // "DFF x812" (with a multiplication sign), the summary's name
+    std::string         pin;          // the summary's input pin: the sinks' pin if they share one
+    bool                clock = false;  // every gathered pin is a clock pin
+    std::vector<size_t> receivers;    // the gathered receivers (indices in the net's)
+    size_t              count = 0;    // distinct instances gathered
+    // The deepest module holding every gathered sink, and its models: where
+    // the summary goes when the hierarchy is shown.
+    InstancePath             module;
+    std::vector<std::string> moduleModels;
+};
+struct FanoutPlan {
+    std::vector<std::vector<int>> groupOf;  // per net, per receiver: its group, or -1 (drawn)
+    std::vector<FanoutGroup>      groups;
+};
+using FanoutExpandedFn = std::function<bool(size_t net, const FanoutGroupKey& key)>;
+FanoutPlan planFanout(const std::vector<FanoutNet>& nets, int maxSinks, FanoutGroupBy groupBy,
+                      const std::set<InstancePath>& pinned, const FanoutExpandedFn& expanded);
 
 // ---------------------------------------------------------------------------
 // Hierarchy grouping: nested frames for the hierarchical modules containing

@@ -32,6 +32,9 @@ class HeadlessView {
     // The whole sheet as SVG (SchematicView::exportSvg()); "" when nothing
     // is drawn.
     std::string exportSvg() const;
+    // The whole sheet as PNG bytes, `scale` pixels per SVG pixel
+    // (SchematicView::exportPng()); "" when nothing is drawn.
+    std::string exportPng(float scale) const;
 
   private:
     AppState state_;

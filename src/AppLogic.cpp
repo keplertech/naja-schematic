@@ -19,6 +19,8 @@ using json = nlohmann::json;
 #include "Types.h"
 #include "Console.h"
 #include "EquipotentialView.h"
+#include "PngWriter.h"
+#include "ViewOptions.h"
 #include "DiagnosisStore.h"
 #include "DiagnosisView.h"
 #include "SourceStore.h"
@@ -128,6 +130,7 @@ static void renderShortcutsWindow(bool& open) {
     {"Click a bus pin",              "Show its bits"},
     {"Double-click a dashed box",    "Show all of its pins"},
     {"Click a box",                  "Select the instance (also in the tree)"},
+    {"Click a stacked (summary) box","Show the sinks it gathers (View > Fanout)"},
     {"Click a wire",                 "Select (highlight) its net"},
     {"Click a box's hierarchy glyph","Show / hide what is inside it"},
     {"Click a review badge",         "Open its thread in the Review tab"},
@@ -244,6 +247,29 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Fit",        NAJA_SHORTCUT("0"))) EquipotentialView::fitView();
       if (ImGui::MenuItem("Show Hierarchy", "", EquipotentialView::showHierarchy()))
         EquipotentialView::setShowHierarchy(!EquipotentialView::showHierarchy());
+      // How the schematic is drawn (ViewOptions; also the host's
+      // view_options push and the native --instance-label/--sink-rows/
+      // --max-sinks/--group-by flags).
+      ViewOptions& vo = ViewOptions::current();
+      if (ImGui::BeginMenu("Instance Labels")) {
+        for (InstanceLabel l : { InstanceLabel::Name, InstanceLabel::Model, InstanceLabel::Both }) {
+          const char* text = l == InstanceLabel::Name ? "Name" : l == InstanceLabel::Model ? "Cell Model" : "Name and Cell Model";
+          if (ImGui::MenuItem(text, "", vo.instanceLabel == l)) vo.instanceLabel = l;
+        }
+        ImGui::EndMenu();
+      }
+      if (ImGui::BeginMenu("Fanout")) {
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::DragInt("Rows per sink column", &vo.sinkRows, 0.2f, 0, 1000, vo.sinkRows ? "%d" : "no limit");
+        ImGui::SetNextItemWidth(120.0f);
+        ImGui::DragInt("Sinks drawn per net", &vo.maxSinks, 0.2f, 0, 100000, vo.maxSinks ? "%d" : "all");
+        ImGui::SeparatorText("Gather the others by");
+        for (FanoutGroupBy g : { FanoutGroupBy::Model, FanoutGroupBy::Hierarchy, FanoutGroupBy::Role }) {
+          const char* text = g == FanoutGroupBy::Model ? "Cell Model" : g == FanoutGroupBy::Hierarchy ? "Module" : "Pin (clock / name)";
+          if (ImGui::MenuItem(text, "", vo.groupBy == g)) vo.groupBy = g;
+        }
+        ImGui::EndMenu();
+      }
       ImGui::Separator();
       if (ImGui::MenuItem("Clear nets", NAJA_SHORTCUT("K"))) {
         ShowNetStore::forget();
@@ -499,6 +525,13 @@ bool appFrame(AppState& state) {
           json reply;
           reply["request"] = "svg_exported";
           reply["svg"]     = EquipotentialView::exportSvg();
+          state.provider->send(reply.dump());
+        }
+        if (state.pngExportRequested && EquipotentialView::hasSchematic()) {
+          state.pngExportRequested = false;
+          json reply;
+          reply["request"] = "png_exported";
+          reply["png"]     = PngWriter::base64(EquipotentialView::exportPng(state.pngScale));
           state.provider->send(reply.dump());
         }
       }

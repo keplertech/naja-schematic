@@ -77,13 +77,14 @@ def _static_response(connection, request):
 
 
 async def serve(host="localhost", port=DEFAULT_PORT, diagnosis=None, open_browser=False,
-                source_roots=(), source_maps=(), review=None, style=None):
+                source_roots=(), source_maps=(), review=None, style=None, view_options=None):
     """Serve the viewer page and its WebSocket on host:port, forever."""
     from websockets.asyncio.server import serve as ws_serve
     from websockets.exceptions import ConnectionClosed
 
     session = ViewerSession(diagnosis=diagnosis, source_roots=source_roots,
-                            source_maps=source_maps, review=review, style=style)
+                            source_maps=source_maps, review=review, style=style,
+                            view_options=view_options)
 
     async def handle_connection(websocket):
         log.info("Client connected")
@@ -164,7 +165,7 @@ class ViewerServer:
 
     def __init__(self, host="127.0.0.1", port=0, *, lock=None, run=None,
                  token=True, allowed_origins=(), diagnosis=None, source_roots=(),
-                 source_maps=(), review=None, style=None):
+                 source_maps=(), review=None, style=None, view_options=None):
         if lock is not None and run is not None:
             raise ValueError("pass lock or run, not both")
         if run is None:
@@ -183,7 +184,7 @@ class ViewerServer:
         self._session = ViewerSession(push=self._broadcast, run=run, diagnosis=diagnosis,
                                       dispatch=self._dispatch_callback,
                                       source_roots=source_roots, source_maps=source_maps,
-                                      review=review, style=style)
+                                      review=review, style=style, view_options=view_options)
         self._thread = None
         self._loop = None
         self._stopping = None
@@ -292,6 +293,14 @@ class ViewerServer:
         styles over trace colors. Kept in SVG exports.
         """
         self._session.style(items)
+
+    def view_options(self, options=None, **kwargs):
+        """Set how every connected viewer, and any that (re)loads later,
+        draws the schematic: "instance_label" ("name", "model", "both"),
+        "sink_rows", "max_sinks", "group_by" ("model", "hierarchy",
+        "role"); see naja_schematic.protocol.view_options(). Keys not given
+        keep their value."""
+        self._session.view_options(options, **kwargs)
 
     def show_instance(self, target):
         """Reveal, select and draw one instance in every viewer, and in any
@@ -539,13 +548,14 @@ class ViewerServer:
 # ---------------------------------------------------------------------------
 
 def serve_stdio(diagnosis=None, stdin=None, stdout=None, source_roots=(), source_maps=(),
-                review=None, style=None):
+                review=None, style=None, view_options=None):
     """Answer one JSON request per stdin line with JSON lines on stdout,
     until stdin closes. Logging must not go to stdout in this mode."""
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     session = ViewerSession(diagnosis=diagnosis, source_roots=source_roots,
-                            source_maps=source_maps, review=review, style=style)
+                            source_maps=source_maps, review=review, style=style,
+                            view_options=view_options)
     for line in stdin:
         line = line.strip()
         if not line:
@@ -558,6 +568,40 @@ def serve_stdio(diagnosis=None, stdin=None, stdout=None, source_roots=(), source
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def add_view_arguments(parser):
+    """The flags setting how the schematic is drawn (protocol.view_options()),
+    shared by the server and `naja-schematic render`."""
+    from .protocol import FANOUT_GROUP_BY, INSTANCE_LABELS
+    group = parser.add_argument_group("drawing")
+    group.add_argument("--instance-label", choices=INSTANCE_LABELS,
+                       help="Text on an instance: its name above it (default), its cell "
+                            "model under it, or both")
+    group.add_argument("--sink-rows", type=int, metavar="N",
+                       help="Wrap a column of more than N sinks into a grid (default 8; "
+                            "0: never)")
+    group.add_argument("--max-sinks", type=int, metavar="N",
+                       help="Draw the first N sinks of a net and gather the others into "
+                            "summary boxes that expand when clicked (default 32; 0: never)")
+    group.add_argument("--group-by", choices=FANOUT_GROUP_BY,
+                       help="How gathered sinks are grouped: by cell model (default), by "
+                            "the module holding them, or by receiving pin (role)")
+
+
+def view_options_from_args(args):
+    """The view options add_view_arguments()'s flags set (None: none)."""
+    options = {key: getattr(args, key) for key in
+               ("instance_label", "sink_rows", "max_sinks", "group_by")
+               if getattr(args, key, None) is not None}
+    if not options:
+        return None
+    from .protocol import view_options
+    try:
+        view_options(options)
+    except ValueError as e:
+        raise SystemExit(f"--{str(e).split(':')[0].replace('_', '-')}: {e}")
+    return options
+
 
 def _source_map(value):
     # FROM=TO, split at the first "=".
@@ -593,6 +637,7 @@ def build_arg_parser():
                         dest="source_roots",
                         help="Directory to look up relative source file references in "
                              "(repeatable, tried in order, then the current directory)")
+    add_view_arguments(parser)
     parser.add_argument("--source-map", action="append", default=[], metavar="FROM=TO",
                         dest="source_maps", type=_source_map,
                         help="Rewrite source paths starting with FROM to start with TO "
@@ -858,13 +903,15 @@ def main(argv=None):
         except (OSError, ValueError, TypeError) as e:
             raise SystemExit(f"--style {args.style}: {e}")
 
+    view_options = view_options_from_args(args)
     if args.stdio:
         serve_stdio(diagnosis, stdout=protocol_out, source_roots=args.source_roots,
-                    source_maps=args.source_maps, review=review, style=style)
+                    source_maps=args.source_maps, review=review, style=style,
+                    view_options=view_options)
         return
     try:
         asyncio.run(serve(args.host, args.port, diagnosis, args.open, args.source_roots,
-                          args.source_maps, review, style))
+                          args.source_maps, review, style, view_options))
     except KeyboardInterrupt:
         pass
 

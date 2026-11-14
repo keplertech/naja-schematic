@@ -1,5 +1,6 @@
-"""Headless SVG export (render.py): export_svg()/export_svgs() on the
-session's design, `naja-schematic render`, and `--py-primitives`.
+"""Headless SVG and PNG export (render.py): export_svg()/export_svgs()/
+export_png() on the session's design, the view options (instance labels,
+fanout grid and summaries), `naja-schematic render`, and `--py-primitives`.
 
 The drawing tests need the naja-schematic-render executable (platform
 wheels, or $NAJA_SCHEMATIC_RENDER): skipped without one, unless
@@ -12,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from naja_schematic import RenderError, export_svg, export_svgs
-from naja_schematic import render
+from naja_schematic import RenderError, export_png, export_svg, export_svgs
+from naja_schematic import protocol, render
 
 DATA = Path(__file__).parent / "data"
 
@@ -70,12 +71,25 @@ def test_drawing_pushes(top):
     pushes = render.drawing_pushes(["u_sub", ("u_sub", "a")], instances=[["u_sub", "u_and"]],
                                    traces=[([], "q")])
     kinds = [p["response"] for p in pushes]
-    assert kinds == ["design_changed", "focus_instance", "focus_instance", "show_net",
-                     "show_net", "export_svg"]
-    assert "add" not in pushes[1] and pushes[2]["add"] is True       # first alone, then added
-    assert pushes[2]["id_path"] == [0, 0]
-    assert "trace" not in pushes[3] and pushes[3]["label"] == "u_sub/a (net)"
-    assert pushes[4]["trace"] is True and pushes[4]["label"] == "q"
+    assert kinds == ["design_changed", "view_options", "focus_instance", "focus_instance",
+                     "show_net", "show_net", "export_svg"]
+    # Every drawing sets every view option: none carries over from the last.
+    assert {k: v for k, v in pushes[1].items() if k != "response"} == \
+        protocol.DEFAULT_VIEW_OPTIONS
+    assert "add" not in pushes[2] and pushes[3]["add"] is True       # first alone, then added
+    assert pushes[3]["id_path"] == [0, 0]
+    assert "trace" not in pushes[4] and pushes[4]["label"] == "u_sub/a (net)"
+    assert pushes[5]["trace"] is True and pushes[5]["label"] == "q"
+    both = render.drawing_pushes(["r"], view_options={"instance_label": "both"}, png_scale=3)
+    assert both[1]["instance_label"] == "both" and both[1]["max_sinks"] == 32
+    assert [p["response"] for p in both[-2:]] == ["export_svg", "export_png"]
+    assert both[-1]["scale"] == 3.0
+    png_only = render.drawing_pushes(["r"], svg=False, png_scale=1)
+    assert png_only[-1]["response"] == "export_png" and png_only[-2]["response"] != "export_svg"
+    with pytest.raises(ValueError, match="instance_label"):
+        render.drawing_pushes(["r"], view_options={"instance_label": "cell"})
+    with pytest.raises(ValueError, match="scale"):
+        render.drawing_pushes(["r"], png_scale=0)
     with pytest.raises(RenderError, match="nothing to draw"):
         render.drawing_pushes()
     with pytest.raises(ValueError):
@@ -122,6 +136,66 @@ def test_a_bad_target_draws_and_writes_nothing(top, tmp_path):
         export_svgs([{"instances": ["r"], "path": good},
                      {"nets": [(["r"], "nope")], "path": bad}])
     assert not good.exists() and not bad.exists()
+
+
+def _png_size(data):
+    assert data[:8] == b"\x89PNG\r\n\x1a\n" and data[12:16] == b"IHDR"
+    return int.from_bytes(data[16:20], "big"), int.from_bytes(data[20:24], "big")
+
+
+def _svg_size(svg):
+    import re
+    w, h = re.search(r'<svg[^>]* width="([\d.]+)" height="([\d.]+)"', svg).groups()
+    return float(w), float(h)
+
+
+@needs_renderer
+def test_export_png_is_the_svg_drawing_scaled(top, tmp_path):
+    import math
+    import zlib
+    svg = export_svg(["r"])
+    out = tmp_path / "r.png"
+    png = export_png(["r"], out, scale=2.5)
+    assert out.read_bytes() == png
+    w, h = _svg_size(svg)
+    assert _png_size(png) == (math.ceil(w * 2.5), math.ceil(h * 2.5))
+    # A valid zlib stream of filtered RGB rows, not all background.
+    at, idat = 8, b""
+    while at < len(png):
+        n = int.from_bytes(png[at:at + 4], "big")
+        if png[at + 4:at + 8] == b"IDAT":
+            idat += png[at + 8:at + 8 + n]
+        at += 12 + n
+    rows = zlib.decompress(idat)
+    pw, ph = _png_size(png)
+    assert len(rows) == ph * (1 + 3 * pw)
+    assert len(set(rows)) > 2
+
+
+@needs_renderer
+def test_instance_labels(top):
+    names = _texts(export_svg(["r"]))
+    assert "r" in names and "FDRE" not in names
+    both = _texts(export_svg(["r"], view_options={"instance_label": "both"}))
+    assert {"r", "FDRE"} <= both
+    model = _texts(export_svg(["r"], view_options={"instance_label": "model"}))
+    assert "FDRE" in model and "r" not in model
+
+
+def test_session_keeps_view_options_across_reloads(top):
+    from naja_schematic.session import ViewerSession
+    sent = []
+    session = ViewerSession(push=sent.append, view_options={"max_sinks": 4})
+    session.view_options(instance_label="both")
+    assert json.loads(sent[-1]) == {"response": "view_options", "instance_label": "both",
+                                    "generation": 0}
+    replies = [json.loads(r) for r in session.answer(json.dumps({"request": "load_root"}))]
+    kept = [r for r in replies if r["response"] == "view_options"]
+    assert len(kept) == 1 and kept[0]["max_sinks"] == 4 and kept[0]["instance_label"] == "both"
+    with pytest.raises(ValueError):
+        session.view_options(group_by="color")
+    with pytest.raises(TypeError):
+        session.view_options(colour="red")
 
 
 # -- the CLI, in its own process (its own universe) ---------------------------------
@@ -183,3 +257,48 @@ def test_py_primitives_by_module_name(monkeypatch, tmp_path):
         server.load_python_primitives(str(tmp_path / "missing.py"), "db")
     with pytest.raises(SystemExit, match="cannot import"):
         server.load_python_primitives("no_such_module_here", "db")
+
+
+WIDE = ("--verilog", "wide_fanout.v", "--xilinx")
+
+
+@needs_renderer
+def test_render_cli_gathers_a_wide_fanout(tmp_path):
+    svg_out, png_out = tmp_path / "net.svg", tmp_path / "net.png"
+    result = _cli("render", *WIDE, "--net", "drv:O", "--max-sinks", "8", "--sink-rows", "4",
+                  "--instance-label", "both", "--svg", str(svg_out), "--png", str(png_out),
+                  "--scale", "2")
+    assert result.returncode == 0, result.stderr
+    svg = svg_out.read_text()
+    texts = _texts(svg)
+    # The driver, the first 8 sinks, and the other 38 in two summaries
+    # (the 6 LUTs are past the first 8 too): by model, the default.
+    assert {"drv", "LUT1"} <= texts
+    assert "FDRE \u00d732" in texts and "LUT1 \u00d76" in texts
+    assert not {f"g{i}" for i in range(6)} & texts
+    w, h = _svg_size(svg)
+    assert _png_size(png_out.read_bytes()) == (int(w * 2 + 0.999), int(h * 2 + 0.999))
+
+    by_module = tmp_path / "module.svg"
+    result = _cli("render", *WIDE, "--net", "drv:O", "--max-sinks", "8", "--group-by",
+                  "hierarchy", "--svg", str(by_module))
+    assert result.returncode == 0, result.stderr
+    texts = _texts(by_module.read_text())
+    assert any(t.startswith("u_bank \u00d7") for t in texts)
+
+    # No limit: every sink drawn.
+    every = tmp_path / "every.svg"
+    result = _cli("render", *WIDE, "--net", "drv:O", "--max-sinks", "0", "--svg", str(every))
+    assert result.returncode == 0, result.stderr
+    assert {f"g{i}" for i in range(6)} <= _texts(every.read_text())
+
+
+def test_render_cli_output_flags(tmp_path):
+    result = _cli("render", *PY_DESIGN, "--instance", "u_ff")
+    assert result.returncode == 2 and "--svg and/or --png" in result.stderr
+    result = _cli("render", *PY_DESIGN, "--instance", "u_ff", "--svg", str(tmp_path / "x.svg"),
+                  "--scale", "2")
+    assert result.returncode == 2 and "--scale applies to --png" in result.stderr
+    result = _cli("render", *PY_DESIGN, "--instance", "u_ff", "--png", str(tmp_path / "x.png"),
+                  "--group-by", "colour")
+    assert result.returncode == 2 and "--group-by" in result.stderr

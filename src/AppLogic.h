@@ -41,6 +41,10 @@ struct AppState {
   // shows something, so a request sent while the view is still loading
   // waits for its first drawing.
   bool              svgExportRequested {false};
+  // Same for an export_png push: answered by a png_exported notification
+  // (base64 PNG bytes), drawn `pngScale` pixels per SVG pixel.
+  bool              pngExportRequested {false};
+  float             pngScale {1.0f};
   // The root_response's "server": what answers the viewer (name, version,
   // naja, naja_git), shown in Help > About.
   nlohmann::json    serverInfo;
