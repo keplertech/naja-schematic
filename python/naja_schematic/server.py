@@ -298,7 +298,8 @@ class ViewerServer:
         """Set how every connected viewer, and any that (re)loads later,
         draws the schematic: "instance_label" ("name", "model", "both"),
         "sink_rows", "max_sinks", "group_by" ("model", "hierarchy",
-        "role"); see naja_schematic.protocol.view_options(). Keys not given
+        "role", "pin"), "convergence_outline"; see
+        naja_schematic.protocol.view_options(). Keys not given
         keep their value."""
         self._session.view_options(options, **kwargs)
 
@@ -581,17 +582,36 @@ def add_view_arguments(parser):
                        help="Wrap a column of more than N sinks into a grid (default 8; "
                             "0: never)")
     group.add_argument("--max-sinks", type=int, metavar="N",
-                       help="Draw the first N sinks of a net and gather the others into "
-                            "summary boxes that expand when clicked (default 32; 0: never)")
+                       help="Draw the first N sinks of a net (in natural name order) and "
+                            "gather the others into summary boxes that expand when clicked. "
+                            "Default 32, applied when this flag is not given; 0 turns "
+                            "summaries off (every sink drawn)")
     group.add_argument("--group-by", choices=FANOUT_GROUP_BY,
                        help="How gathered sinks are grouped: by cell model (default), by "
-                            "the module holding them, or by receiving pin (role)")
+                            "the module holding them, by the receiving pin's naja role "
+                            "(clock, reset, set, enable, scan, address, else data), or by "
+                            "the receiving pin's name (pin; clock pins together)")
+    group.add_argument("--no-convergence-outline", dest="convergence_outline",
+                       action="store_false", default=None,
+                       help="Don't outline a box two or more traces go through in "
+                            "near-black (a box a style names never is)")
+    group.add_argument("--title", metavar="TEXT",
+                       help="Exports only: text in a band above the drawing")
+    group.add_argument("--caption", metavar="TEXT",
+                       help="Exports only: text in a band below the drawing")
+    group.add_argument("--legend", action="store_true", default=None,
+                       help="Exports only: a swatch and label for each trace and each "
+                            "net a style labels, below the drawing")
+    group.add_argument("--hide-ui-glyphs", action="store_true", default=None,
+                       help="Exports only: no open-pin stubs and no 'more pins' dots")
 
 
 def view_options_from_args(args):
     """The view options add_view_arguments()'s flags set (None: none)."""
     options = {key: getattr(args, key) for key in
-               ("instance_label", "sink_rows", "max_sinks", "group_by")
+               ("instance_label", "sink_rows", "max_sinks", "group_by", "convergence_outline",
+                "hide_ui_glyphs",
+                "title", "caption", "legend")
                if getattr(args, key, None) is not None}
     if not options:
         return None
@@ -632,7 +652,10 @@ def build_arg_parser():
     parser.add_argument("--style", metavar="FILE",
                         help="Style JSON ({\"items\": [...]} or a bare array: colors, "
                              "widths, fills, labels on nets, instances and pins) to push "
-                             "to the viewer after the design loads")
+                             "to the viewer after the design loads. An item names its object by "
+                             "\"target\": --instance/--net text (\"u1/u2\", \"u1:A[3]\", "
+                             "\"y\") or a [path, terminal(, bit)] list; or by "
+                             "\"path\"/\"id_path\" (+ \"terminal\", \"bit\")")
     parser.add_argument("--source-root", action="append", default=[], metavar="DIR",
                         dest="source_roots",
                         help="Directory to look up relative source file references in "

@@ -354,6 +354,9 @@ if(NOT EMSCRIPTEN_BUILD)
       ${NAJA_SCHEMATIC_TEST_SOURCES}
     )
     target_link_libraries(naja-schematic-tests PRIVATE gtest_main)
+    target_compile_definitions(naja-schematic-tests PRIVATE
+      NAJA_SCHEMATIC_TEST_DATA="${CMAKE_CURRENT_SOURCE_DIR}/tests/data"
+    )
 
     # LocalSNLProvider against the wire-protocol cases shared with the
     # Python backend (tests/data/anonymous_protocol_cases.json, also run by

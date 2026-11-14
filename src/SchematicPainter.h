@@ -2,6 +2,8 @@
 
 #include <sstream>
 #include <string>
+#include <utility>
+#include <vector>
 #include <imgui.h>
 
 // What SchematicView draws with: the subset of ImDrawList it uses, with the
@@ -31,6 +33,14 @@ public:
                          const char* text) = 0;
     virtual void PushClipRect(const ImVec2& rmin, const ImVec2& rmax) = 0;
     virtual void PopClipRect() = 0;
+
+    // Structure around what's drawn between them -- a net, an instance, a
+    // port flag -- as (name, value) attributes, e.g. {"class", "net"},
+    // {"data-net", "q"}. Draws nothing: only SvgPainter keeps it (a <g>);
+    // nested calls nest.
+    using GroupAttrs = std::vector<std::pair<std::string, std::string>>;
+    virtual void BeginGroup(const GroupAttrs& /*attrs*/) {}
+    virtual void EndGroup() {}
 };
 
 class ImDrawListPainter : public SchematicPainter {
@@ -96,6 +106,10 @@ public:
     void AddText(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col, const char* text) override;
     void PushClipRect(const ImVec2&, const ImVec2&) override {}
     void PopClipRect() override {}
+    // A <g> with the attributes (values XML-escaped), on a line of its own;
+    // EndGroup() its </g> line.
+    void BeginGroup(const GroupAttrs& attrs) override;
+    void EndGroup() override;
 
     // The complete document (call once, after drawing).
     std::string finish();

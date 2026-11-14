@@ -26,7 +26,8 @@ int main(int argc, char* argv[]) {
   //                                     [--yosys-src] [--top <name>]
   //                                     [--instance-label name|model|both]
   //                                     [--sink-rows N] [--max-sinks N]
-  //                                     [--group-by model|hierarchy|role]
+  //                                     [--group-by model|hierarchy|role|pin] [--no-convergence-outline]
+  //                                     [--title TEXT] [--caption TEXT] [--legend] [--hide-ui-glyphs]
   //                                     [--export <out.svg>] [--png <out.png> [--scale S]]
   //                                     [--focus <json>] [--trace <json>]... [--equipotential <json>]...
   // <design> is loaded by extension (.sv/.v/.vhd/.vhdl/otherwise-assumed-SNL-directory);
@@ -48,8 +49,13 @@ int main(int argc, char* argv[]) {
   // --source-root adds a directory relative source file references (Show
   // Sources) are looked up in (repeatable, tried in order, then the current
   // directory);
-  // --instance-label, --sink-rows, --max-sinks and --group-by set how the
-  // schematic is drawn (ViewOptions.h; also in the View menu);
+  // --instance-label, --sink-rows, --max-sinks (default 32, applied when
+  // not given; 0 turns summaries off), --group-by and
+  // --no-convergence-outline set how the schematic is drawn (ViewOptions.h;
+  // also in the View menu);
+  // --title, --caption, --legend and --hide-ui-glyphs decorate exports only
+  // (File > Export too): a text band above / below the drawing, a swatch
+  // per labeled trace or styled net, no open-pin stubs or "more pins" dots;
   // --export draws the schematic to an SVG file and exits, with no window,
   // --png to a PNG file, --scale pixels per SVG pixel (default 1); both
   // can be given (see HeadlessExport.h for what --focus/--trace/
@@ -98,6 +104,14 @@ int main(int argc, char* argv[]) {
         std::cerr << arg << ": " << error << "\n";
         return 1;
       }
+    } else if ((arg == "--title" || arg == "--caption") && i + 1 < argc) {
+      ViewOptions::current().apply({ { arg.substr(2), std::string(argv[++i]) } }, error);
+    } else if (arg == "--legend") {
+      ViewOptions::current().legend = true;
+    } else if (arg == "--no-convergence-outline") {
+      ViewOptions::current().convergenceOutline = false;
+    } else if (arg == "--hide-ui-glyphs") {
+      ViewOptions::current().hideUiGlyphs = true;
     } else if (arg == "--focus" && i + 1 < argc) {
       exportOptions.focus = parseFocusArg(argv[++i], error);
       if (!exportOptions.focus) { std::cerr << error << "\n"; return 1; }

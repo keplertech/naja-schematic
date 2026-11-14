@@ -23,3 +23,19 @@ def load(db):
     q = naja.SNLScalarTerm.create(dff, OUTPUT, "Q")
     naja.SNLDesign.addClockToOutputsArcs(c, [q])
     naja.SNLDesign.addInputsToClockArcs([d], c)
+
+    # A flop whose clock, reset and enable pins naja knows by their term
+    # role (SNLBitTerm.setRole()), not by their names: group_by "role".
+    ffre = naja.SNLDesign.createPrimitive(lib, "PY_FFRE")
+    fd = naja.SNLScalarTerm.create(ffre, INPUT, "D")
+    fc = naja.SNLScalarTerm.create(ffre, INPUT, "CK")
+    fr = naja.SNLScalarTerm.create(ffre, INPUT, "R")
+    fl = naja.SNLScalarTerm.create(ffre, INPUT, "L")
+    fq = naja.SNLScalarTerm.create(ffre, OUTPUT, "Q")
+    naja.SNLDesign.addClockToOutputsArcs(fc, [fq])
+    naja.SNLDesign.addInputsToClockArcs([fd, fr, fl], fc)
+    fc.setRole(naja.SNLTermRole.Clock)
+    fd.setRole(naja.SNLTermRole.DataInput)
+    fr.setRole(naja.SNLTermRole.AsyncReset, naja.SNLActiveLevel.Low)
+    fl.setRole(naja.SNLTermRole.Enable)
+    fq.setRole(naja.SNLTermRole.DataOutput)

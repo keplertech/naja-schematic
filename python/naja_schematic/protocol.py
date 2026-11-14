@@ -117,10 +117,49 @@ def output_bit_count(model):
     return sum(1 for term in model.getBitTerms()
                if term.getDirection() != naja.SNLTerm.Direction.Input)
 
-def with_clock(entry, term):
-    # Only sent when set: marks a flip-flop's clock pin (see drawDffInstance).
+# naja's term roles (SNLDesignModeling::SNLTermRole), as sent in "role".
+# Kept in step with termRoleName() in LocalSNLProvider.cpp.
+_TERM_ROLE_NAMES = {
+    "Clock": "clock", "AsyncReset": "async_reset", "AsyncSet": "async_set",
+    "SyncReset": "sync_reset", "SyncSet": "sync_set", "Enable": "enable",
+    "MemoryReadAddress": "memory_read_address", "MemoryReadData": "memory_read_data",
+    "MemoryWriteAddress": "memory_write_address", "MemoryWriteData": "memory_write_data",
+    "MemoryWriteEnable": "memory_write_enable", "ScanInput": "scan_input",
+    "ScanEnable": "scan_enable",
+    # DataInput, DataOutput and Other (unset) are data: no "role".
+}
+
+
+@functools.lru_cache(maxsize=None)
+def _term_role_names():
+    names = {}
+    for attr, name in _TERM_ROLE_NAMES.items():
+        value = getattr(naja.SNLTermRole, attr, None)
+        if value is not None:
+            names[int(value)] = name
+    return names
+
+
+def term_role(term):
+    """The pin's naja role (SNLBitTerm/SNLInstTerm.getRole()) as sent in
+    "role" ("clock", "async_reset", "enable", ...), or None for a data pin
+    (DataInput, DataOutput, or no role set). An SNLInstTerm also sees the
+    roles a parameterized primitive takes from its instance's parameters."""
+    get_role = getattr(term, "getRole", None)
+    if get_role is None:
+        return None
+    return _term_role_names().get(int(get_role()))
+
+
+def with_clock(entry, term, inst_term=None):
+    # Only sent when set: "clock" marks a flip-flop's clock pin (see
+    # drawDffInstance), "role" a pin naja gives a non-data role (fanout
+    # summaries grouped by role).
     if term.isClock():
         entry["clock"] = True
+    role = term_role(inst_term if inst_term is not None else term)
+    if role is not None:
+        entry["role"] = role
     return entry
 
 def is_anonymous_constant_net(net):
@@ -392,7 +431,7 @@ def equipotential_to_json(equipotential, sinks=None):
             # Net on this inst term inside the instance's parent design --
             # shown in the schematic's pin hover tooltip.
             "net": net_display_name(instTerm.getNet())
-        }, term), has_sources(instTerm.getInstance(), inst_model)))
+        }, term, instTerm), has_sources(instTerm.getInstance(), inst_model)))
     for term in equipotential.getTerms():
         # A top-level output is a receiver of the net; an input/inout drives it.
         if (sinks is not None
@@ -1285,10 +1324,14 @@ def export_png(scale=1.0):
 
 
 INSTANCE_LABELS = ("name", "model", "both")
-FANOUT_GROUP_BY = ("model", "hierarchy", "role")
+FANOUT_GROUP_BY = ("model", "hierarchy", "role", "pin")
 # What a viewer draws with until told otherwise (ViewOptions in the C++).
 DEFAULT_VIEW_OPTIONS = {"instance_label": "name", "sink_rows": 8, "max_sinks": 32,
-                        "group_by": "model"}
+                        "group_by": "model", "convergence_outline": True,
+                        "hide_ui_glyphs": False, "title": "",
+                        "caption": "", "legend": False}
+# The keys only exported drawings (SVG, PNG) show, never the canvas.
+EXPORT_DECORATIONS = ("hide_ui_glyphs", "title", "caption", "legend")
 
 
 def view_options(options=None, **kwargs):
@@ -1302,12 +1345,30 @@ def view_options(options=None, **kwargs):
       driven by) than this is wrapped into a grid of columns (default 8;
       0: never);
     - "max_sinks": a net with more instance sinks than this draws the first
-      ones and gathers the rest into summary boxes ("DFF x812") that expand
-      when clicked; its driver, and a sink shown for another reason, are
-      always drawn (default 32; 0: never);
+      ones (in natural name order) and gathers the rest into summary boxes
+      ("DFF x812") that expand when clicked; its driver, and a sink shown
+      for another reason, are always drawn (default 32, applied when not
+      given; 0 turns summaries off: every sink drawn);
     - "group_by": how the gathered sinks are grouped: "model" (the
-      default), "hierarchy" (the module holding them) or "role" (the
-      receiving pin: clock pins together, others by name).
+      default), "hierarchy" (the module holding them), "role" (the
+      receiving pin's naja role, SNLBitTerm.getRole(): "clock x812",
+      "reset x40", "enable x8", "data x165" for the rest) or "pin" (the
+      receiving pin's name, clock pins together);
+    - "convergence_outline": a box two or more visible traces go through
+      is outlined in near-black (default True; never a box a style
+      names); False draws no such outline.
+
+    And the export decorations, shown only in exported drawings (SVG and
+    PNG, never on the canvas):
+
+    - "title" / "caption": text in a band above / below the drawing
+      ("" = none, the default; "\\n" breaks lines);
+    - "legend": True adds a swatch and label below the drawing for each
+      visible trace (show_net(), Trace to Driver) and each net a style
+      labels (default False);
+    - "hide_ui_glyphs": True leaves out what only means something to a
+      viewer's user: the "more pins" dots of a partial box and the hollow
+      stubs of open pins (default False).
 
     Keys left out (or None) keep the viewer's current value. Raises
     ValueError for a bad value, TypeError for an unknown key."""
@@ -1328,6 +1389,10 @@ def view_options(options=None, **kwargs):
         if key in ("sink_rows", "max_sinks") and (
                 isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 1000000):
             raise ValueError(f"{key}: expected a count (0 = no limit), got {value!r}")
+        if key in ("hide_ui_glyphs", "legend", "convergence_outline") and not isinstance(value, bool):
+            raise ValueError(f"{key}: expected True or False, got {value!r}")
+        if key in ("title", "caption") and not isinstance(value, str):
+            raise ValueError(f"{key}: expected a string, got {value!r}")
         message[key] = value
     return message
 

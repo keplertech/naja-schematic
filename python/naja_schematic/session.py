@@ -325,6 +325,37 @@ def _net_driver_pin(ids, term, bit, what):
             occ.getInstTerm().getBitTerm())
 
 
+def style_target(kind, target):
+    """A style item's "target" turned into its address keys ("path",
+    "id_path", and for a pin "term_id", "bit"). `kind` "instance" takes an
+    instance as show_instance() does, or text as `naja-schematic render
+    --instance` ("u1/u2", or JSON text). "net"/"term" take a pin as
+    show_net() does, or text as --net ("u1/u2:A", "en_reg:O", "d[1]" for a
+    bit of a top-level bus), a list [instance, terminal(, bit)] -- the
+    instance as show_instance() takes it, [] for a top-level port -- or an
+    object {"id_path"|"path": instance, "terminal": name, "bit": n}. Text
+    is matched against the design, never split blindly (render.py's
+    _instances_matching()): ambiguous text raises ValueError."""
+    from . import render  # (render imports this module)
+    if kind == "instance":
+        if isinstance(target, str):
+            ids = render.parse_instance_arg(target)
+            return {"path": ids_to_names(ids), "id_path": ids}
+        names, ids = instance_paths(target)
+        return {"path": names, "id_path": ids}
+    if isinstance(target, str):
+        target = render.parse_pin_arg(target)
+    elif isinstance(target, dict):
+        target = render.parse_pin_arg(json.dumps(target))
+    elif isinstance(target, list) and len(target) in (2, 3) and isinstance(target[1], (str, int)):
+        target = tuple(target)
+    pin = net_pin(target)
+    address = {"path": pin["path"], "id_path": pin["id_path"], "term_id": pin["term_id"]}
+    if pin["bit"] is not None:
+        address["bit"] = pin["bit"]
+    return address
+
+
 def style_response(items):
     """protocol.style_response() for the design in the current NLUniverse,
     with every item resolved here, so a bad one raises ValueError instead
@@ -333,6 +364,12 @@ def style_response(items):
     - an item may name its object by "target" instead of "path"/"id_path"
       (and, for a pin, "terminal"/"term_id"/"bit"): an instance as
       show_instance() takes it, or a pin as show_net() does (one bit);
+      or, as in a style JSON file, the text forms of `naja-schematic
+      render`'s --instance ("u1/u2") and --net ("u1/u2:A[3]", "en_reg:O",
+      "y" for a top-level port), matched against the design, or a pin as
+      a list [instance, terminal] / [instance, terminal, bit] (the JSON
+      spelling of show_net()'s tuple; [] = a top-level port) or an object
+      {"id_path"|"path", "terminal", "bit"} (see style_target());
     - a "net" item is sent once per bit (a bus pin without "bit": every
       bit), each on its net's driver -- a top-level port, else an output
       leaf pin -- the pin the viewer draws whatever part of the net it
@@ -350,14 +387,10 @@ def style_response(items):
             target = item.pop("target")
             for key in ("path", "id_path", "terminal", "term_id", "bit"):
                 item.pop(key, None)
-            if kind == "instance":
-                names, ids = instance_paths(target)
-                item.update(path=names, id_path=ids)
-            else:
-                pin = net_pin(target)
-                item.update(path=pin["path"], id_path=pin["id_path"], term_id=pin["term_id"])
-                if pin["bit"] is not None:
-                    item["bit"] = pin["bit"]
+            try:
+                item.update(style_target(kind, target))
+            except (TypeError, ValueError) as e:
+                raise type(e)(f"{what}: target {target!r}: {e}") from None
         item = protocol.style_response([item])["items"][0]  # checked, normalized
         if kind == "instance":
             if "id_path" in item:

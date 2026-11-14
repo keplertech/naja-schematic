@@ -122,11 +122,15 @@ class Schematic(anywidget.AnyWidget):
           cell model under it) or "both";
         - sink_rows: a column of more sinks than this becomes a grid
           (default 8; 0: never);
-        - max_sinks: a net with more sinks draws the first ones and gathers
-          the rest into summary boxes, which expand when clicked (default
-          32; 0: never). Its driver is always drawn;
+        - max_sinks: a net with more sinks draws the first ones (natural
+          name order) and gathers the rest into summary boxes, which
+          expand when clicked (default 32, applied when not given; 0
+          turns summaries off). Its driver is always drawn;
         - group_by: how sinks are gathered: "model" (the default),
-          "hierarchy" or "role" (the receiving pin).
+          "hierarchy", "role" (the receiving pin's naja role: clock,
+          reset, enable, ..., data) or "pin" (the receiving pin's name);
+        - convergence_outline: False drops the near-black outline of a
+          box two traces go through (default True).
 
         Kept in SVG exports."""
         self._session.view_options(options, **kwargs)

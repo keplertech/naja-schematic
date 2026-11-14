@@ -201,6 +201,8 @@ void from_json(const json& j, Equipotential& e) {
         term.direction = intToDirection(occJson["direction"].get<int>());
       }
       term.clock = occJson.value("clock", false);
+      if (occJson.contains("role") && occJson["role"].is_string())
+        term.role = occJson["role"].get<std::string>();
       if (occJson.contains("bit") && !occJson["bit"].is_null()) {
         term.bit = occJson["bit"].get<int>();
       } else {

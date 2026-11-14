@@ -130,6 +130,14 @@ void SvgPainter::AddText(ImFont* font, float fontSize, const ImVec2& pos, ImU32 
     out_ << fill(col) << ">" << escapeXml(text) << "</text>\n";
 }
 
+void SvgPainter::BeginGroup(const GroupAttrs& attrs) {
+    out_ << "<g";
+    for (const auto& [name, value] : attrs) out_ << " " << name << "=\"" << escapeXml(value.c_str()) << "\"";
+    out_ << ">\n";
+}
+
+void SvgPainter::EndGroup() { out_ << "</g>\n"; }
+
 std::string SvgPainter::finish() {
     out_ << "</svg>\n";
     return out_.str();

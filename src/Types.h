@@ -192,6 +192,9 @@ struct BitTerm {
   Direction direction = Direction::Inout;
   std::optional<int> bit;
   bool clock = false;  // a sequential cell's clock pin (naja's isClock)
+  // naja's term role ("clock", "async_reset", "enable", ...; SNLTermRole),
+  // "" for a data pin (DataInput/DataOutput, or none set).
+  std::string role;
 
   // The pin's label: displayTermName() plus "[bit]" for a bus bit.
   std::string getString() const {
@@ -490,6 +493,9 @@ struct InstanceShape {
     // made-up one (EquipotentialView), never sent to the host.
     bool        isSummary    = false;
     int         summaryCount = 0;
+    // What its sinks have in common (the group_by key): the model, the
+    // module's path, the role or pin name. Named in the SVG export.
+    std::string summaryGroup;
     float x = 0.0f;
     float y = 0.0f;  // world coords (top-left)
     float w = 100.0f;

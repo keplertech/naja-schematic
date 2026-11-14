@@ -97,6 +97,39 @@ def test_instances_and_pins_resolve_or_raise(top):
         style_response([{"kind": "term", "path": ["r"], "terminal": "nope"}])
 
 
+def test_targets_in_the_text_and_json_forms(top):
+    # What a style JSON file can say: the render CLI's --net/--instance text,
+    # or a pin as [instance, terminal(, bit)] or {"path", "terminal", "bit"}.
+    expected = {"kind": "net", "id_path": [0, 0], "path": ["u_sub", "u_and"]}
+    for target in ("u_sub/u_and:O", "r:D", "u_sub:y", [["u_sub", "u_and"], "O"],
+                   [[0, 0], "O"], ["r", "D"], {"path": ["r"], "terminal": "D"},
+                   {"id_path": [0, 0], "terminal": "O"}):
+        [got] = style_response([{"kind": "net", "target": target, "color": "#1f77b4"}])["items"]
+        assert {k: got[k] for k in expected} == expected, target
+    # A top-level port: its name alone, or [[], name(, bit)].
+    for target in ("q", [[], "q"], ":q"):
+        [got] = style_response([{"kind": "net", "target": target}])["items"]
+        assert got["id_path"] == [] and "bit" not in got, target
+    for target in ("d[1]", [[], "d", 1], {"path": [], "terminal": "d", "bit": 1}):
+        [got] = style_response([{"kind": "term", "target": target}])["items"]
+        assert (got["id_path"], got["bit"]) == ([], 1), target
+    # An instance: "u1/u2" text (matched against the design), or JSON text.
+    for target in ("u_sub/u_and", '["u_sub", "u_and"]', "[0, 0]"):
+        [got] = style_response([{"kind": "instance", "target": target}])["items"]
+        assert (got["id_path"], got["path"]) == ([0, 0], ["u_sub", "u_and"]), target
+
+
+def test_bad_targets_name_the_item(top):
+    for target, error in (("u_sub/nope:O", "no pin"), ([[], "nope"], "no terminal"),
+                          ("d", "a bus"), ([["nope"], "O"], "no instance")):
+        with pytest.raises(ValueError, match=f"style item 0: target .*{error}"):
+            style_response([{"kind": "net", "target": target}])
+    with pytest.raises(ValueError, match="style item 1: target 'u_sub/x'.*no instance"):
+        style_response([{"target": "u_sub"}, {"target": "u_sub/x"}])
+    with pytest.raises(TypeError, match="style item 0"):
+        style_response([{"kind": "net", "target": 3.5}])
+
+
 def test_style_is_pushed_now_and_after_each_root(top):
     sent = []
     session = ViewerSession(push=sent.append)
@@ -155,6 +188,28 @@ def test_render_cli_draws_a_fanout_report_in_its_colors(tmp_path):
     for color in COPIES.values():
         assert _blend(color) in fills
     assert ">en</text>" in svg
+
+
+@needs_renderer
+def test_render_cli_style_file_targets(tmp_path):
+    # The file form documented in the README: targets as --net/--instance
+    # text and as a JSON [path, terminal] list.
+    style = tmp_path / "style.json"
+    style.write_text(json.dumps({"items": [
+        {"kind": "net", "target": [[], "en"], "color": "#ff7f0e", "width": 3},
+        {"kind": "net", "target": "drv_0:O", "color": "#1f77b4", "width": 2.5},
+        {"kind": "instance", "target": "s0", "fill": "#1f77b455"},
+    ]}))
+    out = tmp_path / "fanout.svg"
+    result = subprocess.run(
+        [sys.executable, "-m", "naja_schematic", "render", "--verilog", "fanout.v", "--xilinx",
+         "--style", str(style), "--net", "en", "--net", "drv_0:O", "--svg", str(out)],
+        cwd=DATA, capture_output=True, text=True, timeout=120)
+    assert result.returncode == 0, result.stderr
+    svg = out.read_text()
+    strokes = set(re.findall(r'stroke="(rgb\([^)]*\))" stroke-width="([\d.]+)"', svg))
+    assert (_rgb("#ff7f0e"), "3") in strokes and (_rgb("#1f77b4"), "2.5") in strokes
+    assert _blend("#1f77b4") in set(re.findall(r'fill="(rgb\([^)]*\))"', svg))
 
 
 @needs_renderer

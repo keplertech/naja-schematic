@@ -13,7 +13,7 @@
 """
 # Single version for the whole project: CMakeLists.txt reads this line into the
 # C++ app too (NAJA_SCHEMATIC_VERSION_STRING), so keep it a plain literal.
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 from .protocol import diagnosis_response, handle_request
 from .render import RenderError, export_png, export_svg, export_svgs

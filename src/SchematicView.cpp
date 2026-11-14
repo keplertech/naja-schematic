@@ -1,6 +1,7 @@
 #include "SchematicView.h"
 
 #include "RasterPainter.h"
+#include "ViewOptions.h"
 
 #include <imgui.h>
 #include <algorithm>
@@ -331,7 +332,7 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
         // An open pin (net not in the view yet) ends in a hollow circle, a
         // loading one in a filled circle: "click here to see more" without
         // needing color for the resting state.
-        if (p.open) {
+        if (p.open && !sv.hideUiGlyphs) {
             float r = std::max(kMinOpenPinR, kOpenPinBaseR * sv.transform.scale);
             ImVec2 c(tickEnd.x + (isLeft ? -r : r), tickEnd.y);
             dl->AddCircleFilled(c, r, pending ? portColor : kCanvasBgColor);
@@ -544,7 +545,7 @@ static void drawGenericInstance(SchematicPainter* dl, const InstanceShape& inst,
 
         drawInstanceName(dl, inst, sv, rmin);
 
-        if (inst.partialInterface) {
+        if (inst.partialInterface && !sv.hideUiGlyphs) {
             float boxH = rmax.y - rmin.y;
             if (boxH > 28.0f) {
                 const float dotR    = 2.5f;
@@ -1361,6 +1362,73 @@ void SchematicView::handleInteraction(const ImVec2& canvasPos, const ImVec2& can
     }
 }
 
+// ---------------------------------------------------------------------------
+// Export structure: the data-* attributes of each drawn object's <g>
+// (SchematicPainter::BeginGroup; only the SVG keeps them).
+// ---------------------------------------------------------------------------
+namespace {
+
+std::string idPathText(const InstancePath& path) {
+    std::string out;
+    for (size_t i = 0; i < path.size(); ++i) out += (i ? "," : "") + std::to_string(path[i].id);
+    return out;
+}
+
+// True when the "u1/u2" (or "u1/u2:Q") text can't be read back: a name
+// that is empty (anonymous) or holds a separator, as escaped Verilog names
+// can. The group then also carries the path as JSON.
+bool ambiguous(const InstancePath& path, const std::string& term = "") {
+    for (const auto& ref : path)
+        if (ref.name.empty() || ref.name.find_first_of("/:") != std::string::npos) return true;
+    return term.find_first_of("/:") != std::string::npos;
+}
+
+std::string jsonText(const nlohmann::json& j) {
+    return j.dump(-1, ' ', false, nlohmann::json::error_handler_t::replace);
+}
+
+nlohmann::json namesJson(const InstancePath& path) {
+    nlohmann::json names = nlohmann::json::array();
+    for (const auto& ref : path) names.push_back(ref.name);
+    return names;
+}
+
+} // namespace
+
+SchematicPainter::GroupAttrs SchematicView::instanceGroup(const InstanceShape& inst) {
+    if (inst.modelName == "port") {
+        const Port* p = inst.ports.empty() ? nullptr : &inst.ports[0];
+        const char* dir = !p ? "" : p->direction == Direction::Input ? "input"
+                                  : p->direction == Direction::Output ? "output" : "inout";
+        return { { "class", "port" }, { "data-name", p ? p->name : inst.name }, { "data-direction", dir } };
+    }
+    if (inst.isSummary)
+        return { { "class", "summary" }, { "data-group", inst.summaryGroup },
+                 { "data-count", std::to_string(inst.summaryCount) } };
+    SchematicPainter::GroupAttrs attrs{ { "class", inst.isHierGroup ? "module" : "instance" },
+                                        { "data-path", displayPath(inst.path) },
+                                        { "data-id-path", idPathText(inst.path) } };
+    if (ambiguous(inst.path)) attrs.push_back({ "data-path-json", jsonText(namesJson(inst.path)) });
+    if (!inst.model.empty()) attrs.push_back({ "data-model", inst.model });
+    return attrs;
+}
+
+SchematicPainter::GroupAttrs SchematicView::netGroup(const std::string& netName, const SchematicNetRef& driver,
+                                                     const std::string& label) {
+    SchematicPainter::GroupAttrs attrs{ { "class", "net" }, { "data-net", netName } };
+    if (driver.port) {
+        attrs.push_back({ "data-driver", driver.pin });
+    } else {
+        attrs.push_back({ "data-driver", displayPath(driver.path) + ":" + driver.pin });
+        attrs.push_back({ "data-driver-id-path", idPathText(driver.path) });
+        if (ambiguous(driver.path, driver.pin))
+            attrs.push_back({ "data-driver-json",
+                              jsonText({ { "path", namesJson(driver.path) }, { "terminal", driver.pin } }) });
+    }
+    if (!label.empty()) attrs.push_back({ "data-label", label });
+    return attrs;
+}
+
 void SchematicView::render(ImDrawList* drawList, const ImVec2& canvasPos, const ImVec2& canvasSize) {
     ImDrawListPainter painter(drawList);
     render(painter, canvasPos, canvasSize);
@@ -1378,8 +1446,10 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
     // so nested frames paint over their enclosing one.
     for (const auto& inst : instances) {
         if (inst.isHierGroup) {
+            dl->BeginGroup(instanceGroup(inst));
             drawInstance(dl, inst, canvasPos, canvasSize);
             drawReviewBadge(dl, inst, *this, canvasPos, canvasSize);
+            dl->EndGroup();
         }
     }
 
@@ -1387,19 +1457,46 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
     // before. A net nested inside an expanded instance (containerShapeId set)
     // is drawn later instead -- see drawSubtree below -- so that instance's
     // opaque box fill doesn't get painted over it afterward.
-    for (const auto& route : routes) drawRoute(dl, route, canvasPos, canvasSize);
-    for (const auto& net : nets) {
-        if (net.containerShapeId < 0 && !net.routed) drawNet(dl, net, canvasPos, canvasSize);
+    for (const auto& route : routes) {
+        dl->BeginGroup(netGroup(route.netName, route.ref, route.label));
+        drawRoute(dl, route, canvasPos, canvasSize);
+        dl->EndGroup();
     }
+    // Unrouted wires, one group per run of wires from the same driver pin.
+    auto drawNets = [&](int containerShapeId) {
+        std::optional<std::pair<int, int>> open;
+        for (const auto& net : nets) {
+            if (net.containerShapeId != containerShapeId || net.routed) continue;
+            InstanceShape* src = findInstanceById(net.srcInstance);
+            const Port* srcPort = src ? findPortById(*src, net.srcPortId) : nullptr;
+            const std::pair<int, int> key{ net.srcInstance, net.srcPortId };
+            if (open != key) {
+                if (open) dl->EndGroup();
+                open.reset();
+                if (src && srcPort) {
+                    dl->BeginGroup(netGroup(net.netName,
+                                            src->modelName == "port"
+                                                ? SchematicNetRef{ {}, srcPort->name, true }
+                                                : SchematicNetRef{ src->path, srcPort->name, false },
+                                            net.label));
+                    open = key;
+                }
+            }
+            drawNet(dl, net, canvasPos, canvasSize);
+        }
+        if (open) dl->EndGroup();
+    };
+    drawNets(-1);
 
     // Recursive draw: a box, then the nets internal to it, then its nested
     // children on top of those nets -- so hierarchy embedding never hides a
     // wire under a box's fill or a child under its own internal wiring.
     std::function<void(const InstanceShape&)> drawSubtree = [&](const InstanceShape& inst) {
+        dl->BeginGroup(instanceGroup(inst));
         drawInstance(dl, inst, canvasPos, canvasSize);
         drawReviewBadge(dl, inst, *this, canvasPos, canvasSize);
-        for (const auto& net : nets)
-            if (net.containerShapeId == inst.id) drawNet(dl, net, canvasPos, canvasSize);
+        dl->EndGroup();
+        drawNets(inst.id);
         for (const auto& child : instances)
             if (child.parentShapeId == inst.id) drawSubtree(child);
     };
@@ -1410,41 +1507,186 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
     dl->PopClipRect();
 }
 
-std::string SchematicView::exportSvg(float margin) const {
+// ---------------------------------------------------------------------------
+// Export page: the drawing, plus ViewOptions' decorations around it -- a
+// title band above, the legend and a caption below. With none of them the
+// page is the drawing alone, drawn exactly as before they existed.
+// ---------------------------------------------------------------------------
+namespace {
+
+constexpr float kTitleFontSize   = 18.0f;
+constexpr float kCaptionFontSize = 12.0f;
+constexpr float kLegendFontSize  = 12.0f;
+constexpr float kLegendSwatchW   = 24.0f;
+constexpr float kLegendGap       = 6.0f;   // swatch to label
+constexpr float kLegendSpacing   = 18.0f;  // between entries
+constexpr ImU32 kTitleColor      = IM_COL32(20, 20, 25, 255);
+constexpr ImU32 kCaptionColor    = IM_COL32(70, 70, 80, 255);
+
+struct TextBlock {
+    std::vector<std::string> lines;
+    float size = 0.0f, lineH = 0.0f, w = 0.0f, h = 0.0f;
+};
+
+TextBlock measureText(const std::string& text, float size) {
+    TextBlock b;
+    if (text.empty()) return b;
+    ImFont* font = ImGui::GetFont();
+    b.size  = size;
+    b.lineH = font->CalcTextSizeA(size, FLT_MAX, 0.0f, "Xg").y;
+    size_t from = 0;
+    for (;;) {
+        const size_t nl = text.find('\n', from);
+        b.lines.push_back(text.substr(from, nl == std::string::npos ? std::string::npos : nl - from));
+        if (nl == std::string::npos) break;
+        from = nl + 1;
+    }
+    for (const auto& line : b.lines)
+        b.w = std::max(b.w, font->CalcTextSizeA(size, FLT_MAX, 0.0f, line.c_str()).x);
+    b.h = b.lineH * float(b.lines.size());
+    return b;
+}
+
+struct ExportPage {
+    ImVec2    size, drawingAt, drawing;
+    bool      decorated = false;
+    TextBlock title, caption;
+    ImVec2    titleAt, captionAt;
+    struct LegendItem { ImVec2 at; float textW = 0.0f; const SchematicView::LegendEntry* entry = nullptr; };
+    std::vector<LegendItem> legend;
+    float legendLineH = 0.0f;
+};
+
+ExportPage layoutPage(ImVec2 drawing, float margin, const ViewOptions& options,
+                      const std::vector<SchematicView::LegendEntry>& legend) {
+    ExportPage page;
+    page.drawing = drawing;
+    page.title   = measureText(options.title, kTitleFontSize);
+    page.caption = measureText(options.caption, kCaptionFontSize);
+    const bool withLegend = options.legend && !legend.empty();
+    page.decorated = !page.title.lines.empty() || !page.caption.lines.empty() || withLegend;
+    if (!page.decorated) {
+        page.size = drawing;
+        return page;
+    }
+    ImFont* font = ImGui::GetFont();
+    // Width: the drawing's, or more for a long title, caption or legend entry.
+    float width = std::max({ drawing.x, page.title.w + 2.0f * margin, page.caption.w + 2.0f * margin });
+    std::vector<float> textW;
+    if (withLegend) {
+        page.legendLineH = font->CalcTextSizeA(kLegendFontSize, FLT_MAX, 0.0f, "Xg").y;
+        for (const auto& e : legend) {
+            textW.push_back(font->CalcTextSizeA(kLegendFontSize, FLT_MAX, 0.0f, e.label.c_str()).x);
+            width = std::max(width, kLegendSwatchW + kLegendGap + textW.back() + 2.0f * margin);
+        }
+    }
+    float y = 0.0f;
+    if (!page.title.lines.empty()) {
+        page.titleAt = ImVec2(margin, margin);
+        y = margin + page.title.h;  // the drawing's own margin follows
+    }
+    page.drawingAt = ImVec2(std::floor((width - drawing.x) * 0.5f), y);
+    y += drawing.y;
+    if (withLegend) {
+        // Entries left to right, wrapped at the page's inner width.
+        const float rowH = page.legendLineH + 6.0f;
+        float x = margin;
+        for (size_t i = 0; i < legend.size(); ++i) {
+            const float w = kLegendSwatchW + kLegendGap + textW[i];
+            if (x > margin && x + w > width - margin) { x = margin; y += rowH; }
+            page.legend.push_back({ ImVec2(x, y), textW[i], &legend[i] });
+            x += w + kLegendSpacing;
+        }
+        y += rowH;
+    }
+    if (!page.caption.lines.empty()) {
+        page.captionAt = ImVec2(margin, y + (withLegend ? 6.0f : 0.0f));
+        y = page.captionAt.y + page.caption.h;
+    }
+    page.size = ImVec2(width, y + margin);
+    return page;
+}
+
+void paintText(SchematicPainter& p, const TextBlock& b, ImVec2 at, ImU32 color) {
+    for (size_t i = 0; i < b.lines.size(); ++i)
+        p.AddText(ImGui::GetFont(), b.size, ImVec2(at.x, at.y + b.lineH * float(i)), color, b.lines[i].c_str());
+}
+
+void paintPage(SchematicPainter& p, SchematicView& sheet, const ExportPage& page) {
+    if (!page.decorated) {
+        sheet.render(p, ImVec2(0.0f, 0.0f), page.drawing);
+        return;
+    }
+    p.AddRectFilled(ImVec2(0.0f, 0.0f), page.size, IM_COL32(255, 255, 255, 255));
+    sheet.render(p, page.drawingAt, page.drawing);
+    if (!page.title.lines.empty()) {
+        p.BeginGroup({ { "class", "title" } });
+        paintText(p, page.title, page.titleAt, kTitleColor);
+        p.EndGroup();
+    }
+    if (!page.legend.empty()) {
+        p.BeginGroup({ { "class", "legend" } });
+        for (const auto& item : page.legend) {
+            p.BeginGroup({ { "class", "legend-entry" }, { "data-label", item.entry->label } });
+            const float midY = item.at.y + page.legendLineH * 0.5f;
+            p.AddLine(ImVec2(item.at.x, midY), ImVec2(item.at.x + kLegendSwatchW, midY), item.entry->color, 3.0f);
+            p.AddText(ImGui::GetFont(), kLegendFontSize, ImVec2(item.at.x + kLegendSwatchW + kLegendGap, item.at.y),
+                      kCaptionColor, item.entry->label.c_str());
+            p.EndGroup();
+        }
+        p.EndGroup();
+    }
+    if (!page.caption.lines.empty()) {
+        p.BeginGroup({ { "class", "caption" } });
+        paintText(p, page.caption, page.captionAt, kCaptionColor);
+        p.EndGroup();
+    }
+}
+
+} // namespace
+
+// The sheet an export draws: this view at 1x over the whole drawing, with
+// `margin` around it, with no hover or pending feedback -- but the
+// selection is kept, so an export can point at something. False if empty.
+bool SchematicView::exportSheet(float margin, SchematicView& sheet, ImVec2& size) const {
     ImVec2 lo, hi;
-    if (!computeWorldBounds(lo, hi)) return "";
-    // The whole sheet at 1x: nothing is small enough to fade out (see the
-    // label legibility helpers above), and no hover or pending feedback --
-    // but the selection is kept, so an export can point at something.
-    SchematicView sheet = *this;
+    if (!computeWorldBounds(lo, hi)) return false;
+    sheet = *this;
     sheet.exporting = true;
+    sheet.hideUiGlyphs = ViewOptions::current().hideUiGlyphs;
     sheet.hoveredPortId = -1;
     sheet.transform = Transform{};
     sheet.transform.offset = ImVec2(lo.x - margin, lo.y - margin);
-    const ImVec2 size(hi.x - lo.x + 2.0f * margin, hi.y - lo.y + 2.0f * margin);
-    SvgPainter svg(size);
-    sheet.render(svg, ImVec2(0.0f, 0.0f), size);
+    size = ImVec2(hi.x - lo.x + 2.0f * margin, hi.y - lo.y + 2.0f * margin);
+    return true;
+}
+
+std::string SchematicView::exportSvg(float margin) const {
+    // At 1x nothing is small enough to fade out (see the label legibility
+    // helpers above).
+    SchematicView sheet;
+    ImVec2 drawing;
+    if (!exportSheet(margin, sheet, drawing)) return "";
+    const ExportPage page = layoutPage(drawing, margin, ViewOptions::current(), sheet.legend);
+    SvgPainter svg(page.size);
+    paintPage(svg, sheet, page);
     return svg.finish();
 }
 
 std::string SchematicView::exportPng(float scale, float margin) const {
-    ImVec2 lo, hi;
-    if (!(scale > 0.0f) || !computeWorldBounds(lo, hi)) return "";
-    SchematicView sheet = *this;
-    sheet.exporting = true;
-    sheet.hoveredPortId = -1;
-    sheet.transform = Transform{};
-    sheet.transform.offset = ImVec2(lo.x - margin, lo.y - margin);
-    const ImVec2 size(hi.x - lo.x + 2.0f * margin, hi.y - lo.y + 2.0f * margin);
-    if (double(size.x) * scale * double(size.y) * scale > kMaxPngPixels) return "";
+    SchematicView sheet;
+    ImVec2 drawing;
+    if (!(scale > 0.0f) || !exportSheet(margin, sheet, drawing)) return "";
+    const ExportPage page = layoutPage(drawing, margin, ViewOptions::current(), sheet.legend);
+    if (double(page.size.x) * scale * double(page.size.y) * scale > kMaxPngPixels) return "";
     // Twice: the first drawing bakes the font sizes it needs into the atlas,
     // which may grow it and so move glyphs drawn before; the second finds
     // every glyph in place.
     {
-        RasterPainter warmup(size, scale);
-        sheet.render(warmup, ImVec2(0.0f, 0.0f), size);
+        RasterPainter warmup(page.size, scale);
+        paintPage(warmup, sheet, page);
     }
-    RasterPainter raster(size, scale);
-    sheet.render(raster, ImVec2(0.0f, 0.0f), size);
+    RasterPainter raster(page.size, scale);
+    paintPage(raster, sheet, page);
     return raster.png();
 }

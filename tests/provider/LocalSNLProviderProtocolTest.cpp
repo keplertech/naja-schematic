@@ -24,6 +24,7 @@
 #include "SNLBusTerm.h"
 #include "SNLBusTermBit.h"
 #include "SNLDesign.h"
+#include "SNLDesignModeling.h"
 #include "SNLInstance.h"
 #include "SNLInstTerm.h"
 #include "SNLRTLInfos.h"
@@ -46,6 +47,18 @@ SNLTerm::Direction direction(const std::string& d) {
   if (d == "output") return SNLTerm::Direction::Output;
   if (d == "inout")  return SNLTerm::Direction::InOut;
   return SNLTerm::Direction::Input;
+}
+
+// A role by its wire name ("clock", "async_reset", ...; protocol_cases.py's _ROLES).
+SNLDesignModeling::SNLTermRole termRole(const std::string& name) {
+  using Role = SNLDesignModeling::SNLTermRole;
+  static const std::map<std::string, Role> roles{
+    {"clock", Role::Clock}, {"data_input", Role::DataInput}, {"data_output", Role::DataOutput},
+    {"async_reset", Role::AsyncReset}, {"async_set", Role::AsyncSet},
+    {"sync_reset", Role::SyncReset}, {"sync_set", Role::SyncSet}, {"enable", Role::Enable},
+    {"scan_input", Role::ScanInput}, {"scan_enable", Role::ScanEnable},
+    {"memory_write_enable", Role::MemoryWriteEnable}};
+  return roles.at(name);
 }
 
 // [name, direction] for a scalar term, [name, direction, msb, lsb] for a bus.
@@ -91,6 +104,9 @@ std::map<std::string, SNLDesign*> buildDesign(NLDB* db, const json& spec) {
   for (const auto& p : spec["primitives"]) {
     auto* d = SNLDesign::create(prims, SNLDesign::Type::Primitive, NLName(p["name"].get<std::string>()));
     createTerms(d, p["terms"]);
+    const json roles = p.value("roles", json::object());  // (kept alive: items() refers to it)
+    for (const auto& [term, role] : roles.items())
+      SNLDesignModeling::setTermRole(d->getScalarTerm(NLName(term)), termRole(role.get<std::string>()));
     designs[p["name"]] = d;
   }
   auto* lib = NLLibrary::create(db, NLName("case_work"));
@@ -153,6 +169,10 @@ std::string matches(const json& expected, const json& actual, const std::string&
   if (expected.is_object()) {
     if (!actual.is_object()) return where + ": expected an object, got " + actual.dump();
     for (auto it = expected.begin(); it != expected.end(); ++it) {
+      if (it.value() == "$absent") {
+        if (actual.contains(it.key())) return where + ": unexpected " + it.key() + " in " + actual.dump();
+        continue;
+      }
       if (!actual.contains(it.key())) return where + ": missing " + it.key();
       auto err = matches(it.value(), actual[it.key()], where + "." + it.key());
       if (!err.empty()) return err;
@@ -258,6 +278,14 @@ class SourceProtocol : public ::testing::Test {
 
 CaseSuite* SourceProtocol::suite_ = nullptr;
 
+class RoleProtocol : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() { suite_ = new CaseSuite("role_protocol_cases.json"); }
+  static CaseSuite* suite_;
+};
+
+CaseSuite* RoleProtocol::suite_ = nullptr;
+
 } // namespace
 
 TEST_F(ProviderProtocol, AnswersEverySharedCaseLikeProtocolPy) {
@@ -265,6 +293,11 @@ TEST_F(ProviderProtocol, AnswersEverySharedCaseLikeProtocolPy) {
 }
 
 TEST_F(SourceProtocol, AnswersEverySharedCaseLikeProtocolPy) {
+  suite_->runCases();
+}
+
+// Term roles (group_by "role"): role_protocol_cases.json.
+TEST_F(RoleProtocol, AnswersEverySharedCaseLikeProtocolPy) {
   suite_->runCases();
 }
 

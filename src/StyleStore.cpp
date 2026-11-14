@@ -131,6 +131,14 @@ std::vector<StyleItem> StyleStore::parse(const nlohmann::json& j, std::vector<st
     else if (kind == "net")  item.kind = StyleKind::Net;
     else if (kind == "term") item.kind = StyleKind::Term;
     else { fail(i, "unknown kind \"" + kind + "\""); continue; }
+    // "target" (text like "u1/u2:A", or [path, terminal]) is resolved by
+    // the Python host before it pushes the style; the viewer only reads
+    // the addresses it resolves to. Refused, rather than read as the top.
+    if (raw.contains("target")) {
+      fail(i, "\"target\" is resolved by the naja-schematic Python host; "
+              "here give \"path\"/\"id_path\" (and \"terminal\"/\"bit\")");
+      continue;
+    }
 
     if (raw.contains("path") && raw["path"].is_array())
       for (const auto& seg : raw["path"])

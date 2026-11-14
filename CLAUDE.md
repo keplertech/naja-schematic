@@ -552,7 +552,8 @@ each visible trace in its own `TraceStore` color. A wire tree two visible
 traces go through is striped in their colors (`NetRoute::stripeColors`,
 dashes anchored to world coordinates; plain convergence color when zoomed
 too far out to read them), and a gate they share is outlined in the
-near-black convergence color -- only a gate each trace's own reply listed
+near-black convergence color (unless the gate is styled or
+`convergence_outline` is off) -- only a gate each trace's own reply listed
 on the net (`Equipotential::traceInstances`): a trace's partial net folded
 into a fuller one already shown doesn't reach that net's other readers. A
 diagnosis color
@@ -722,7 +723,8 @@ intercepts it (`Renderer.render_outputs()`); the session doesn't.
 
 `view_options` is a server push setting how the viewer draws, not what:
 `{"response":"view_options","instance_label":"name|model|both",
-"sink_rows":8,"max_sinks":32,"group_by":"model|hierarchy|role"}`, keys
+"sink_rows":8,"max_sinks":32,"group_by":"model|hierarchy|role|pin",
+"convergence_outline":true}`, keys
 absent kept (`ViewOptions::apply()`; `protocol.view_options()` validates,
 `DEFAULT_VIEW_OPTIONS` mirrors the C++ defaults). Not cleared by a root
 load; the session re-sends it after each `root_response` anyway, first.
@@ -730,6 +732,32 @@ render.py sends it in full at the start of every drawing. Also the View
 menu (Instance Labels, Fanout) and the CLIs' flags. Fanout summaries are
 pseudo-instances under a made-up path segment (id >= `kSummaryIdBase` in
 `EquipotentialView.cpp`), never sent to the host; see `planFanout()`.
+`convergence_outline` (`--no-convergence-outline`, View > Outline Trace
+Convergence): the near-black outline of a box two visible traces go
+through; never drawn on a box a style names (`StyleStore::instanceStyle()`),
+since it reads as an error or a selection in a figure. Like the four
+export decorations below, it's left out of `ViewOptions::layoutJson()`.
+Four keys only decorate exports (SVG and PNG), never the canvas, and are
+left out of `ViewOptions::layoutJson()` so changing them doesn't refit:
+`"title"`/`"caption"` (text bands above/below the drawing, `\n` breaks
+lines), `"legend"` (a swatch + label per visible trace and per net a style
+labels, `SchematicView::legend`, filled by `EquipotentialView`) and
+`"hide_ui_glyphs"` (no open-pin stubs or "•••" dots,
+`SchematicView::hideUiGlyphs` on the export copy). `export_svg()`/
+`export_png()` take them as keywords too (`protocol.EXPORT_DECORATIONS`);
+CLIs: `--title`, `--caption`, `--legend`, `--hide-ui-glyphs`.
+`group_by: "role"` groups sinks by the receiving pin's naja role
+(`fanoutRoleGroup()`: "clock", "reset", "set", "enable", "scan",
+"address", else "data"), read from the sparse `"role"` on term and
+occurrence entries: naja's `SNLDesignModeling::getTermRole()` in snake
+case (`"clock"`, `"async_reset"`, `"enable"`, `"memory_write_enable"`,
+...), sent only for a non-data role (DataInput/DataOutput/Other: none),
+from the `SNLInstTerm` on occurrences (parameter-driven roles) --
+`termRoleName()`/`setTermRole()` in `LocalSNLProvider.cpp`,
+`term_role()`/`with_clock()` in `protocol.py`, kept in step (shared
+cases: `tests/data/role_protocol_cases.json`). A pin naja
+models as a clock with no role set counts as "clock". `"pin"` is the
+older grouping: by pin name, clock pins together.
 
 `export_svg` is a server push too, `{"response":"export_svg"}`, from
 `Schematic.export_svg()` (`ViewerSession.export_svg()`): the viewer sets
@@ -806,8 +834,13 @@ it must name a pin the viewer draws -- a leaf pin or a top-level port.
 Python resolves every item (`session.style_response()`, `ValueError` on
 a bad one) and sends a `net` item once per bit on its net's driver (a
 top-level port, else an output leaf pin: the pin a trace's partial net
-also lists), whatever pin or `target` (an instance or pin as
-`show_instance()`/`show_net()` take) named it. An `instance` item fills
+also lists), whatever pin or `target` named it: an instance or pin as
+`show_instance()`/`show_net()` take, or -- what a JSON style file can
+say -- `render`'s `--instance`/`--net` text (`"u1/u2"`, `"u1:A[3]"`,
+`"y"`, matched against the design), a pin as a `[instance, terminal(,
+bit)]` list or a `{"path"|"id_path", "terminal", "bit"}` object
+(`session.style_target()`). `target` is the Python host's: the native
+`StyleStore::parse()` refuses it. An `instance` item fills
 the box (also gate symbols, port flags; module frames keep their
 translucency), outlines it in `color`/`width`, and `label` replaces the
 drawn name (`InstanceShape::label`, so the layout makes room for it). A
@@ -1119,7 +1152,16 @@ path the host read, used by the native "Open in Editor".
   - `layoutHierarchyGroups()`: module frames.
   - Fanout: `layeredPlacement(..., maxSinkRows)` deals a column's sinks
     (nodes driving nothing placed) into a grid of columns, each its own
-    level; `planFanout()` picks which sinks of a wide net are drawn and
+    level, with a band of rows per driver (a sink's nearest one): every
+    band starts in the grid's first column and is placed level with its
+    driver, `kBandGap` under the band above, so no net's wire crosses
+    another net's sinks (`MultiDriverFanout` tests in
+    `tests/FanoutTest.cpp`). Sinks a crossing-reduction sweep can't tell
+    apart (the loads of one pin) keep `PlaceNode::rank` order: the
+    natural order of their names (`naturalLess()`/`naturalPathLess()`,
+    `lut_111` before `lut_1037`), summaries last; the receivers
+    `planFanout()` sees are sorted the same way, so the first max_sinks
+    drawn are the naturally first. `planFanout()` picks which sinks of a wide net are drawn and
     gathers the rest into groups (never a driver, a pinned instance, an
     expanded group or a group of one). The model label is a `kNameH` row
     under the symbol (`shownModel()`, `modelRect()`, `footprintHeight()`).
@@ -1159,6 +1201,21 @@ path the host read, used by the native "Open in Editor".
   (native: `NativeFileDialog::saveFile()`; WASM: a Blob download,
   `najaDownloadText` in `AppLogic.cpp`). New drawing code goes through
   the painter, never straight to an `ImDrawList`, or it won't reach exports.
+  `BeginGroup()`/`EndGroup()` give the SVG its structure (no-ops for the
+  other painters): `SchematicView::render()` wraps each route/net
+  (`netGroup()`: `class="net"`, `data-net`, `data-driver` "path:pin" or a
+  port name, `data-driver-id-path`, `data-label`), box
+  (`instanceGroup()`: `class="instance"`, `data-path`, `data-id-path`,
+  `data-model`), port flag (`class="port"`, `data-name`,
+  `data-direction`), summary (`class="summary"`, `data-group`,
+  `data-count`) and module frame (`class="module"`), plus
+  `data-path-json`/`data-driver-json` when a name is empty or holds `/` or
+  `:`. Groups and decorations must not change the drawing:
+  `tests/SvgExportTest.cpp` compares an undecorated export, group tags
+  stripped, to `tests/data/export_golden.svg` (rewrite it with
+  `NAJA_SCHEMATIC_UPDATE_GOLDEN=1` only for a deliberate drawing change).
+  The decorated page (`layoutPage()`/`paintPage()`) is shared by
+  `exportSvg()` and `exportPng()`.
 - **`SchematicInteraction`** — the pure side of the schematic's pin
   interactions: `pickPin()` (nearest-pin hit test, radius capped in world
   units so a pin doesn't swallow box-body clicks at low zoom) and

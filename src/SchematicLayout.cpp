@@ -30,6 +30,7 @@ void buildItems(const Equipotential* eq,
         item.termChildId = occ.term.child_id;
         item.termBit     = occ.term.bit;
         item.clock       = occ.term.clock;
+        item.role        = occ.term.role;
         item.pathIds     = occ.pathIds;
         item.hasInstances = occ.has_instances;
         item.bitTermCount = occ.bit_term_count;
@@ -62,6 +63,43 @@ float labelWidth(const std::vector<std::string>& names) {
 // ---------------------------------------------------------------------------
 // Instance names
 // ---------------------------------------------------------------------------
+bool naturalLess(const std::string& a, const std::string& b) {
+    auto digit = [](char c) { return c >= '0' && c <= '9'; };
+    size_t i = 0, j = 0;
+    while (i < a.size() && j < b.size()) {
+        if (digit(a[i]) && digit(b[j])) {
+            size_t i1 = i, j1 = j;
+            while (i1 < a.size() && digit(a[i1])) ++i1;
+            while (j1 < b.size() && digit(b[j1])) ++j1;
+            // Compare values without overflow: leading zeros off, then by
+            // length, then digit by digit.
+            size_t i0 = i, j0 = j;
+            while (i0 + 1 < i1 && a[i0] == '0') ++i0;
+            while (j0 + 1 < j1 && b[j0] == '0') ++j0;
+            if (i1 - i0 != j1 - j0) return i1 - i0 < j1 - j0;
+            const int c = a.compare(i0, i1 - i0, b, j0, j1 - j0);
+            if (c != 0) return c < 0;
+            i = i1;
+            j = j1;
+            continue;
+        }
+        if (a[i] != b[j]) return (unsigned char)a[i] < (unsigned char)b[j];
+        ++i;
+        ++j;
+    }
+    if ((i < a.size()) != (j < b.size())) return j < b.size();
+    return a < b;
+}
+
+bool naturalPathLess(const InstancePath& a, const InstancePath& b) {
+    for (size_t k = 0; k < a.size() && k < b.size(); ++k) {
+        if (naturalLess(a[k].name, b[k].name)) return true;
+        if (naturalLess(b[k].name, a[k].name)) return false;
+    }
+    if (a.size() != b.size()) return a.size() < b.size();
+    return a < b;
+}
+
 std::string shortenMiddle(const std::string& name, const NameWidthFn& width, float maxW) {
     if (width(name) <= maxW) return name;
     static const std::string kEllipsis = "...";
@@ -315,6 +353,12 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
     };
     renumber();
     auto frac = [&](int node, float dy) { return nodes[node].h > 0.f ? dy / nodes[node].h : 0.5f; };
+    std::vector<char> isSink(n, 0);
+    for (int v = 0; v < n; ++v) {
+        bool drives = nodes[v].drivesOutput;
+        for (int e : outEdges[v]) if (!isBack[e]) drives = true;
+        isSink[v] = !drives;
+    }
     for (int sweep = 0; sweep < 4; ++sweep) {
         const bool down = sweep % 2 == 0;
         for (int li = 0; li <= maxLevel; ++li) {
@@ -331,15 +375,27 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
                 for (int e : outEdges[v]) visit(edges[e].v, edges[e].dv);
                 keyed.push_back({ cnt ? sum / float(cnt) : order[v] + 0.5f, v });
             }
-            std::stable_sort(keyed.begin(), keyed.end(),
-                             [](const auto& a, const auto& b) { return a.first < b.first; });
+            // Ties between sinks (the loads of one pin): by rank.
+            std::stable_sort(keyed.begin(), keyed.end(), [&](const auto& a, const auto& b) {
+                if (a.first != b.first) return a.first < b.first;
+                return isSink[a.second] && isSink[b.second] && nodes[a.second].rank < nodes[b.second].rank;
+            });
             for (size_t i = 0; i < keyed.size(); ++i) layer[i] = keyed[i].second;
             renumber();
         }
     }
 
     // 6 (before the columns are measured). Sink grid: a column with too
-    //    many sinks is dealt into several, each a level of its own.
+    //    many sinks is dealt into several, each a level of its own. Its
+    //    sinks are banded by driver: each driver's sinks get rows of their
+    //    own (a band, placed level with the driver in step 5) and are dealt
+    //    into columns from the grid's first one, so every driver's grid
+    //    starts in the same column and no net's wire has to cross another
+    //    net's sinks to reach its own.
+    struct Band { std::vector<std::vector<int>> cols; };
+    struct SinkGrid { int first = 0, count = 0; std::vector<Band> bands; };
+    std::vector<SinkGrid> grids;
+    std::vector<int> gridOfLevel(maxLevel + 1, -1);
     if (maxSinkRows > 0) {
         std::vector<std::vector<int>> wrapped;
         for (const auto& layer : layers) {
@@ -350,19 +406,59 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
                 (drives ? others : sinks).push_back(v);
             }
             if (int(sinks.size()) <= maxSinkRows) { wrapped.push_back(layer); continue; }
-            const size_t cols = (sinks.size() + size_t(maxSinkRows) - 1) / size_t(maxSinkRows);
-            const size_t per  = (sinks.size() + cols - 1) / cols;
-            for (size_t c = 0; c * per < sinks.size(); ++c)
-                wrapped.emplace_back(sinks.begin() + long(c * per),
-                                     sinks.begin() + long(std::min(sinks.size(), (c + 1) * per)));
+            // A sink's band: its nearest driver (the highest level among its
+            // forward in-edges, then the first in column order). Bands keep
+            // the order their first sink has in the column.
+            std::vector<int> bandKeys;
+            std::vector<std::vector<int>> bandSinks;
+            for (int v : sinks) {
+                int key = -1, keyLevel = INT_MIN;
+                for (int e : inEdges[v]) {
+                    if (isBack[e]) continue;
+                    const int u = edges[e].u;
+                    if (key < 0 || out.level[u] > keyLevel || (out.level[u] == keyLevel && order[u] < order[key])) {
+                        key = u;
+                        keyLevel = out.level[u];
+                    }
+                }
+                auto it = std::find(bandKeys.begin(), bandKeys.end(), key);
+                if (it == bandKeys.end()) {
+                    bandKeys.push_back(key);
+                    bandSinks.emplace_back();
+                    it = bandKeys.end() - 1;
+                }
+                bandSinks[size_t(it - bandKeys.begin())].push_back(v);
+            }
+            SinkGrid grid;
+            grid.first = int(wrapped.size());
+            for (const auto& bs : bandSinks) {
+                const size_t cols = (bs.size() + size_t(maxSinkRows) - 1) / size_t(maxSinkRows);
+                const size_t per  = (bs.size() + cols - 1) / cols;
+                Band band;
+                for (size_t c = 0; c * per < bs.size(); ++c)
+                    band.cols.emplace_back(bs.begin() + long(c * per),
+                                           bs.begin() + long(std::min(bs.size(), (c + 1) * per)));
+                grid.count = std::max(grid.count, int(band.cols.size()));
+                grid.bands.push_back(std::move(band));
+            }
+            for (int c = 0; c < grid.count; ++c) {
+                std::vector<int> col;
+                for (const auto& band : grid.bands)
+                    if (c < int(band.cols.size())) col.insert(col.end(), band.cols[c].begin(), band.cols[c].end());
+                wrapped.push_back(std::move(col));
+            }
+            grids.push_back(std::move(grid));
             if (!others.empty()) wrapped.push_back(others);
         }
-        if (wrapped.size() != layers.size()) {
+        if (!grids.empty()) {
             layers = std::move(wrapped);
             maxLevel = int(layers.size()) - 1;
             for (int l = 0; l <= maxLevel; ++l)
                 for (int v : layers[l]) out.level[v] = l;
             renumber();
+            gridOfLevel.assign(maxLevel + 1, -1);
+            for (int g = 0; g < int(grids.size()); ++g)
+                for (int c = 0; c < grids[g].count; ++c) gridOfLevel[grids[g].first + c] = g;
         }
     }
 
@@ -393,10 +489,48 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
         float cy = 0.f;
         for (int v : layer) { y[v] = cy; cy += nodes[v].h + kRowSpacing; }
     }
+    // A sink grid is placed as a whole: its bands top to bottom, each one's
+    // rows level with its driver's pin as far as the bands above allow, the
+    // rows of a band aligned across its columns.
+    auto placeGrid = [&](const SinkGrid& grid) {
+        float prevBottom = 0.f;
+        bool  first = true;
+        for (const auto& band : grid.bands) {
+            size_t rows = 0;
+            for (const auto& col : band.cols) rows = std::max(rows, col.size());
+            std::vector<float> rowOff(rows, 0.f);
+            float rowY = 0.f;
+            for (size_t r = 0; r < rows; ++r) {
+                float h = 0.f;
+                for (const auto& col : band.cols) if (r < col.size()) h = std::max(h, nodes[col[r]].h);
+                rowOff[r] = rowY;
+                rowY += h + kRowSpacing;
+            }
+            const float height = rowY - kRowSpacing;
+            std::vector<float> want;
+            for (const auto& col : band.cols)
+                for (size_t r = 0; r < col.size(); ++r)
+                    for (int e : inEdges[col[r]])
+                        if (!isBack[e] && out.level[edges[e].u] < grid.first)
+                            want.push_back(y[edges[e].u] + edges[e].du - edges[e].dv - rowOff[r]);
+            float top = want.empty() ? (first ? 0.f : prevBottom + kBandGap) : lowerMedian(want);
+            if (!first) top = std::max(top, prevBottom + kBandGap);
+            top = std::round(top / kGrid) * kGrid;
+            for (const auto& col : band.cols)
+                for (size_t r = 0; r < col.size(); ++r) y[col[r]] = top + rowOff[r];
+            prevBottom = top + height;
+            first = false;
+        }
+    };
     const int rounds[] = { +1, -1, +1 };
     for (int dir : rounds) {
         for (int li = 0; li <= maxLevel; ++li) {
             int l = dir > 0 ? li : maxLevel - li;
+            if (gridOfLevel[l] >= 0) {
+                const SinkGrid& grid = grids[size_t(gridOfLevel[l])];
+                if (l == (dir > 0 ? grid.first : grid.first + grid.count - 1)) placeGrid(grid);
+                continue;
+            }
             auto& layer = layers[l];
             std::vector<float> target, weight, h;
             for (int v : layer) {
@@ -735,6 +869,17 @@ std::string baseName(const std::string& label) {
 }
 } // namespace
 
+std::string fanoutRoleGroup(const Item& r) {
+    const std::string& role = r.role;
+    if (role == "clock" || (role.empty() && r.clock))       return "clock";
+    if (role == "async_reset" || role == "sync_reset")     return "reset";
+    if (role == "async_set" || role == "sync_set")         return "set";
+    if (role == "enable" || role == "memory_write_enable") return "enable";
+    if (role == "scan_input" || role == "scan_enable")     return "scan";
+    if (role == "memory_read_address" || role == "memory_write_address") return "address";
+    return "data";
+}
+
 FanoutPlan planFanout(const std::vector<FanoutNet>& nets, int maxSinks, FanoutGroupBy groupBy,
                       const std::set<InstancePath>& pinned, const FanoutExpandedFn& expanded) {
     FanoutPlan plan;
@@ -780,6 +925,9 @@ FanoutPlan planFanout(const std::vector<FanoutNet>& nets, int maxSinks, FanoutGr
                 k.module.assign(r.path.begin(), r.path.end() - (r.path.empty() ? 0 : 1));
                 break;
             case FanoutGroupBy::Role:
+                k.text = fanoutRoleGroup(r);
+                break;
+            case FanoutGroupBy::Pin:
                 k.clock = r.clock;
                 if (!r.clock) k.text = baseName(r.label);
                 break;
@@ -834,7 +982,8 @@ FanoutPlan planFanout(const std::vector<FanoutNet>& nets, int maxSinks, FanoutGr
                 while (k < common && k + 1 < r.path.size() && r.path[k] == first.path[k]) ++k;
                 common = k;
             }
-            if (groupBy == FanoutGroupBy::Role && g.clock && g.pin.empty()) g.pin = "clock";
+            if (g.pin.empty() && groupBy == FanoutGroupBy::Pin && g.clock) g.pin = "clock";
+            if (g.pin.empty() && groupBy == FanoutGroupBy::Role)          g.pin = key.text;
             g.module.assign(first.path.begin(), first.path.begin() + long(common));
             g.moduleModels.assign(first.pathModels.begin(),
                                   first.pathModels.begin() + long(std::min(common, first.pathModels.size())));
@@ -842,7 +991,8 @@ FanoutPlan planFanout(const std::vector<FanoutNet>& nets, int maxSinks, FanoutGr
             switch (groupBy) {
                 case FanoutGroupBy::Model:     what = key.text.empty() ? "cells" : key.text; break;
                 case FanoutGroupBy::Hierarchy: what = key.module.empty() ? "(top)" : displayPath(key.module); break;
-                case FanoutGroupBy::Role:      what = key.clock ? "clock" : key.text; break;
+                case FanoutGroupBy::Role:      what = key.text; break;
+                case FanoutGroupBy::Pin:       what = key.clock ? "clock" : key.text; break;
             }
             g.label = what + " \xC3\x97" + std::to_string(g.count);  // U+00D7 multiplication sign
             const int gi = int(plan.groups.size());
