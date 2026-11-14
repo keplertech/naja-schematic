@@ -18,6 +18,7 @@
 #include "ReviewStore.h"
 #include "ReviewView.h"
 #include "SelectionStore.h"
+#include "StyleStore.h"
 #include "TraceStore.h"
 
 // Net/instance placement and hierarchy frames live in SchematicLayout
@@ -103,6 +104,49 @@ static std::vector<const ReviewThread*> pinReviewThreads(int portId) {
     auto it = g_portEquiByPortId.find(portId);
     if (it == g_portEquiByPortId.end()) return {};
     return ReviewStore::pinThreads(it->second.pathIds, it->second.termId, it->second.bit);
+}
+
+// Host styling (StyleStore) on a box or module frame: its fill, a label
+// drawn for its name, and its outline -- in the style's color unless a
+// diagnosis already outlines it (which keeps its color). Applied before
+// the trace convergence outline, which then only goes on unstyled boxes.
+static void applyInstanceStyle(InstanceShape& shape) {
+    const StyleAttrs style = StyleStore::instanceStyle(shape.path);
+    if (style.empty()) return;
+    shape.fill = style.fill;
+    if (!style.label.empty()) shape.label = style.label;
+    if (shape.diagOutline == 0) shape.diagOutline = style.color;
+    if (shape.diagOutline != 0) shape.outlineWidth = style.width;
+}
+
+// "A[3]" -> 3; nullopt for a scalar name or a merged bus label ("A[7:0]").
+static std::optional<int> bitOfLabel(const std::string& label) {
+    auto open = label.rfind('[');
+    if (open == std::string::npos || label.back() != ']' || open + 2 >= label.size()) return std::nullopt;
+    const std::string digits = label.substr(open + 1, label.size() - open - 2);
+    if (digits.find_first_not_of("0123456789") != std::string::npos) return std::nullopt;
+    return std::stoi(digits);
+}
+
+// Host styling (StyleStore::termStyle) on one pin of `inst`, a box or a
+// top-level port's flag ({}): the pin's term by id where the view knows it
+// (a merged bus pin: the whole bus, no bit), else by its name.
+static void applyPinStyle(const InstanceShape& inst, Port& p) {
+    std::optional<unsigned> termId;
+    std::optional<int> bit;
+    if (auto bus = g_busTermByPortId.find(p.id); bus != g_busTermByPortId.end()) {
+        termId = bus->second.termId;
+    } else if (auto it = g_portEquiByPortId.find(p.id); it != g_portEquiByPortId.end()) {
+        termId = it->second.termId;
+        bit    = it->second.bit;
+    } else {
+        bit = bitOfLabel(p.name);
+    }
+    const InstancePath path = inst.modelName == "port" ? InstancePath{} : inst.path;
+    const StyleAttrs style = StyleStore::termStyle(path, p.name, termId, bit);
+    p.styleColor = style.color;
+    p.styleWidth = style.width;
+    p.label      = style.label;
 }
 
 // Pins the host found unconnected (markUnconnected()).
@@ -487,6 +531,7 @@ static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInst
         cs.hasChildren   = c.hasInstances;
         cs.hierExpanded  = c.hasInstances && g_hierExpanded.count(cs.path) > 0;
         cs.diagOutline   = DiagnosisStore::instanceColor(cs.path);
+        applyInstanceStyle(cs);
         setReviewBadge(cs);
         childIdToShapeId[c.childId] = cs.id;
         g_occInfoByShapeId[cs.id] = { cs.path, c.designRef, c.hasSources };
@@ -737,6 +782,13 @@ ImU32 traceWireColor(ImU32 color, const std::vector<int>& traceIds, bool faint) 
     if (traceIds.size() >= 2) return TraceStore::convergenceColor();
     if (traceIds.size() == 1) return TraceStore::color(traceIds.front());
     return faint ? kFaintWireColor : color;
+}
+
+// The same with host styling (StyleStore) in between: a diagnosis color in
+// `color` wins, then the style's color, then the traces'.
+ImU32 styledWireColor(ImU32 color, ImU32 styleColor, const std::vector<int>& traceIds, bool faint) {
+    if (color != NetWire{}.color || styleColor == 0) return traceWireColor(color, traceIds, faint);
+    return styleColor;
 }
 } // namespace
 
@@ -1120,6 +1172,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         inst.name      = displayPath(key);
         inst.primitiveType = mi.primitiveType;
         inst.diagOutline = DiagnosisStore::instanceColor(key);
+        applyInstanceStyle(inst);
         // A gate two visible traces go through: where they converge.
         if (inst.diagOutline == 0 && traceIdsByInstance[key].size() >= 2)
             inst.diagOutline = TraceStore::convergenceColor();
@@ -1365,6 +1418,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         std::vector<InstanceShape> frameShapes;
         for (auto& f : frames) {
             f.shape.diagOutline = DiagnosisStore::instanceColor(f.shape.path);
+            applyInstanceStyle(f.shape);
             f.shape.selected    = SelectionStore::isSelected(f.shape.path);
             setReviewBadge(f.shape);
             g_occInfoByShapeId[f.shape.id] = { f.shape.path, DesignRef{}, true };
@@ -1488,6 +1542,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             const auto threads = pinReviewThreads(p.id);
             p.reviewOpen  = int(ReviewStore::openCount(threads));
             p.reviewColor = ReviewStore::openColor(threads);
+            applyPinStyle(inst, p);
             auto req = g_portEquiByPortId.find(p.id);
             if (req != g_portEquiByPortId.end() && g_unconnectedPins.count(pinRequestKey(req->second))) {
                 p.unconnected = true;
@@ -1513,6 +1568,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             wrs.push_back({ instId, renderedPort(we.portId) });
         }
         if (wrs.size() < 2) continue;
+        const StyleAttrs netStyle = equipotentials[ei] ? StyleStore::netStyle(*equipotentials[ei])
+                                                       : StyleAttrs{};
 
         for (size_t i = 1; i < wrs.size(); ++i) {
             NetWire n;
@@ -1524,6 +1581,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             n.netName     = netLabelByEi[ei];
             n.traceIds    = traceIdsByEi[ei];
             n.faint       = faintByEi[ei];
+            n.styleColor  = netStyle.color;
+            n.width       = netStyle.width;
+            n.label       = netStyle.label;
 
             // A flagged endpoint pin colors the whole wire so a diagnosed
             // net stands out even when the flagged pin is off-screen.
@@ -1562,6 +1622,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             // full one): it's on every trace either is on.
             mergeTraceIds(m.traceIds, n.traceIds);
             m.faint = m.faint && n.faint;
+            if (m.styleColor == 0) m.styleColor = n.styleColor;
+            m.width = std::max(m.width, n.width);
+            if (m.label.empty()) m.label = n.label;
             if (portIsBus(n.srcInstance, n.srcPortId) || portIsBus(n.dstInstance, n.dstPortId)) {
                 m.isBus = true;
             }
@@ -1587,7 +1650,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         }
         std::map<std::pair<int, int>, size_t> routeOfSource;
         std::vector<RouteNet> routeNetsIn;
-        struct RouteTraces { std::vector<int> ids; bool faint = true; };
+        struct RouteTraces { std::vector<int> ids; bool faint = true; ImU32 styleColor = 0; };
         std::vector<RouteTraces> routeTraces;
         g_schematic.routes.clear();
         auto pinOf = [](const InstanceShape& inst, const Port& p) {
@@ -1621,12 +1684,17 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             auto& r = g_schematic.routes[it->second];
             // A flagged wire colors the whole tree it belongs to.
             if (n.color != NetWire{}.color) r.color = n.color;
+            // So does a styled one (StyleStore), under a diagnosis color.
+            if (routeTraces[it->second].styleColor == 0) routeTraces[it->second].styleColor = n.styleColor;
+            r.width = std::max(r.width, n.width);
+            if (r.label.empty()) r.label = n.label;
             r.isBus = r.isBus || n.isBus;
             n.routed = true;
         }
         for (size_t i = 0; i < g_schematic.routes.size(); ++i) {
             auto& r = g_schematic.routes[i];
-            r.color = traceWireColor(r.color, routeTraces[i].ids, routeTraces[i].faint);
+            r.color = styledWireColor(r.color, routeTraces[i].styleColor, routeTraces[i].ids,
+                                      routeTraces[i].faint);
             // A shared tree shows which traces share it (no diagnosis color).
             if (r.color == TraceStore::convergenceColor()) {
                 std::vector<int> ids = routeTraces[i].ids;
@@ -1636,7 +1704,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         }
         // Wiring nested in an expanded instance isn't routed: color it here.
         for (auto& n : g_schematic.nets)
-            if (!n.routed) n.color = traceWireColor(n.color, n.traceIds, n.faint);
+            if (!n.routed) n.color = styledWireColor(n.color, n.styleColor, n.traceIds, n.faint);
         auto routed = routeNets(routeNetsIn, obstacles, keepOut);
         for (size_t i = 0; i < routed.size(); ++i) {
             g_schematic.routes[i].segments  = std::move(routed[i].segments);

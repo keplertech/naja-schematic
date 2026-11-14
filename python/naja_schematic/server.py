@@ -34,6 +34,7 @@ from . import protocol
 from ._bundle import static_file
 from .review import Review, default_author
 from .session import ViewerSession, lock_runner
+from .session import style_response as session_style_response
 
 log = logging.getLogger("naja_schematic")
 
@@ -76,13 +77,13 @@ def _static_response(connection, request):
 
 
 async def serve(host="localhost", port=DEFAULT_PORT, diagnosis=None, open_browser=False,
-                source_roots=(), source_maps=(), review=None):
+                source_roots=(), source_maps=(), review=None, style=None):
     """Serve the viewer page and its WebSocket on host:port, forever."""
     from websockets.asyncio.server import serve as ws_serve
     from websockets.exceptions import ConnectionClosed
 
     session = ViewerSession(diagnosis=diagnosis, source_roots=source_roots,
-                            source_maps=source_maps, review=review)
+                            source_maps=source_maps, review=review, style=style)
 
     async def handle_connection(websocket):
         log.info("Client connected")
@@ -163,7 +164,7 @@ class ViewerServer:
 
     def __init__(self, host="127.0.0.1", port=0, *, lock=None, run=None,
                  token=True, allowed_origins=(), diagnosis=None, source_roots=(),
-                 source_maps=(), review=None):
+                 source_maps=(), review=None, style=None):
         if lock is not None and run is not None:
             raise ValueError("pass lock or run, not both")
         if run is None:
@@ -182,7 +183,7 @@ class ViewerServer:
         self._session = ViewerSession(push=self._broadcast, run=run, diagnosis=diagnosis,
                                       dispatch=self._dispatch_callback,
                                       source_roots=source_roots, source_maps=source_maps,
-                                      review=review)
+                                      review=review, style=style)
         self._thread = None
         self._loop = None
         self._stopping = None
@@ -267,6 +268,31 @@ class ViewerServer:
         to clear."""
         self._session.annotate(items)
 
+    def style(self, items):
+        """In every connected viewer, and in any that (re)loads later:
+        Style nets, instances and pins: colors, stroke widths, fills and
+        labels, kept across reloads until the next call (or
+        design_changed()); [] clears. `items` is a list of dicts (or a
+        {"items": [...]} document, as `--style` files hold):
+
+        - "kind": "net" (the whole net through a pin: its wires),
+          "instance" (a box) or "term" (one pin);
+        - the object: "target" -- an instance as show_instance() takes it,
+          a pin as show_net() does -- or "id_path"/"path" (the instance,
+          or the one containing the pin; [] = a top-level port) plus
+          "terminal" or "term_id" and an optional "bit" (absent: every bit);
+        - "color" ("#rrggbb", "#rrggbbaa" or an (r, g, b[, a]) tuple): a
+          net's wires, an instance's outline, a pin's tick; "width" (SVG px
+          at 1x); "fill": an instance's body (a translucent one tints the
+          default fill); "label": drawn instead of an instance's or pin's
+          name, or on a net's wire.
+
+        Items are resolved now (a bad one raises ValueError). Several items
+        on one object merge in order. Diagnosis colors win over styles, and
+        styles over trace colors. Kept in SVG exports.
+        """
+        self._session.style(items)
+
     def show_instance(self, target):
         """Reveal, select and draw one instance in every viewer, and in any
         that (re)loads later. `target`: a naja SNLPath (or a najaeda
@@ -333,14 +359,14 @@ class ViewerServer:
         """The current design generation: 0, plus one per design_changed()."""
         return self._session.generation
 
-    def design_changed(self, diagnosis=None, instance=None):
+    def design_changed(self, diagnosis=None, instance=None, style=None):
         """Start the next design generation, after replacing or editing the
         design: every viewer reloads it from the root, and every request a
         viewer made for the previous design -- a query or a selection, even
         one already queued behind the host's lock, even naming ids the new
-        design reuses -- is dropped unanswered. Kept diagnoses and focus are
-        replaced by `diagnosis` and `instance` (resolved against the new
-        design; None: none), and the selection is cleared. Returns the new
+        design reuses -- is dropped unanswered. Kept diagnoses, styles and
+        focus are replaced by `diagnosis`, `style` and `instance` (resolved
+        against the new design; None: none), and the selection is cleared. Returns the new
         generation.
 
         Call it in the same critical section as the swap: before releasing
@@ -348,12 +374,12 @@ class ViewerServer:
         `run` hands requests to, before it runs another one. Otherwise a
         queued request could still be answered for the old generation
         against the new design in between."""
-        return self._session.design_changed(diagnosis, instance)
+        return self._session.design_changed(diagnosis, instance, style)
 
     @contextlib.contextmanager
-    def replacing_design(self, diagnosis=None, instance=None):
+    def replacing_design(self, diagnosis=None, instance=None, style=None):
         """Replace or edit the design inside the block: `lock` is held for
-        it, and design_changed(diagnosis, instance) runs at its end, still
+        it, and design_changed(diagnosis, instance, style) runs at its end, still
         under the lock (not if the block raises)::
 
             with server.replacing_design(diagnosis=items):
@@ -366,7 +392,7 @@ class ViewerServer:
                                "design_changed() on the thread run hops to")
         with self.lock:
             yield
-            self.design_changed(diagnosis, instance)
+            self.design_changed(diagnosis, instance, style)
 
     def on_select(self, callback):
         """Call `callback(id_path, path)` each time a viewer selects an
@@ -513,13 +539,13 @@ class ViewerServer:
 # ---------------------------------------------------------------------------
 
 def serve_stdio(diagnosis=None, stdin=None, stdout=None, source_roots=(), source_maps=(),
-                review=None):
+                review=None, style=None):
     """Answer one JSON request per stdin line with JSON lines on stdout,
     until stdin closes. Logging must not go to stdout in this mode."""
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     session = ViewerSession(diagnosis=diagnosis, source_roots=source_roots,
-                            source_maps=source_maps, review=review)
+                            source_maps=source_maps, review=review, style=style)
     for line in stdin:
         line = line.strip()
         if not line:
@@ -559,6 +585,10 @@ def build_arg_parser():
     parser.add_argument("--diagnosis", metavar="FILE",
                         help="Diagnosis JSON ({\"items\": [...]} or a bare array) to "
                              "push to the viewer after the design loads")
+    parser.add_argument("--style", metavar="FILE",
+                        help="Style JSON ({\"items\": [...]} or a bare array: colors, "
+                             "widths, fills, labels on nets, instances and pins) to push "
+                             "to the viewer after the design loads")
     parser.add_argument("--source-root", action="append", default=[], metavar="DIR",
                         dest="source_roots",
                         help="Directory to look up relative source file references in "
@@ -759,6 +789,12 @@ def load_diagnosis_file(path):
         return json.load(f)
 
 
+def load_style_file(path):
+    """A --style file: {"items": [...]} or a bare array of style items."""
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
@@ -813,13 +849,22 @@ def main(argv=None):
     else:
         load_design(args)
 
+    style = None
+    if args.style:
+        try:
+            # Resolved against the loaded design: a bad item stops here.
+            style = load_style_file(args.style)
+            session_style_response(style)
+        except (OSError, ValueError, TypeError) as e:
+            raise SystemExit(f"--style {args.style}: {e}")
+
     if args.stdio:
         serve_stdio(diagnosis, stdout=protocol_out, source_roots=args.source_roots,
-                    source_maps=args.source_maps, review=review)
+                    source_maps=args.source_maps, review=review, style=style)
         return
     try:
         asyncio.run(serve(args.host, args.port, diagnosis, args.open, args.source_roots,
-                          args.source_maps, review))
+                          args.source_maps, review, style))
     except KeyboardInterrupt:
         pass
 

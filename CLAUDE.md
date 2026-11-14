@@ -100,7 +100,8 @@ since `LocalSNLProvider::loadSystemVerilog()`/`SNLSVConstructor` and
 `loadVHDL()` have no liberty hook, and the CLI fails loudly rather than
 silently ignoring it), a
 diagnosis JSON to pre-load (`--diagnosis <path>` — see
-`loadDiagnosisFile()` in `AppLogic.cpp`), and/or directories to look up
+`loadDiagnosisFile()` in `AppLogic.cpp`), a style JSON to pre-load
+(`--style <path>`, `loadStyleFile()`; see `style_response`), and/or directories to look up
 relative source file references in (`--source-root <dir>`, repeatable; see
 "Source references" under Wire protocol), path prefixes to rewrite for
 files recorded on another machine (`--source-map FROM=TO`, repeatable),
@@ -258,6 +259,7 @@ WASM viewer, so najaeda users get a viewer from `pip install` alone:
   `--open`, `--diagnosis <json>`, `--stdio`, `--source-root <dir>`
   (repeatable; `source_roots=` on `ViewerSession`/`ViewerServer`/`show()`),
   `--source-map FROM=TO` (repeatable; `source_maps=` there too),
+  `--style <json>` (`style=`, pushed after every `root_response`),
   `--yosys-src` (with `--verilog`: `loadGateLevelVerilog(yosys_source_attributes=)`))
   and its two transports: a
   WebSocket server that also serves the viewer page on the same port
@@ -760,6 +762,52 @@ so their late replies aren't drawn. A tagged reply with `found: false`
 logs the label. Native has no host, so `LocalSNLProvider` has nothing to
 add (headless export has `--equipotential`).
 
+`style_response` is a server push too: host styling, kept by the viewer
+in `StyleStore` until the next one and cleared on every fresh
+`root_response`/`root_loaded` (the host re-sends it after each, like
+diagnoses):
+
+```json
+{ "response": "style_response",
+  "items": [
+    { "kind": "net",               // "net" | "instance" | "term"
+      "id_path": [3], "path": ["drv_0"],   // as diagnosis items; [] = top-level port
+      "terminal": "O",             // or "term_id"; "net"/"term" only
+      "bit": 0,                    // optional: absent = every bit
+      "color": "#1f77b4",          // "#rrggbb" or "#rrggbbaa"
+      "width": 2.5,                // world units (SVG px at 1x)
+      "fill": "#1f77b455",         // instances; translucent = tints the default fill
+      "label": "copy 0" } ] }
+```
+A `net` item colors (and widens, and labels) every wire of each shown
+equipotential with that pin among its ends (`StyleStore::netStyle()`), so
+it must name a pin the viewer draws -- a leaf pin or a top-level port.
+Python resolves every item (`session.style_response()`, `ValueError` on
+a bad one) and sends a `net` item once per bit on its net's driver (a
+top-level port, else an output leaf pin: the pin a trace's partial net
+also lists), whatever pin or `target` (an instance or pin as
+`show_instance()`/`show_net()` take) named it. An `instance` item fills
+the box (also gate symbols, port flags; module frames keep their
+translucency), outlines it in `color`/`width`, and `label` replaces the
+drawn name (`InstanceShape::label`, so the layout makes room for it). A
+`term` item colors/widens one pin's tick and `label` replaces its drawn
+name. Items on one object merge in order, field by field.
+
+**Color precedence**, the same on screen, in File > Export and in both
+headless exports (all draw `SchematicView` through the painter):
+diagnosis colors > style colors > trace colors (a trace's own, the
+convergence color and stripes) > the default ink; a style's width,
+fill and label apply whatever the color; the selection outline/halo is
+drawn on top. In code: `EquipotentialView`'s `applyInstanceStyle()`
+(before the convergence outline), `applyPinStyle()` (`Port::styleColor`
+under the diagnosis `Port::color`), and `styledWireColor()` (a diagnosis
+color in `NetWire::color`, else `styleColor`, else `traceWireColor()`).
+Hosts: `style()` on `ViewerSession`/`ViewerServer`/`Schematic`,
+`show(style=)`, `export_svg(style=)`, `--style FILE` on the
+`naja-schematic` server and `render` CLIs; natively `--style FILE`
+(`loadStyleFile()`), kept by `--export`. Not styled: wiring nested inside
+an expanded instance (its internal nets aren't equipotentials).
+
 `design_changed` is another server push, `{"response":"design_changed",
 "generation":N}`: the host replaced or edited the design, so every tree
 node, instance id and schematic box the viewer holds may be stale -- or,
@@ -1013,6 +1061,12 @@ path the host read, used by the native "Open in Editor".
   (`ReviewView::showThreads()`, `SchematicView::reviewBadges()` hit-tests
   the drawn geometry). Net threads have no schematic badge: a wire tree is
   an equipotential across the hierarchy, which no net id names.
+- **`StyleStore`** — global static store (same pattern) for the host's
+  `style_response` (see Wire protocol): items indexed by instance path
+  per kind, merged in push order; `instanceStyle()`, `termStyle()`,
+  `netStyle(const Equipotential&)`. Queried by `EquipotentialView` while
+  building shapes (so styles reach SVG exports), cleared on every fresh
+  `root_response`/`root_loaded`. `tests/StyleStoreTest.cpp`.
 - **`SelectionStore`** — global static store (same pattern) for the one
   selection: an instance, by `InstancePath` (`{}` = top), or a schematic
   net, by `SchematicNetRef` (the pin its wire tree starts from: instance

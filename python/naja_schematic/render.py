@@ -96,10 +96,11 @@ def _as_list(targets):
     return [targets]
 
 
-def drawing_pushes(targets=None, *, nets=None, instances=None, traces=None):
+def drawing_pushes(targets=None, *, nets=None, instances=None, traces=None, style=None):
     """The pushes drawing these targets on a fresh view, ending with
-    export_svg: the instances first (the first one alone, the next ones
-    added), then the nets, then the traces. Raises ValueError (TypeError
+    export_svg: the styling (`style`, see session.style_response()), the
+    instances (the first one alone, the next ones added), then the nets,
+    then the traces. Raises ValueError (TypeError
     for an unsupported kind) for one that doesn't resolve, RenderError
     when there is nothing to draw. See export_svg() for the targets."""
     inst_targets, net_targets = [], []
@@ -112,6 +113,10 @@ def drawing_pushes(targets=None, *, nets=None, instances=None, traces=None):
         raise RenderError("nothing to draw: give instances, nets or traces")
 
     pushes = [protocol.design_changed()]  # a clean view: no tree, schematic or selection
+    if style is not None:
+        # After design_changed: the root load it starts clears the styling,
+        # and is answered before the next push is handled.
+        pushes.append(session.style_response(style))
     for i, target in enumerate(inst_targets):
         names, ids = session.instance_paths(target)
         if not ids:
@@ -255,7 +260,7 @@ def _write_svg(path, svg):
 
 
 def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=None,
-               timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=()):
+               style=None, timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=()):
     """Draw part of the design in the current NLUniverse as an SVG
     schematic, with no browser or display; returns the SVG, also written to
     `path` when given.
@@ -276,12 +281,19 @@ def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=Non
     - a trace is the pin's combinational fan-in cone, back to flops, ports
       and blackboxes, as the tree's Trace to Driver.
 
+    `style` colors, widens, fills and labels nets, instances and pins in
+    the drawing, as Schematic.style() does in a viewer (see
+    session.style_response() for its items): e.g. a net in orange, its
+    sinks tinted, with no SVG post-processing. A style color wins over the
+    nets' and traces' own colors.
+
     Raises ValueError (TypeError for an unsupported kind) when a target
     doesn't resolve -- nothing is drawn then -- and RenderError when there
     is no renderer, nothing to draw, or the drawing takes more than
     `timeout` seconds. `source_roots`/`source_maps` are as for
     ViewerSession (they don't change the drawing)."""
-    pushes = drawing_pushes(targets, nets=nets, instances=instances, traces=traces)
+    pushes = drawing_pushes(targets, nets=nets, instances=instances, traces=traces,
+                            style=style)
     with Renderer(source_roots, source_maps) as renderer:
         svg = renderer.render(pushes, timeout)
     if path is not None:
@@ -292,11 +304,11 @@ def export_svg(targets=None, path=None, *, nets=None, instances=None, traces=Non
 def export_svgs(jobs, *, timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=()):
     """Several export_svg() drawings with one renderer process; returns
     their SVGs, in order. Each job is a dict of export_svg()'s arguments:
-    "targets", "path", "nets", "instances", "traces". Every job is
+    "targets", "path", "nets", "instances", "traces", "style". Every job is
     resolved before anything is drawn, and files are written only once
     all are drawn: a bad target raises without writing any. `timeout`
     applies to each drawing."""
-    keys = {"targets", "path", "nets", "instances", "traces"}
+    keys = {"targets", "path", "nets", "instances", "traces", "style"}
     plans = []
     for i, job in enumerate(jobs):
         if not isinstance(job, dict):
@@ -308,7 +320,7 @@ def export_svgs(jobs, *, timeout=DEFAULT_TIMEOUT, source_roots=(), source_maps=(
         try:
             pushes = drawing_pushes(job.get("targets"), nets=job.get("nets"),
                                     instances=job.get("instances"),
-                                    traces=job.get("traces"))
+                                    traces=job.get("traces"), style=job.get("style"))
         except (ValueError, TypeError, RenderError) as e:
             raise type(e)(f"job {i}: {e}") from e
         plans.append((job.get("path"), pushes))
@@ -470,13 +482,17 @@ def build_arg_parser():
                         dest="traces",
                         help="Fan-in cone of a pin, back to flops, ports and blackboxes "
                              "(repeatable); same forms as --net")
+    parser.add_argument("--style", metavar="FILE",
+                        help="Style JSON ({\"items\": [...]} or a bare array: colors, "
+                             "widths, fills, labels on nets, instances and pins) drawn "
+                             "into the SVG")
     parser.add_argument("--verbose", "-v", action="store_true", help="Log to stderr")
     add_design_arguments(parser)
     return parser
 
 
 def main(argv=None):
-    from .server import check_design_arguments, load_design
+    from .server import check_design_arguments, load_design, load_style_file
 
     parser = build_arg_parser()
     args = parser.parse_args(argv)
@@ -503,13 +519,19 @@ def main(argv=None):
                 out.append(parse(text))
             except (ValueError, TypeError) as e:
                 errors.append(f"{flag} {text}: {e}")
+    style = None
+    if args.style:
+        try:
+            style = load_style_file(args.style)
+        except (OSError, ValueError) as e:
+            errors.append(f"--style {args.style}: {e}")
     if errors:
         for error in errors:
             print(error, file=sys.stderr)
         raise SystemExit(1)
 
     try:
-        export_svg(None, args.svg, nets=nets, instances=instances, traces=traces)
+        export_svg(None, args.svg, nets=nets, instances=instances, traces=traces, style=style)
     except (ValueError, TypeError, RenderError) as e:
         raise SystemExit(f"render: {e}")
     log.info("Schematic written to %s", args.svg)

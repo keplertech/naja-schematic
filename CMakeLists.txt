@@ -94,6 +94,7 @@ set(CORE_SOURCES
   src/TraceStore.cpp
   src/TraceView.cpp
   src/ShowNetStore.cpp
+  src/StyleStore.cpp
   src/ReviewStore.cpp
   src/ReviewView.cpp
   src/AppMessages.cpp
@@ -123,6 +124,7 @@ set(HEADLESS_SOURCES
   src/SelectionStore.cpp
   src/TraceStore.cpp
   src/ShowNetStore.cpp
+  src/StyleStore.cpp
   src/ReviewStore.cpp
   src/ReviewView.cpp
   src/AppMessages.cpp
@@ -322,6 +324,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/SelectionStore.cpp
       src/TraceStore.cpp
       src/ShowNetStore.cpp
+      src/StyleStore.cpp
       src/ReviewStore.cpp
       src/ReviewView.cpp
       src/GenerationProvider.cpp

@@ -1137,6 +1137,107 @@ def diagnosis_response(items):
     return {"response": "diagnosis_response", "items": [_diagnosis_item(i) for i in items]}
 
 
+STYLE_KINDS = ("instance", "net", "term")
+_STYLE_KEYS = {"kind", "path", "id_path", "terminal", "term_id", "bit", "color", "width",
+               "fill", "label"}
+
+
+def style_color(color):
+    """Normalize a style color -- "#rrggbb", "#rrggbbaa", or an (r, g, b)
+    or (r, g, b, a) tuple of 0-255 ints -- to "#rrggbb" ("#rrggbbaa" when
+    not opaque). Unlike trace colors any color is accepted: a style is the
+    host's deliberate choice. Raises ValueError (TypeError) otherwise."""
+    if isinstance(color, str):
+        hexa = color[1:] if color.startswith("#") else color
+        if len(hexa) not in (6, 8) or any(c not in "0123456789abcdefABCDEF" for c in hexa):
+            raise ValueError(f"expected a color as '#rrggbb' or '#rrggbbaa', got {color!r}")
+        channels = [int(hexa[i:i + 2], 16) for i in range(0, len(hexa), 2)]
+    elif isinstance(color, (tuple, list)) and len(color) in (3, 4) and all(
+            isinstance(c, int) and not isinstance(c, bool) and 0 <= c <= 255 for c in color):
+        channels = list(color)
+    else:
+        raise TypeError(f"expected a color as '#rrggbb[aa]' or (r, g, b[, a]), got {color!r}")
+    if len(channels) == 4 and channels[3] == 255:
+        channels = channels[:3]
+    return "#" + "".join("%02x" % c for c in channels)
+
+
+def _style_item(item):
+    # One style item, checked and normalized; its "path" may be a naja
+    # SNLPath or a najaeda netlist.Instance, as a diagnosis item's.
+    if not isinstance(item, dict):
+        raise TypeError(f"a style item is a dict, got {type(item).__name__}")
+    unknown = set(item) - _STYLE_KEYS
+    if unknown:
+        raise ValueError(f"unknown style item key(s) {sorted(unknown)} in {item!r}")
+    kind = item.get("kind", "instance")
+    if kind not in STYLE_KINDS:
+        raise ValueError(f"style item kind must be one of {STYLE_KINDS}, got {kind!r}")
+    out = {"kind": kind}
+    ids = instance_id_path(item.get("path"))
+    if ids is not None:
+        out["id_path"], out["path"] = ids, _instance_name_path(ids)
+    else:
+        if "path" in item:
+            if isinstance(item["path"], str) or not all(isinstance(n, str) for n in item["path"]):
+                raise ValueError(f"a style item path is a list of instance names, "
+                                 f"got {item['path']!r}")
+            out["path"] = list(item["path"])
+        if "id_path" in item:
+            if not all(isinstance(i, int) and not isinstance(i, bool) and i >= 0
+                       for i in item["id_path"]):
+                raise ValueError(f"an id_path is a list of instance ids, got {item['id_path']!r}")
+            out["id_path"] = list(item["id_path"])
+    if "id_path" not in out and "" in out.get("path", []):
+        raise ValueError(f"an anonymous instance needs an id_path: {item!r}")
+    if kind != "instance":
+        if "terminal" in item:
+            out["terminal"] = str(item["terminal"])
+        if item.get("term_id") is not None:
+            out["term_id"] = int(item["term_id"])
+        if not out.get("terminal") and "term_id" not in out:
+            raise ValueError(f"a {kind} style item names its pin: give terminal or term_id ({item!r})")
+        if item.get("bit") is not None:
+            out["bit"] = int(item["bit"])
+    for key in ("color", "fill"):
+        if item.get(key) is not None:
+            out[key] = style_color(item[key])
+    if item.get("width") is not None:
+        width = float(item["width"])
+        if not width > 0:
+            raise ValueError(f"a style width is a positive number, got {item['width']!r}")
+        out["width"] = width
+    if item.get("label") is not None:
+        out["label"] = str(item["label"])
+    return out
+
+
+def style_response(items):
+    """Build a style_response push message: host styling drawn over the
+    loaded netlist -- the viewer keeps it until the next one or the next
+    root load. `items` is a list of dicts (or a {"items": [...]} document,
+    as `--style` files hold), each:
+
+    - "kind": "instance" | "net" | "term" (default "instance");
+    - "id_path" and/or "path": the instance, or the instance containing
+      the pin ([] = a top-level port), as diagnosis items name them --
+      "path" may also be a naja SNLPath or a najaeda netlist.Instance;
+    - "terminal" (base name) or "term_id", and "bit" (absent: every bit):
+      the pin, for "net" and "term" items;
+    - "color": a net's wires, an instance's outline, a pin's tick;
+      "width": its stroke width (SVG px at 1x zoom); "fill": an instance's
+      fill (a "#rrggbbaa" one tints the default fill); "label": drawn
+      instead of an instance's or pin's name, or on a net's wire.
+
+    A "net" item styles the whole net through its pin. Several items on
+    the same object merge in order. Diagnosis colors win over styles, and
+    styles over trace colors. Raises ValueError (TypeError) for a malformed
+    item, rather than pushing something the viewer would skip."""
+    if isinstance(items, dict):
+        items = items.get("items", [])
+    return {"response": "style_response", "items": [_style_item(i) for i in items]}
+
+
 def focus_instance(path=None, id_path=None, *, add=False):
     """Build a focus_instance push message: the viewer resolves the instance
     -- by `id_path` (a list of instance ids, top excluded) when given, else

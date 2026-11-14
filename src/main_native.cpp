@@ -19,6 +19,7 @@
 
 int main(int argc, char* argv[]) {
   // CLI usage: naja-schematic-standalone [<design>...] [--liberty <path>]... [--diagnosis <path>]
+  //                                     [--style <path>]
   //                                     [--source-root <dir>]... [--source-map FROM=TO]...
   //                                     [--yosys-src] [--top <name>]
   //                                     [--export <out.svg> [--focus <json>]
@@ -33,6 +34,8 @@ int main(int argc, char* argv[]) {
   // caller (a script, or naja-agent's skill, after an edit-check cycle) can
   // open a fully annotated view in one command instead of requiring a human
   // to click through File > Open .../Load Diagnosis JSON... by hand.
+  // --style pre-loads a style_response-shaped JSON (colors, widths, labels
+  // on nets, instances and pins; see StyleStore.h), kept in --export too;
   // --yosys-src (.v only) decodes Yosys (* src *) attributes into source
   // origins, so Show Sources leads from a gate back to its RTL;
   // --source-map FROM=TO (repeatable) rewrites source paths recorded on
@@ -47,6 +50,7 @@ int main(int argc, char* argv[]) {
   std::vector<std::string> designPaths;
   std::string top;
   std::string diagnosisPath;
+  std::string stylePath;
   std::vector<std::string> libertyPaths;
   bool yosysSrc = false;
   HeadlessExportOptions exportOptions;
@@ -66,6 +70,8 @@ int main(int argc, char* argv[]) {
       (arg == "--trace" ? exportOptions.traces : exportOptions.equipotentials).push_back(*spec);
     } else if (arg == "--diagnosis" && i + 1 < argc) {
       diagnosisPath = argv[++i];
+    } else if (arg == "--style" && i + 1 < argc) {
+      stylePath = argv[++i];
     } else if (arg == "--liberty" && i + 1 < argc) {
       libertyPaths.push_back(argv[++i]);
     } else if (arg == "--top" && i + 1 < argc) {
@@ -142,6 +148,7 @@ int main(int argc, char* argv[]) {
       return 1;
     }
     exportOptions.diagnosisPath = diagnosisPath;
+    exportOptions.stylePath     = stylePath;
     return runHeadlessExport(provider, exportOptions);
   }
 
@@ -183,6 +190,10 @@ int main(int argc, char* argv[]) {
   // otherwise the diagnosis we just loaded would be wiped immediately.
   if (!diagnosisPath.empty()) {
     loadDiagnosisFile(diagnosisPath);
+  }
+  // Same for styles, cleared by a root load too.
+  if (!stylePath.empty()) {
+    loadStyleFile(stylePath);
   }
 
   while (appFrame(state)) {

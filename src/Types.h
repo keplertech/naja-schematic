@@ -452,6 +452,12 @@ struct Port {
     // a numbered disc by the pin, in `reviewColor`, like a box's badge.
     int   reviewOpen = 0;
     ImU32 reviewColor = 0;
+    // Host styling (StyleStore::termStyle): the tick's color, below the
+    // diagnosis `color`; its width (world units, 0 = default); a label
+    // drawn instead of `name` (display only: `name` stays the identity).
+    ImU32       styleColor = 0;
+    float       styleWidth = 0.0f;
+    std::string label;
 };
 
 struct InstanceShape {
@@ -482,6 +488,11 @@ struct InstanceShape {
     // convergence color when two visible traces go through it, 0 if neither.
     // Drawn as an extra outline so it doesn't fight partialInterface's dash.
     ImU32 diagOutline = 0;
+    // Width of that outline, world units (StyleStore width); 0 = default.
+    float outlineWidth = 0.0f;
+    // Host styling's body fill (StyleStore): replaces the default fill, or
+    // tints it when not opaque. 0 = default.
+    ImU32 fill = 0;
     std::vector<Port> ports;
 
     // --- Hierarchy embedding (nested boxes) ---
@@ -543,6 +554,12 @@ struct NetWire {
     // further down the pipeline -- see EquipotentialView.cpp's srcPort/
     // dstPort->color checks -- rather than being a per-net decoration.
     ImU32 color = IM_COL32(150,150,150,255);
+    // Host styling of its net (StyleStore::netStyle): a color used over
+    // trace colors but under a diagnosis `color` (0 = none), a wire width
+    // (world units, 0 = default) and a label drawn on the wire.
+    ImU32       styleColor = 0;
+    float       width = 0.0f;
+    std::string label;
     // The visible driver traces (TraceStore ids) this wire is on, and whether
     // it's only in the view for traces that are hidden (drawn faint so the
     // layout doesn't move). Turned into `color` once wires are merged --

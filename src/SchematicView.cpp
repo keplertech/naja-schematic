@@ -128,6 +128,28 @@ ImU32 contrastingTextColor(ImU32 bg, unsigned char alpha = 235) {
     return luminance > 0.55f ? IM_COL32(20, 20, 20, alpha) : IM_COL32(245, 245, 245, alpha);
 }
 
+// `over` painted over the opaque `under` (alpha compositing): opaque.
+ImU32 blendOver(ImU32 over, ImU32 under) {
+    const float a = ((over >> IM_COL32_A_SHIFT) & 0xFF) / 255.0f;
+    auto ch = [&](int shift) {
+        float o = float((over >> shift) & 0xFF), u = float((under >> shift) & 0xFF);
+        return unsigned(o * a + u * (1.0f - a) + 0.5f);
+    };
+    return IM_COL32(ch(IM_COL32_R_SHIFT), ch(IM_COL32_G_SHIFT), ch(IM_COL32_B_SHIFT), 255);
+}
+
+// A shape's body fill: the host style's (StyleStore) when it has one -- a
+// translucent one tints `base` -- else `base`.
+ImU32 fillOf(const InstanceShape& inst, ImU32 base) {
+    return inst.fill == 0 ? base : blendOver(inst.fill, base);
+}
+
+// The highlight outline's thickness: `def` screen pixels, or the host
+// style's width (world units) at the current zoom.
+float outlineThickness(const InstanceShape& inst, float scale, float def) {
+    return inst.outlineWidth > 0.0f ? std::max(1.0f, inst.outlineWidth * scale) : def;
+}
+
 // Truncates `text` to fit within maxWidth pixels at fontSize, appending "..."
 // when it doesn't fit whole ("" if there isn't even room for the ellipsis).
 std::string truncateToWidth(ImFont* font, float fontSize, const std::string& text, float maxWidth) {
@@ -170,7 +192,7 @@ void appendQuadBezierPoints(std::vector<ImVec2>& pts, ImVec2 p0, ImVec2 c, ImVec
 // diagnosis-severity stroke on top, when flagged) -- shared tail end of every
 // standard gate shape below.
 void fillAndStrokeBody(SchematicPainter* dl, std::vector<ImVec2> pts,
-                       ImU32 fillColor, ImU32 diagOutline) {
+                       ImU32 fillColor, ImU32 diagOutline, float diagThickness = 3.0f) {
     // Curves appended back to back repeat their joint point, which breaks
     // the concave fill's triangulation.
     auto same = [](ImVec2 a, ImVec2 b) { return std::abs(a.x - b.x) < 0.01f && std::abs(a.y - b.y) < 0.01f; };
@@ -179,7 +201,7 @@ void fillAndStrokeBody(SchematicPainter* dl, std::vector<ImVec2> pts,
     dl->AddConcavePolyFilled(pts.data(), int(pts.size()), fillColor);
     dl->AddPolyline(pts.data(), int(pts.size()), kInstanceLineColor, 1.25f, ImDrawFlags_Closed);
     if (diagOutline != 0)
-        dl->AddPolyline(pts.data(), int(pts.size()), diagOutline, 3.0f, ImDrawFlags_Closed);
+        dl->AddPolyline(pts.data(), int(pts.size()), diagOutline, diagThickness, ImDrawFlags_Closed);
 }
 
 // Draws a bubble (small negation circle), touching the tip of a gate body's
@@ -287,10 +309,13 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
         // selection override) is the one case color is still used here.
         const bool hovered = !sv.exporting && p.id == sv.hoveredPortId;
         const bool pending = !sv.exporting && p.pending;
+        // A diagnosis color wins over the host style's (StyleStore).
         ImU32 portColor = hovered ? kPinHoverColor
                         : pending ? kPinPendingColor
-                        : p.color != 0 ? p.color : kPinLineColor;
-        float tickThickness = std::max(1.0f, 1.5f * sv.transform.scale);
+                        : p.color != 0 ? p.color
+                        : p.styleColor != 0 ? p.styleColor : kPinLineColor;
+        float tickThickness = p.styleWidth > 0.0f ? std::max(1.0f, p.styleWidth * sv.transform.scale)
+                                                  : std::max(1.0f, 1.5f * sv.transform.scale);
         if (hovered) tickThickness *= 2.0f;
 
         ImVec2 tickEnd = ImVec2(screenP.x + (isLeft ? -tickLen : tickLen), screenP.y);
@@ -323,7 +348,10 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
                         portColor, tickThickness);
         }
 
-        if (p.name.empty() || (!namesInside && !p.isBus)) continue;
+        // A host style's label replaces the name (display only), and is
+        // shown on a gate's pin too.
+        const std::string& pinName = p.label.empty() ? p.name : p.label;
+        if (pinName.empty() || (!namesInside && !p.isBus && p.label.empty())) continue;
         float fontSize = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
         if (fontSize <= 0.0f) continue;
         ImFont* font = ImGui::GetFont();
@@ -333,9 +361,9 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
                                            : 90.0f * sv.transform.scale;
         // A gate's pins are unnamed on the canvas: its bus pin shows only its
         // range, "[7:0]" (the full name is in the pin's tooltip).
-        const size_t range = p.name.rfind('[');
-        const std::string shown = namesInside || range == std::string::npos ? p.name
-                                                                           : p.name.substr(range);
+        const size_t range = pinName.rfind('[');
+        const std::string shown = namesInside || !p.label.empty() || range == std::string::npos
+                                      ? pinName : pinName.substr(range);
         std::string label = truncateToWidth(font, fontSize, shown, maxWidth);
         if (label.empty()) continue;
         ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str());
@@ -348,7 +376,12 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
         else  // above the tick, outside the symbol
             lblPos = isLeft ? ImVec2(tickEnd.x - textSize.x, screenP.y - textSize.y - 1.0f)
                             : ImVec2(tickEnd.x, screenP.y - textSize.y - 1.0f);
-        dl->AddText(font, fontSize, lblPos, hovered ? kPinHoverColor : kPinLabelColor, label.c_str());
+        // On a styled fill, inside a box, in whichever ink reads on it.
+        const ImU32 labelColor = hovered ? kPinHoverColor
+                               : namesInside && inst.fill != 0
+                                   ? contrastingTextColor(fillOf(inst, kInstanceFillColor))
+                                   : kPinLabelColor;
+        dl->AddText(font, fontSize, lblPos, labelColor, label.c_str());
     }
 }
 
@@ -470,7 +503,7 @@ static void drawGenericInstance(SchematicPainter* dl, const InstanceShape& inst,
         // box, not a per-category color -- color stays reserved for
         // diagnosis/selection highlighting rather than decorating every
         // instance. Sharp corners (no rounding).
-        dl->AddRectFilled(rmin, rmax, kInstanceFillColor, 0.0f);
+        dl->AddRectFilled(rmin, rmax, fillOf(inst, kInstanceFillColor), 0.0f);
 
         if (inst.partialInterface)
             // Dashing alone (not a color) signals "only a
@@ -484,7 +517,7 @@ static void drawGenericInstance(SchematicPainter* dl, const InstanceShape& inst,
         // Diagnosis outline drawn on top so it stays visible regardless of
         // the partialInterface dashed border above.
         if (inst.diagOutline != 0)
-            dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, 3.5f);
+            dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, outlineThickness(inst, sv.transform.scale, 3.5f));
         if (inst.selected) addSelectionOutline(dl, rmin, rmax);
 
         drawInstanceName(dl, inst, sv, rmin);
@@ -546,7 +579,7 @@ static void finishGate(SchematicPainter* dl, const InstanceShape& inst, const Sc
     if (negated) {
         float r = kBubbleR * sv.transform.scale;
         drawNegationBubble(dl, ImVec2(bodyRight(rmax, true, sv.transform.scale), (rmin.y + rmax.y) * 0.5f),
-                           r, kInstanceFillColor);
+                           r, fillOf(inst, kInstanceFillColor));
     }
     if (inst.selected) addSelectionOutline(dl, rmin, rmax);
     drawInstanceName(dl, inst, sv, rmin);
@@ -569,7 +602,8 @@ static void drawAndLikeInstance(SchematicPainter* dl, const InstanceShape& inst,
     pts.push_back(ImVec2(rmin.x, rmin.y));
     appendArcPoints(pts, ImVec2(xm, cy), r, -1.5707963f, 1.5707963f, 24);
     pts.push_back(ImVec2(rmin.x, rmax.y));
-    fillAndStrokeBody(dl, pts, kInstanceFillColor, inst.diagOutline);
+    fillAndStrokeBody(dl, pts, fillOf(inst, kInstanceFillColor), inst.diagOutline,
+                      outlineThickness(inst, sv.transform.scale, 3.0f));
     finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
 }
 
@@ -597,7 +631,8 @@ static void drawOrLikeInstance(SchematicPainter* dl, const InstanceShape& inst,
     appendQuadBezierPoints(pts, tip, ImVec2(x0 + sw * 0.6f, rmax.y), ImVec2(x0, rmax.y), 16);
     appendQuadBezierPoints(pts, ImVec2(x0, rmax.y), ImVec2(x0 + 2.0f * depth, cy), ImVec2(x0, rmin.y), 12);
     pts.pop_back(); // closes back onto the first point
-    fillAndStrokeBody(dl, pts, kInstanceFillColor, inst.diagOutline);
+    fillAndStrokeBody(dl, pts, fillOf(inst, kInstanceFillColor), inst.diagOutline,
+                      outlineThickness(inst, sv.transform.scale, 3.0f));
 
     // The back curve at height y (a quadratic whose control point sits at
     // mid-height, so y is linear in t): x = x0 + 2t(1-t) * 2*depth.
@@ -632,14 +667,15 @@ static void drawBufLikeInstance(SchematicPainter* dl, const InstanceShape& inst,
     ImVec2 mr(bodyRight(rmax, negated, sv.transform.scale), (rmin.y + rmax.y) * 0.5f);
 
     std::vector<ImVec2> pts{ tl, mr, bl };
-    fillAndStrokeBody(dl, pts, kInstanceFillColor, inst.diagOutline);
+    fillAndStrokeBody(dl, pts, fillOf(inst, kInstanceFillColor), inst.diagOutline,
+                      outlineThickness(inst, sv.transform.scale, 3.0f));
     if (isAssign) {
         float fs = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
         if (fs > 0.0f) {
             ImFont* font = ImGui::GetFont();
             ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "=");
             dl->AddText(font, fs, ImVec2(tl.x + (mr.x - tl.x) * 0.3f - ts.x * 0.5f, mr.y - ts.y * 0.5f),
-                        contrastingTextColor(kInstanceFillColor, 200), "=");
+                        contrastingTextColor(fillOf(inst, kInstanceFillColor), 200), "=");
         }
     }
     finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
@@ -672,7 +708,7 @@ static void drawTieInstance(SchematicPainter* dl, const InstanceShape& inst,
             }
         }
     };
-    if (inst.diagOutline != 0) stroke(inst.diagOutline, 3.0f);
+    if (inst.diagOutline != 0) stroke(inst.diagOutline, outlineThickness(inst, sv.transform.scale, 3.0f));
     stroke(kInstanceLineColor, std::max(1.25f, 1.5f * sv.transform.scale));
     finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, /*negated=*/false);
 }
@@ -715,13 +751,14 @@ static void drawMuxInstance(SchematicPainter* dl, const InstanceShape& inst,
     std::vector<ImVec2> pts = {
         rmin, ImVec2(rmax.x, rmin.y + slant), ImVec2(rmax.x, rmax.y - slant), ImVec2(rmin.x, rmax.y),
     };
-    dl->AddConvexPolyFilled(pts.data(), int(pts.size()), kInstanceFillColor);
+    dl->AddConvexPolyFilled(pts.data(), int(pts.size()), fillOf(inst, kInstanceFillColor));
     if (inst.partialInterface)
         addDashedPolygon(dl, pts, kInstanceLineColor, 1.25f);
     else
         dl->AddPolyline(pts.data(), int(pts.size()), kInstanceLineColor, 1.25f, ImDrawFlags_Closed);
     if (inst.diagOutline != 0)
-        dl->AddPolyline(pts.data(), int(pts.size()), inst.diagOutline, 3.5f, ImDrawFlags_Closed);
+        dl->AddPolyline(pts.data(), int(pts.size()), inst.diagOutline,
+                        outlineThickness(inst, sv.transform.scale, 3.5f), ImDrawFlags_Closed);
     if (inst.selected) addSelectionOutline(dl, rmin, rmax);
     drawInstanceName(dl, inst, sv, rmin);
     drawPorts(dl, inst, sv, canvasPos, canvasSize, /*namesInside=*/true);
@@ -786,8 +823,12 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
     ImVec2 anchor = sv.worldToScreen(ImVec2(inst.x, inst.y), canvasPos, canvasSize);
 
     const bool hovered = !sv.exporting && p.id == sv.hoveredPortId;
-    ImU32 outline = hovered ? kPinHoverColor : p.color != 0 ? p.color : kBoundaryPortLineColor;
-    float lineThickness = std::max(1.0f, 1.25f * sv.transform.scale);
+    ImU32 outline = hovered ? kPinHoverColor : p.color != 0 ? p.color
+                  : p.styleColor != 0 ? p.styleColor : kBoundaryPortLineColor;
+    float lineThickness = p.styleWidth > 0.0f ? std::max(1.0f, p.styleWidth * sv.transform.scale)
+                                              : std::max(1.0f, 1.25f * sv.transform.scale);
+    const std::string& shownName = p.label.empty() ? p.name : p.label;
+    const ImU32 flagFill = fillOf(inst, kBoundaryPortFillColor);
     if (hovered) lineThickness *= 2.0f;
 
     // Name shown whenever instance names are (same visibility threshold),
@@ -796,8 +837,8 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
         ? std::max(kMinLabelFontSize, labelFontSize(kPortLabelBaseSize, sv.transform.scale))
         : 0.0f;
     ImFont* font = ImGui::GetFont();
-    ImVec2 textSize = (fontSize > 0.0f && !p.name.empty())
-        ? font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, p.name.c_str())
+    ImVec2 textSize = (fontSize > 0.0f && !shownName.empty())
+        ? font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, shownName.c_str())
         : ImVec2(0.0f, 0.0f);
 
     float bodyLen = std::max(halfH * 2.0f, textSize.x + 10.0f);
@@ -815,7 +856,7 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
         { bodyX, anchor.y + halfH },
         { baseX, anchor.y + halfH },
     };
-    dl->AddConvexPolyFilled(pts, 5, kBoundaryPortFillColor);
+    dl->AddConvexPolyFilled(pts, 5, flagFill);
     dl->AddPolyline(pts, 5, outline, lineThickness, ImDrawFlags_Closed);
     // Not connected: a no-connect cross where its wire would start.
     if (p.unconnected) {
@@ -825,11 +866,12 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
         dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), outline, lineThickness);
     }
     if (inst.diagOutline != 0)
-        dl->AddPolyline(pts, 5, inst.diagOutline, 3.0f, ImDrawFlags_Closed);
+        dl->AddPolyline(pts, 5, inst.diagOutline, outlineThickness(inst, sv.transform.scale, 3.0f),
+                        ImDrawFlags_Closed);
 
-    if (fontSize > 0.0f && !p.name.empty()) {
+    if (fontSize > 0.0f && !shownName.empty()) {
         ImVec2 textPos((baseX + bodyX) * 0.5f - textSize.x * 0.5f, anchor.y - textSize.y * 0.5f);
-        dl->AddText(font, fontSize, textPos, contrastingTextColor(kBoundaryPortFillColor), p.name.c_str());
+        dl->AddText(font, fontSize, textPos, contrastingTextColor(flagFill), shownName.c_str());
     }
 }
 
@@ -846,17 +888,20 @@ static void drawHierGroupInstance(SchematicPainter* dl, const InstanceShape& ins
     ImVec2 rmin, rmax;
     sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
     int alpha = std::min(90, 22 + 14 * std::max(0, inst.hierDepth - 1));
-    dl->AddRectFilled(rmin, rmax, IM_COL32(110, 125, 175, alpha), 0.0f);
+    // A styled frame (StyleStore fill) keeps its translucency: wires and
+    // nested frames still show through it.
+    const ImU32 tint = inst.fill != 0 ? (inst.fill & ~IM_COL32_A_MASK) : IM_COL32(110, 125, 175, 0);
+    dl->AddRectFilled(rmin, rmax, tint | (ImU32(alpha) << IM_COL32_A_SHIFT), 0.0f);
     dl->AddRect(rmin, rmax, IM_COL32(70, 80, 115, 220), 0.0f, 0, 1.25f);
     if (inst.diagOutline != 0)
-        dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, 3.5f);
+        dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, outlineThickness(inst, sv.transform.scale, 3.5f));
     if (inst.selected) addSelectionOutline(dl, rmin, rmax);
 
     float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
     if (!inst.name.empty() && fontSize > 0.0f) {
         ImFont* font = ImGui::GetFont();
         float padding = std::max(2.0f, 5.0f * sv.transform.scale);
-        std::string label = truncateToWidth(font, fontSize, inst.name,
+        std::string label = truncateToWidth(font, fontSize, inst.label.empty() ? inst.name : inst.label,
                                             (rmax.x - rmin.x) - 2.0f * padding);
         if (!label.empty())
             dl->AddText(font, fontSize, ImVec2(rmin.x + padding, rmin.y + padding),
@@ -959,7 +1004,8 @@ void SchematicView::drawNet(SchematicPainter* dl, const NetWire& net, const ImVe
     float dstSide = (dstPort->lx >= 0.0f) ? 1.0f : -1.0f;
 
     // Too thin to matter at this zoom -- same fade policy as labels/pin dots.
-    float thickness = zoomedSizeOrHidden(kWireBaseThickness, transform.scale, kMinWireThickness);
+    float thickness = zoomedSizeOrHidden(net.width > 0.0f ? net.width : kWireBaseThickness,
+                                         transform.scale, kMinWireThickness);
     if (thickness <= 0.0f) return;
     if (net.isBus) thickness *= 2.0f;
 
@@ -1000,22 +1046,32 @@ void SchematicView::drawNet(SchematicPainter* dl, const NetWire& net, const ImVe
 
     // Bus slash mark across the horizontal run, plus the net
     // name if we have one.
+    if (!net.label.empty() && !net.isBus) {
+        float fontSize = labelFontSize(kPortLabelBaseSize, transform.scale);
+        if (fontSize > 0.0f) {
+            ImFont* font = ImGui::GetFont();
+            ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, net.label.c_str());
+            dl->AddText(font, fontSize, ImVec2(midX + 4.0f, (p1.y + p4.y) * 0.5f - ts.y * 0.5f),
+                        col, net.label.c_str());
+        }
+    }
     if (net.isBus) {
         ImVec2 mid = ImVec2(midX, (p1.y + p4.y) * 0.5f);
         float slashLen = std::max(6.0f, 9.0f * transform.scale);
         dl->AddLine(ImVec2(mid.x - slashLen * 0.35f, mid.y + slashLen * 0.5f),
                     ImVec2(mid.x + slashLen * 0.35f, mid.y - slashLen * 0.5f),
                     col, thickness);
-        if (!net.netName.empty()) {
+        const std::string& busText = net.label.empty() ? net.netName : net.label;
+        if (!busText.empty()) {
             float fontSize = labelFontSize(kPortLabelBaseSize, transform.scale);
             if (fontSize > 0.0f) {
                 ImFont* font = ImGui::GetFont();
-                ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, net.netName.c_str());
+                ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, busText.c_str());
                 ImVec2 lp = ImVec2(mid.x + 6.0f, mid.y - ts.y - 4.0f);
                 dl->AddRectFilled(ImVec2(lp.x - 2.0f, lp.y - 1.0f),
                                   ImVec2(lp.x + ts.x + 2.0f, lp.y + ts.y + 1.0f),
                                   IM_COL32(30, 30, 30, 190));
-                dl->AddText(font, fontSize, lp, col, net.netName.c_str());
+                dl->AddText(font, fontSize, lp, col, busText.c_str());
             }
         }
     }
@@ -1023,7 +1079,8 @@ void SchematicView::drawNet(SchematicPainter* dl, const NetWire& net, const ImVe
 
 void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
                               const ImVec2& canvasPos, const ImVec2& canvasSize) const {
-    float thickness = zoomedSizeOrHidden(kWireBaseThickness, transform.scale, kMinWireThickness);
+    float thickness = zoomedSizeOrHidden(route.width > 0.0f ? route.width : kWireBaseThickness,
+                                         transform.scale, kMinWireThickness);
     if (thickness <= 0.0f) return;
     if (route.isBus) thickness *= 2.0f;
     // The selected net: a halo in the selection color under its wires and
@@ -1087,8 +1144,8 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
             dl->AddCircleFilled(worldToScreen(j, canvasPos, canvasSize), route.isBus ? dotR * 1.5f : dotR, colorAt(j));
 
     // Bus slash mark on the longest horizontal run, plus the
-    // net name if we have one.
-    if (!route.isBus) return;
+    // net name if we have one -- or the host style's label, on any net.
+    if (!route.isBus && route.label.empty()) return;
     const SchematicLayout::RouteSegment* best = nullptr;
     for (const auto& seg : route.segments)
         if (std::abs(seg.a.y - seg.b.y) < 0.5f &&
@@ -1096,16 +1153,22 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
             best = &seg;
     if (!best) return;
     ImVec2 mid = worldToScreen(ImVec2((best->a.x + best->b.x) * 0.5f, best->a.y), canvasPos, canvasSize);
-    float slashLen = std::max(6.0f, 9.0f * transform.scale);
-    dl->AddLine(ImVec2(mid.x - slashLen * 0.35f, mid.y + slashLen * 0.5f),
-                ImVec2(mid.x + slashLen * 0.35f, mid.y - slashLen * 0.5f),
-                route.color, thickness * 0.5f);
+    if (route.isBus) {
+        float slashLen = std::max(6.0f, 9.0f * transform.scale);
+        dl->AddLine(ImVec2(mid.x - slashLen * 0.35f, mid.y + slashLen * 0.5f),
+                    ImVec2(mid.x + slashLen * 0.35f, mid.y - slashLen * 0.5f),
+                    route.color, thickness * 0.5f);
+    }
+    const std::string& text = route.label.empty() ? route.netName : route.label;
     float fontSize = labelFontSize(kPortLabelBaseSize, transform.scale);
-    if (!route.netName.empty() && fontSize > 0.0f) {
+    if (!text.empty() && fontSize > 0.0f) {
         ImFont* font = ImGui::GetFont();
-        ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, route.netName.c_str());
-        dl->AddText(font, fontSize, ImVec2(mid.x + 6.0f, mid.y - ts.y - 3.0f), kPinLabelColor,
-                    route.netName.c_str());
+        ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text.c_str());
+        // A style label in the net's color, centered on the run.
+        const bool styled = !route.label.empty();
+        ImVec2 at = styled ? ImVec2(mid.x - ts.x * 0.5f, mid.y - ts.y - thickness * 0.5f - 2.0f)
+                           : ImVec2(mid.x + 6.0f, mid.y - ts.y - 3.0f);
+        dl->AddText(font, fontSize, at, styled ? route.color : kPinLabelColor, text.c_str());
     }
 }
 
