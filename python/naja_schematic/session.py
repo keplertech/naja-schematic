@@ -307,16 +307,23 @@ def _style_pin_terms(item, what):
 
 def _net_driver_pin(ids, term, bit, what):
     # The pin a "net" style item is sent with: one the viewer draws on that
-    # net whatever shows it -- a top-level port, else an output leaf pin (a
-    # driver: a trace's partial net lists its drivers), else a leaf pin.
+    # net whatever shows it -- a driver, since a trace's partial net lists
+    # its drivers and only the receivers it entered through: a top-level
+    # input (or inout) port, else an output leaf pin; else a top-level
+    # output port, else a leaf pin.
     term_id, bit, _ = _pin_of(term, bit, what)
     start = protocol.resolve_start_point(_top_design(), ids, term_id, bit)
     if start is None:
         raise ValueError(f"{what}: the pin does not resolve in the loaded design")
     equi = naja.SNLEquipotential(start, mode=naja.SNLEquipotential.Mode.TraverseAssigns)
-    for top_term in equi.getTerms():
-        return [], top_term
+    top_terms = list(equi.getTerms())
+    for top_term in top_terms:
+        if top_term.getDirection() != naja.SNLTerm.Direction.Output:
+            return [], top_term
     leaves = list(equi.getInstTermOccurrences())
+    if top_terms and not any(occ.getInstTerm().getDirection() == naja.SNLTerm.Direction.Output
+                             for occ in leaves):
+        return [], top_terms[0]
     if not leaves:
         return ids, term.getBusTermBit(bit) if isinstance(term, naja.SNLBusTerm) else term
     leaves.sort(key=lambda occ: occ.getInstTerm().getDirection() != naja.SNLTerm.Direction.Output)

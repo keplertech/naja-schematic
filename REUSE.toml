@@ -45,6 +45,8 @@ path = [
   "python/tests/test_anonymous_instances.py",
   "python/tests/data/design.v",
   "python/tests/data/fanout.v",
+  "python/tests/data/fanout_fix.v",
+  "python/tests/data/fanout_fix_style.json",
   "python/tests/data/wide_fanout.v",
   "python/tests/data/role_fanout.v",
   "python/tests/data/py_design.v",
@@ -65,6 +67,8 @@ path = [
   "scripts/test_server.py",
   "scripts/tinyrocket.v",
   "src/AppLogic.cpp",
+  "src/AppFont.cpp",
+  "src/AppFont.h",
   "src/AppLogic.h",
   "src/AppMessages.cpp",
   "src/Console.cpp",
@@ -193,6 +197,15 @@ SPDX-License-Identifier = "Apache-2.0"
 path = "src/DroidSansFont.h"
 SPDX-FileCopyrightText = "Google Inc."
 SPDX-License-Identifier = "Apache-2.0"
+
+# A subset of DejaVu Sans (Bitstream Vera derivative, with glyphs from the
+# Arev fonts; DejaVu's changes are in the public domain): the symbols
+# DroidSans lacks, merged into it, embedded like DroidSansFont.h. Its
+# license is DejaVu's LICENSE file, verbatim.
+[[annotations]]
+path = "src/SymbolFont.h"
+SPDX-FileCopyrightText = ["2003 Bitstream, Inc.", "2006 Tavmjong Bah"]
+SPDX-License-Identifier = "LicenseRef-DejaVu-Fonts"
 
 # Exported copy of thirdparty/imgui's misc/fonts/Cousine-Regular.ttf (by
 # Steve Matteson, SIL Open Font License 1.1 per imgui's docs/FONTS.md), the

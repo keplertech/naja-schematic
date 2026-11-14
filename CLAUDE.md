@@ -599,6 +599,16 @@ from `shapeWorldExtent()`). Pins are hit-tested nearest-first by
 whose endpoints are all already shown (`equipotentialCovers()`), so neither a
 re-click nor a trace re-listing a shown net draws its wires twice.
 
+Every pin of an equipotential (`terms` and `occurrences` entries) also
+carries the net it's on at its own level -- the instance's parent design,
+or the top for a port -- as `"net"` (`"name[bit]"` for a bus-net bit,
+`""`/`"[bit]"` when unnamed) and `"net_id"` (a bus bit's: its bus's id),
+absent when unconnected: `setNet()` in `LocalSNLProvider.cpp`,
+`net_fields()` in `protocol.py` (`BitTerm::net`/`netId`). A wire tree is
+named by its driver's net (`Item::netName`, `displayNetLabel()` for an
+unnamed one): the SVG's `data-net`, and the bus label. Older hosts send
+no net: the driver pin's label is used.
+
 Occurrence `path` entries (in `equipotential_response` and each
 `trace_driver_response` net) are `[name, child_id, model_name]`; the third
 element is optional on parse (`InstTermOccurrence::pathModels`, `""` when
@@ -740,8 +750,11 @@ export decorations below, it's left out of `ViewOptions::layoutJson()`.
 Four keys only decorate exports (SVG and PNG), never the canvas, and are
 left out of `ViewOptions::layoutJson()` so changing them doesn't refit:
 `"title"`/`"caption"` (text bands above/below the drawing, `\n` breaks
-lines), `"legend"` (a swatch + label per visible trace and per net a style
-labels, `SchematicView::legend`, filled by `EquipotentialView`) and
+lines), `"legend"` (the colors actually drawn: one swatch + label per
+wire tree, its style's label and drawn color when a style labels it,
+else the trace's label and color -- each trace of a striped tree --
+deduplicated, nothing for an unlabeled or faint wire;
+`SchematicView::legend`, filled by `EquipotentialView`) and
 `"hide_ui_glyphs"` (no open-pin stubs or "•••" dots,
 `SchematicView::hideUiGlyphs` on the export copy). `export_svg()`/
 `export_png()` take them as keywords too (`protocol.EXPORT_DECORATIONS`);
@@ -831,9 +844,16 @@ diagnoses):
 A `net` item colors (and widens, and labels) every wire of each shown
 equipotential with that pin among its ends (`StyleStore::netStyle()`), so
 it must name a pin the viewer draws -- a leaf pin or a top-level port.
+Its label is drawn above the wire right past the driver pin, in room the
+layout makes for it (`SchematicLayout::netLabelPlaces()`,
+`Port::netLabel`): part of the driver's footprint and a routing obstacle,
+pushed past the instance name when level with its row; for a top-level
+input port, every input port moves left and its wire reaches its channel
+after the label. A driver whose wire leaves leftwards keeps the label on
+the tree's longest horizontal run.
 Python resolves every item (`session.style_response()`, `ValueError` on
 a bad one) and sends a `net` item once per bit on its net's driver (a
-top-level port, else an output leaf pin: the pin a trace's partial net
+top-level input/inout port, else an output leaf pin: the pin a trace's partial net
 also lists), whatever pin or `target` named it: an instance or pin as
 `show_instance()`/`show_net()` take, or -- what a JSON style file can
 say -- `render`'s `--instance`/`--net` text (`"u1/u2"`, `"u1:A[3]"`,
@@ -1180,6 +1200,14 @@ path the host read, used by the native "Open in Editor".
   (name / model under the box / both), `sinkRows`, `maxSinks`,
   `groupBy`. Read by `EquipotentialView` while building shapes, so they
   reach every export. `tests/FanoutTest.cpp`.
+- **`AppFont`** — the default font (`addAppFont()`, loaded first by
+  `setupFonts()`; the tests use it too): DroidSans with `SymbolFont.h`
+  merged in, a subset of DejaVu Sans holding the symbols DroidSans lacks
+  (arrows, math operators, geometric shapes, ...; how to regenerate it is
+  in its header). A label character with no glyph in either draws ImGui's
+  replacement glyph in the PNG export and on screen: add its block to the
+  subset rather than a font per script. `tests/SvgExportTest.cpp`
+  (`EveryCharacterDrawnHasAGlyph`) checks the labels of an export.
 - **`RasterPainter`** / **`PngWriter`** — the PNG export: the painter
   records the drawing S times larger into an `ImDrawList` (geometric AA,
   text baked by the dynamic font atlas at the scaled size; it must call

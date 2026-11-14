@@ -230,6 +230,28 @@ def test_svg_groups_name_every_net_instance_and_port(top):
 
 
 @needs_renderer
+def test_net_names_across_hierarchy_and_bus_bits(top):
+    svg = export_svg(["r"], traces=[(["r"], "D")], nets=[([], "clk")])
+    nets = {g.get("data-driver"): g.get("data-net") for g in _groups(svg, "net")}
+    # u_and drives sub's n (named at its own level, not top's s); a bus
+    # port's bit names its bit net.
+    assert nets["u_sub/u_and:O"] == "n"
+    assert nets["clk"] == "clk"
+    assert nets["d[0]"] == "d[0]" and nets["d[1]"] == "d[1]"
+
+
+@needs_renderer
+def test_png_text_has_arrows_and_symbols(top):
+    # A character no font has is drawn as the replacement glyph: a label is
+    # drawn right when its PNG differs from that.
+    def png(text):
+        return export_png(["r"], title=text)
+    missing = png("a  b")
+    for symbol in "→←↔⇒≤≥≠±µΩ°…×αΔ✓":
+        assert png(f"a {symbol} b") != missing, f"U+{ord(symbol):04X} has no glyph"
+
+
+@needs_renderer
 def test_export_decorations(top, tmp_path):
     import math
     plain = export_svg(["r"], nets=[([], "clk")])
@@ -491,3 +513,136 @@ def test_convergence_outline_option():
     assert view_options_from_args(parser.parse_args(["--no-convergence-outline"])) == \
         {"convergence_outline": False}
     assert "applied when this flag is not given" in " ".join(parser.format_help().split())
+
+
+# -- a fanout fix report: net labels, legend, net names, symbols ---------------
+
+FIX = ("--verilog", "fanout_fix.v", "--xilinx")
+FIX_NETS = ("--net", "en", "--net", "en_reg:Q", "--net", "en_reg_fo1:Q", "--net", "en_reg_fo2:Q",
+            "--style", "fanout_fix_style.json")
+
+
+def _floats(text):
+    import re
+    return [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?(?:e-?\d+)?", text or "")]
+
+
+def _bbox(e):
+    # An element's box in SVG coordinates (x0, y0, x1, y1), or None.
+    tag = e.tag.rsplit("}", 1)[-1]
+    f = lambda k: float(e.get(k))  # noqa: E731
+    if tag == "rect":
+        return f("x"), f("y"), f("x") + f("width"), f("y") + f("height")
+    if tag == "line":
+        return min(f("x1"), f("x2")), min(f("y1"), f("y2")), max(f("x1"), f("x2")), max(f("y1"), f("y2"))
+    if tag == "circle":
+        return f("cx") - f("r"), f("cy") - f("r"), f("cx") + f("r"), f("cy") + f("r")
+    if tag in ("polygon", "polyline", "path"):
+        v = _floats(e.get("points") if tag != "path" else e.get("d"))
+        xs, ys = v[0::2], v[1::2]
+        return (min(xs), min(ys), max(xs), max(ys)) if xs and ys else None
+    if tag == "text":
+        # y is the baseline: the glyphs go about one font size above it.
+        size = f("font-size")
+        return f("x"), f("y") - size, f("x") + f("textLength"), f("y") + 0.25 * size
+    return None
+
+
+def _overlap(a, b, eps=0.5):
+    return a[0] < b[2] - eps and b[0] < a[2] - eps and a[1] < b[3] - eps and b[1] < a[3] - eps
+
+
+def _label_boxes(svg):
+    # Each net group's style label: its <text> holding data-label.
+    boxes = {}
+    for g in _groups(svg, "net"):
+        label = g.get("data-label")
+        for t in g.iter("{http://www.w3.org/2000/svg}text"):
+            if label and t.text == label:
+                boxes[label] = _bbox(t)
+    return boxes
+
+
+def _assert_labels_clear(svg, labels):
+    boxes = _label_boxes(svg)
+    assert set(labels) <= set(boxes), boxes
+    shapes = [(g.get("data-path") or g.get("data-name"), _bbox(e))
+              for cls in ("instance", "port") for g in _groups(svg, cls) for e in g.iter()
+              if _bbox(e) is not None]
+    for label, box in boxes.items():
+        hits = [name for name, b in shapes if _overlap(box, b)]
+        assert not hits, f"{label!r} at {box} overlaps {hits}"
+    # Nor do two labels overlap.
+    items = list(boxes.items())
+    for i, (la, a) in enumerate(items):
+        assert not any(_overlap(a, b) for _, b in items[i + 1:]), la
+
+
+@needs_renderer
+def test_net_labels_never_sit_under_a_box_or_a_port_flag(tmp_path):
+    out = tmp_path / "fix.svg"
+    result = _cli("render", *FIX, *FIX_NETS, "--instance-label", "both", "--hide-ui-glyphs",
+                  "--svg", str(out))
+    assert result.returncode == 0, result.stderr
+    _assert_labels_clear(out.read_text(encoding="utf-8"),
+                         ["en (shared input)", "en_reg → 4 loads", "en_reg_fo1 → 4 loads",
+                          "en_reg_fo2 → 4 loads"])
+
+    # Gate symbols, whose output is level with their name's row.
+    style = tmp_path / "style.json"
+    style.write_text(json.dumps({"items": [
+        {"kind": "net", "target": "u_and:Y", "color": "#d62728", "label": "first AND, a long label"},
+        {"kind": "net", "target": "u_and2:Y", "color": "#2ca02c", "label": "second AND"},
+        {"kind": "net", "target": "a", "color": "#1f77b4", "label": "input a"}]}), encoding="utf-8")
+    out = tmp_path / "gates.svg"
+    result = _cli("render", *PY_DESIGN, "--trace", "u_ff:D", "--net", "a", "--style", str(style),
+                  "--svg", str(out))
+    assert result.returncode == 0, result.stderr
+    _assert_labels_clear(out.read_text(encoding="utf-8"),
+                         ["first AND, a long label", "second AND", "input a"])
+
+
+def _color(e):
+    return e.get("stroke") if e.get("stroke") not in (None, "none") else e.get("fill")
+
+
+@needs_renderer
+def test_legend_lists_the_colors_drawn(tmp_path):
+    out = tmp_path / "fix.svg"
+    result = _cli("render", *FIX, *FIX_NETS, "--legend", "--svg", str(out))
+    assert result.returncode == 0, result.stderr
+    svg = out.read_text(encoding="utf-8")
+    entries = [(g.get("data-label"),
+                next(_color(e) for e in g.iter() if e.tag.endswith("line")))
+               for g in _groups(svg, "legend-entry")]
+    # One entry per net: the style's label and color, not also the trace's
+    # (the style color is what every wire shows).
+    assert [label for label, _ in entries] == [
+        "en (shared input)", "en_reg → 4 loads", "en_reg_fo1 → 4 loads",
+        "en_reg_fo2 → 4 loads"]
+    drawn = {_color(e) for g in _groups(svg, "net") for e in g.iter() if e.tag.endswith("line")}
+    assert {color for _, color in entries} == drawn
+    assert len(set(entries)) == len(entries)
+
+    # Without a style, each net is its trace: its label and color.
+    result = _cli("render", *FIX, "--net", "en", "--net", "en_reg:Q", "--legend", "--svg", str(out))
+    assert result.returncode == 0, result.stderr
+    svg = out.read_text(encoding="utf-8")
+    labels = [g.get("data-label") for g in _groups(svg, "legend-entry")]
+    assert labels == ["en (net)", "en_reg/Q (net)"]
+    drawn = {_color(e) for g in _groups(svg, "net") for e in g.iter() if e.tag.endswith("line")}
+    legend = {next(_color(e) for e in g.iter() if e.tag.endswith("line"))
+              for g in _groups(svg, "legend-entry")}
+    assert legend == drawn
+
+
+@needs_renderer
+def test_net_groups_are_named_by_their_net(tmp_path):
+    out = tmp_path / "fix.svg"
+    result = _cli("render", *FIX, *FIX_NETS, "--svg", str(out))
+    assert result.returncode == 0, result.stderr
+    nets = {g.get("data-driver"): g.get("data-net")
+            for g in _groups(out.read_text(encoding="utf-8"), "net")}
+    # The net, not the driver's pin (which stays data-driver).
+    assert nets == {"en": "en", "en_reg:Q": "en_q", "en_reg_fo1:Q": "en_q_fo1",
+                    "en_reg_fo2:Q": "en_q_fo2"}

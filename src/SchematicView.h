@@ -10,6 +10,9 @@
 // World width of an instance name drawn with the current ImGui font at
 // SchematicLayout::kNameFontSize: what the layout makes room for.
 float instanceNameWidth(const std::string& name);
+// World width of a net label (Port::netLabel) at
+// SchematicLayout::kNetLabelFontSize.
+float netLabelWidth(const std::string& label);
 
 // The world rect a shape covers when drawn: the shape, plus its name row or
 // its port flag.
@@ -44,9 +47,15 @@ public:
         bool        isBus = false;
         std::string netName;
         // Host styling (StyleStore): wire width in world units (0 = the
-        // default), and a label drawn on its longest horizontal run.
+        // default), and a label (the legend's). Drawn as `labelText` (the
+        // driver pin's Port::netLabel) starting at `labelAt`, on its bottom
+        // line, when `hasLabel` (SchematicLayout::netLabelPlaces()), else on
+        // the longest horizontal run.
         float       width = 0.0f;
         std::string label;
+        bool        hasLabel = false;
+        ImVec2      labelAt;
+        std::string labelText;
         // The net this tree draws, and whether it's the selected one
         // (SelectionStore): drawn over a selection-colored halo.
         SchematicNetRef ref;

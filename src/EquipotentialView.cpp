@@ -1096,11 +1096,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     struct WireEnd { bool isTerm; InstancePath path; std::string term; int portId; int termInstId = -1;
                      bool drives = false; };
     std::vector<std::vector<WireEnd>> equiEnds(equipotentials.size());
-    // Best-effort net-name label per equipotential, shown next to a merged
-    // bus wire's slash mark in pass 4 below -- the driving pin's name is the
-    // closest thing this view has to a net name (nets aren't otherwise
-    // identified in the equipotential wire format).
-    std::vector<std::string> netLabelByEi(equipotentials.size());
+    // Net name per equipotential: the driver's net at the driver's own level
+    // (its pin's "net"), shown next to a merged bus wire's slash mark and as
+    // the SVG's data-net. The driving pin's label when the host sent no net
+    // name (older hosts).
+    std::vector<std::string> netNameByEi(equipotentials.size());
     // The visible traces each net is on, and whether only hidden traces keep
     // it in the view; per instance, the visible traces reaching it -- two or
     // more make it a convergence point.
@@ -1149,7 +1149,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         const std::vector<Item>& drivers   = fanNets[ei].drivers;
         const std::vector<Item>& receivers = fanNets[ei].receivers;
         totalItems += int(drivers.size() + receivers.size());
-        if (!drivers.empty()) netLabelByEi[ei] = drivers[0].label;
+        if (!drivers.empty())
+            netNameByEi[ei] = drivers[0].netName.empty() ? drivers[0].label : drivers[0].netName;
 
         for (int pass = 0; pass < 2; ++pass) {
             const auto& items = pass == 0 ? drivers : receivers;
@@ -1485,9 +1486,32 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         return portAnchor(*s, *p);
     };
 
+    // A host style's label on a net goes right past its driver pin (an
+    // instance's right-side pin here, a top-level input port in pass 3), in
+    // room the layout makes for it (SchematicLayout::netLabelPlaces()).
+    std::vector<std::string> styleLabelByEi(equipotentials.size());
+    for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
+        if (!equipotentials[ei]) continue;
+        const std::string label = StyleStore::netStyle(*equipotentials[ei]).label;
+        if (!label.empty()) styleLabelByEi[ei] = shortenMiddle(label, netLabelWidth, kNameMaxW);
+    }
+    for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
+        if (styleLabelByEi[ei].empty()) continue;
+        for (const auto& we : equiEnds[ei]) {
+            if (we.isTerm || !we.drives) continue;
+            auto kit = pathToInstId.find(we.path);
+            InstanceShape* s = kit != pathToInstId.end() ? g_schematic.findInstanceById(kit->second) : nullptr;
+            Port* p = s ? g_schematic.findPortById(*s, renderedPort(we.portId)) : nullptr;
+            if (!p || p->lx < 0.f || !p->netLabel.empty()) continue;
+            p->netLabel  = styleLabelByEi[ei];
+            p->netLabelW = netLabelWidth(p->netLabel);
+        }
+    }
+
     // Layered placement of the instance boxes (see SchematicLayout): every
     // net between two instances is an edge from its driver pin to each
-    // receiver pin. A box takes its footprint's width: its name included.
+    // receiver pin. A box takes its footprint's width: its name and net
+    // labels included.
     std::map<int, int> nodeOfShape;
     std::vector<PlaceNode> placeNodes;
     for (const auto& inst : g_schematic.instances) {
@@ -1622,6 +1646,14 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
         }
     }
+    // Input ports driving a labeled net: the label goes right past the flag,
+    // so every input port moves left to make room for the widest, and its
+    // wire reaches the routing channel `leftPortRoom` later (see the routing
+    // below): the label is never under a wire's trunk or a box.
+    float leftPortRoom = 0.f;
+    for (const auto& st : leftStubs)
+        if (!styleLabelByEi[st.ei].empty())
+            leftPortRoom = std::max(leftPortRoom, 2.f * kNetLabelGap + netLabelWidth(styleLabelByEi[st.ei]));
     for (auto* stubs : { &leftStubs, &rightStubs }) {
         std::vector<float> want;
         for (const auto& st : *stubs) want.push_back(st.wantY);
@@ -1631,7 +1663,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             const PortStub& st = (*stubs)[i];
             InstanceShape inst;
             inst.id = nextInstId++;
-            inst.x  = isInput ? sheetX0 - kPortGap : sheetX1 + kPortGap;
+            inst.x  = isInput ? sheetX0 - kPortGap - leftPortRoom : sheetX1 + kPortGap;
             inst.y  = ys[i];
             inst.w  = 0.f; inst.h = 0.f;
             inst.partialInterface = false;
@@ -1648,6 +1680,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             p.direction = st.direction;
             p.isInput   = isInput;
             p.color     = DiagnosisStore::netColor({}, stripBusIndex(st.label));
+            if (isInput && !styleLabelByEi[st.ei].empty()) {
+                p.netLabel  = styleLabelByEi[st.ei];
+                p.netLabelW = netLabelWidth(p.netLabel);
+            }
             inst.ports.push_back(p);
             for (auto& we : equiEnds[st.ei])
                 if (we.isTerm && we.portId == st.portId) we.termInstId = inst.id;
@@ -1704,7 +1740,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             n.srcPortId   = wrs[0].portId;
             n.dstInstance = wrs[i].instId;
             n.dstPortId   = wrs[i].portId;
-            n.netName     = netLabelByEi[ei];
+            n.netName     = netNameByEi[ei];
             n.traceIds    = traceIdsByEi[ei];
             n.faint       = faintByEi[ei];
             n.styleColor  = netStyle.color;
@@ -1766,7 +1802,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     {
         std::vector<RouteRect> obstacles, keepOut;
         for (const auto& inst : g_schematic.instances) {
-            if (inst.parentShapeId >= 0 || inst.w <= 0.f || inst.h <= 0.f) continue;
+            if (inst.parentShapeId >= 0) continue;
+            // Net labels: in the box's span (so the trunk goes after them);
+            // an input port's sit in the stretch of wire before its channel.
+            for (const auto& l : netLabelPlaces(inst, instanceNameWidth))
+                (inst.modelName == "port" ? keepOut : obstacles).push_back(l.rect);
+            if (inst.w <= 0.f || inst.h <= 0.f) continue;
             if (inst.isHierGroup) {  // its label row
                 keepOut.push_back({ inst.x, inst.y, inst.x + inst.w, inst.y + kGroupHeader - kPinPitch });
                 continue;
@@ -1780,9 +1821,17 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         struct RouteTraces { std::vector<int> ids; bool faint = true; ImU32 styleColor = 0; };
         std::vector<RouteTraces> routeTraces;
         g_schematic.routes.clear();
-        auto pinOf = [](const InstanceShape& inst, const Port& p) {
-            return RoutePin{ portAnchor(inst, p), p.lx >= 0.f };
+        // An input port's wire is routed from `leftPortRoom` past its flag
+        // (where its channel starts), joined to the flag after routing.
+        auto isLeftPort = [](const InstanceShape& inst, const Port& p) {
+            return inst.modelName == "port" && p.lx >= 0.f;
         };
+        auto pinOf = [&](const InstanceShape& inst, const Port& p) {
+            ImVec2 at = portAnchor(inst, p);
+            if (isLeftPort(inst, p)) at.x += leftPortRoom;
+            return RoutePin{ at, p.lx >= 0.f };
+        };
+        std::vector<std::vector<RouteSegment>> portLeads;  // per route
         for (auto& n : g_schematic.nets) {
             if (n.containerShapeId >= 0) continue;
             auto* srcInst = g_schematic.findInstanceById(n.srcInstance);
@@ -1802,9 +1851,20 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                     ? SchematicNetRef{ {}, srcPort->name, true }
                     : SchematicNetRef{ srcInst->path, srcPort->name, false };
                 r.selected = SelectionStore::isNetSelected(r.ref);
+                for (const auto& l : netLabelPlaces(*srcInst, instanceNameWidth))
+                    if (l.portId == srcPort->id) {
+                        r.hasLabel  = true;
+                        r.labelAt   = l.at;
+                        r.labelText = srcPort->netLabel;
+                    }
                 g_schematic.routes.push_back(std::move(r));
                 routeTraces.emplace_back();
+                portLeads.emplace_back();
+                if (leftPortRoom > 0.f && isLeftPort(*srcInst, *srcPort))
+                    portLeads.back().push_back({ portAnchor(*srcInst, *srcPort), pinOf(*srcInst, *srcPort).at });
             }
+            if (leftPortRoom > 0.f && isLeftPort(*dstInst, *dstPort))
+                portLeads[it->second].push_back({ pinOf(*dstInst, *dstPort).at, portAnchor(*dstInst, *dstPort) });
             mergeTraceIds(routeTraces[it->second].ids, n.traceIds);
             routeTraces[it->second].faint = routeTraces[it->second].faint && n.faint;
             routeNetsIn[it->second].receivers.push_back(pinOf(*dstInst, *dstPort));
@@ -1832,30 +1892,43 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         // Wiring nested in an expanded instance isn't routed: color it here.
         for (auto& n : g_schematic.nets)
             if (!n.routed) n.color = styledWireColor(n.color, n.styleColor, n.traceIds, n.faint);
-        // The export legend: every visible trace drawn, then every net a
-        // host style labels, in its drawn color.
+        // The export legend: the colors actually drawn, one entry per wire
+        // tree in drawing order (no duplicates).
+        // A styled label names its wire in the color drawn (the style's,
+        // under a diagnosis); otherwise the trace drawn on it does: the one
+        // whose color the wire has, or each striped trace. A wire with no
+        // label (a plain or diagnosed net, a faint one) has no entry.
         {
             auto& legend = g_schematic.legend;
             legend.clear();
-            std::set<int> drawnTraces;
-            for (const auto& rt : routeTraces) drawnTraces.insert(rt.ids.begin(), rt.ids.end());
-            for (const auto& n : g_schematic.nets) drawnTraces.insert(n.traceIds.begin(), n.traceIds.end());
-            for (const Trace& t : TraceStore::traces())
-                if (drawnTraces.count(t.id) && TraceStore::isVisible(t.id) && !t.label.empty())
-                    legend.push_back({ TraceStore::color(t.id), t.label });
-            auto addStyled = [&](ImU32 color, const std::string& label) {
+            auto add = [&](ImU32 color, const std::string& label) {
                 if (label.empty()) return;
                 for (const auto& e : legend)
                     if (e.label == label && e.color == color) return;
                 legend.push_back({ color, label });
             };
-            for (const auto& r : g_schematic.routes) addStyled(r.color, r.label);
+            auto addWire = [&](ImU32 color, const std::string& styleLabel, const std::vector<int>& ids,
+                               bool faint, const std::vector<ImU32>& stripes) {
+                if (faint) return;
+                if (!styleLabel.empty()) { add(color, styleLabel); return; }
+                for (int id : ids) {
+                    const Trace* t = TraceStore::find(id);
+                    if (!t || !TraceStore::isVisible(id)) continue;
+                    if (!stripes.empty() || TraceStore::color(id) == color) add(TraceStore::color(id), t->label);
+                }
+            };
+            for (size_t i = 0; i < g_schematic.routes.size(); ++i) {
+                const auto& r = g_schematic.routes[i];
+                addWire(r.color, r.label, routeTraces[i].ids, routeTraces[i].faint, r.stripeColors);
+            }
             for (const auto& n : g_schematic.nets)
-                if (!n.routed) addStyled(n.color, n.label);
+                if (!n.routed) addWire(n.color, n.label, n.traceIds, n.faint, {});
         }
         auto routed = routeNets(routeNetsIn, obstacles, keepOut);
         for (size_t i = 0; i < routed.size(); ++i) {
             g_schematic.routes[i].segments  = std::move(routed[i].segments);
+            g_schematic.routes[i].segments.insert(g_schematic.routes[i].segments.begin(),
+                                                  portLeads[i].begin(), portLeads[i].end());
             g_schematic.routes[i].junctions = std::move(routed[i].junctions);
         }
     }

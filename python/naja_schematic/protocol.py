@@ -384,6 +384,16 @@ def net_display_name(net):
     return net.getName()
 
 
+def net_fields(net):
+    # The net a pin is on, at the pin's own level: "net" (net_display_name)
+    # and "net_id" (a bus bit's: its bus's id); nothing for an unconnected
+    # pin. Same as LocalSNLProvider.cpp's setNet().
+    if net is None:
+        return {}
+    net_id = net.getBus().getID() if isinstance(net, naja.SNLBusNetBit) else net.getID()
+    return {"net": net_display_name(net), "net_id": net_id}
+
+
 def equipotential_to_json(equipotential, sinks=None):
     # Wire-format body of an equipotential (no "response" key): its top-level
     # terms plus every leaf inst-term occurrence on the net.
@@ -428,9 +438,9 @@ def equipotential_to_json(equipotential, sinks=None):
             # Lets the view tell whether every pin of this instance is already
             # on screen (solid box) or only a subset (dashed, expandable).
             "bit_term_count": sum(1 for _ in inst_model.getBitTerms()),
-            # Net on this inst term inside the instance's parent design --
-            # shown in the schematic's pin hover tooltip.
-            "net": net_display_name(instTerm.getNet())
+            # Net on this inst term inside the instance's parent design:
+            # the schematic names a wire tree by its driver's net.
+            **net_fields(instTerm.getNet()),
         }, term, instTerm), has_sources(instTerm.getInstance(), inst_model)))
     for term in equipotential.getTerms():
         # A top-level output is a receiver of the net; an input/inout drives it.
@@ -443,7 +453,7 @@ def equipotential_to_json(equipotential, sinks=None):
             "child_id": term.getID(),
             "direction": direction_to_int(term.getDirection()),
             "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
-            "net": net_display_name(term.getNet())
+            **net_fields(term.getNet()),
         })
     return {"occurrences": occurrences, "terms": terms}
 

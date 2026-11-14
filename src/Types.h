@@ -185,6 +185,11 @@ inline std::string displayPinLabel(const std::string& label, unsigned id) {
 inline std::string displayNetName(const std::string& name, unsigned id) {
   return name.empty() ? "<net #" + std::to_string(id) + ">" : name;
 }
+// The same for a net label that may end in "[bit]" (an equipotential pin's
+// "net"): "[3]" of an unnamed bus net is shown "<net #id>[3]".
+inline std::string displayNetLabel(const std::string& label, unsigned id) {
+  return label.empty() || label.front() == '[' ? displayNetName("", id) + label : label;
+}
 
 struct BitTerm {
   std::string name;
@@ -195,6 +200,11 @@ struct BitTerm {
   // naja's term role ("clock", "async_reset", "enable", ...; SNLTermRole),
   // "" for a data pin (DataInput/DataOutput, or none set).
   std::string role;
+  // Equipotential pins only: the net the pin is on at its own level ("net",
+  // "name[bit]" for a bus bit; displayNetLabel()) and its id, when the host
+  // sent them (older hosts don't; an unconnected pin has none).
+  std::optional<std::string> net;
+  unsigned netId = 0;
 
   // The pin's label: displayTermName() plus "[bit]" for a bus bit.
   std::string getString() const {
@@ -461,6 +471,12 @@ struct Port {
     ImU32       styleColor = 0;
     float       styleWidth = 0.0f;
     std::string label;
+    // A host style's label on the net this pin drives (StyleStore), drawn
+    // above the wire just past the pin, and its world width: part of the
+    // shape's footprint (SchematicLayout::netLabelPlaces()). Right-side pins
+    // only; empty for an unlabeled net.
+    std::string netLabel;
+    float       netLabelW = 0.0f;
 };
 
 struct InstanceShape {

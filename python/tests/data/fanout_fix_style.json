@@ -1,0 +1,8 @@
+{
+  "items": [
+    {"kind": "net", "target": "en", "color": "#1f77b4", "width": 2.5, "label": "en (shared input)"},
+    {"kind": "net", "target": "en_reg:Q", "color": "#d62728", "width": 2.5, "label": "en_reg → 4 loads"},
+    {"kind": "net", "target": "en_reg_fo1:Q", "color": "#2ca02c", "width": 2.5, "label": "en_reg_fo1 → 4 loads"},
+    {"kind": "net", "target": "en_reg_fo2:Q", "color": "#9467bd", "width": 2.5, "label": "en_reg_fo2 → 4 loads"}
+  ]
+}

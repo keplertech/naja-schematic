@@ -80,7 +80,7 @@ std::string shownName(const InstanceShape& s, const NameWidthFn& width);
 std::string shownModel(const InstanceShape& s, const NameWidthFn& width);
 
 // Width of `s`'s footprint: its symbol, or its shown name or model when
-// wider.
+// wider, or as far as a net label on one of its right-side pins reaches.
 float footprintWidth(const InstanceShape& s, const NameWidthFn& width);
 
 // Height of `s`'s footprint below its top: the symbol, plus the model's
@@ -204,6 +204,24 @@ struct RouteRect {
 std::optional<RouteRect> nameRect(const InstanceShape& s, const NameWidthFn& width);
 // Likewise the row its shown model takes below it.
 std::optional<RouteRect> modelRect(const InstanceShape& s, const NameWidthFn& width);
+// Net labels (a host style's label on a net, Port::netLabel): drawn above
+// the wire right past its driver pin, kNetLabelGap from it (and from the
+// shape's name when the name's row reaches down to the label's), its bottom
+// kNetLabelLift over the wire. `rect` runs from the shape's right edge (so it
+// joins the box's span: the wire's trunk goes in the channel after it) to
+// the label's end; it's a routing obstacle and part of the footprint, so the
+// label never sits under a box, a name, a flag or a trunk. `at` is where the
+// text starts, on its bottom line. One per labeled right-side pin.
+inline constexpr float kNetLabelGap      = 6.0f;
+inline constexpr float kNetLabelH        = 15.0f;  // a label's row, for kNetLabelFontSize text
+inline constexpr float kNetLabelLift     = 2.0f;
+inline constexpr float kNetLabelFontSize = 11.0f;
+struct NetLabelPlace {
+    RouteRect rect;
+    ImVec2    at;
+    int       portId = -1;
+};
+std::vector<NetLabelPlace> netLabelPlaces(const InstanceShape& s, const NameWidthFn& width);
 struct RoutePin {
     ImVec2 at;
     bool   right = true;   // the wire leaves the pin to the right (else left)
@@ -240,6 +258,9 @@ struct Item {
     std::optional<int>     termBit;
     bool                   clock = false;  // a sequential cell's clock pin
     std::string            role;           // naja's term role, "" = data (BitTerm::role)
+    // The pin's net at its own level, for display (displayNetLabel()); ""
+    // when the host didn't say (older hosts) or the pin is unconnected.
+    std::string            netName;
     std::vector<unsigned>  pathIds;
     // Only meaningful for instance occurrences (isTerm == false): whether
     // this instance's model has sub-instances worth expanding into a nested

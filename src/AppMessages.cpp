@@ -31,22 +31,15 @@ using json = nlohmann::json;
 #include "ReviewStore.h"
 #include "ViewOptions.h"
 #include "CousineFont.h"
-#include "DroidSansFont.h"
+#include "AppFont.h"
 
 #ifndef __EMSCRIPTEN__
 #include <fstream>
 #endif
 
-// Base UI font size in pixels. ImGui's built-in fallback (Proggy Clean, ~13px
-// bitmap font) reads as tiny/blurry on most displays; DroidSans at this size
-// is crisp and legible for both chrome (menus, panels) and schematic labels,
-// which scale off of it (see SchematicView's labelFontSize()).
-static constexpr float kBaseFontSizePx = 17.0f;
-
 void setupFonts() {
   ImGuiIO& io = ImGui::GetIO();
-  io.Fonts->AddFontFromMemoryCompressedTTF(
-      DroidSans_compressed_data, DroidSans_compressed_size, kBaseFontSizePx);
+  addAppFont(io.Fonts);
   // Monospace, for code in the Source tab; DroidSans above stays the default.
   SourceView::setFont(io.Fonts->AddFontFromMemoryCompressedTTF(
       Cousine_compressed_data, Cousine_compressed_size, kBaseFontSizePx - 1.0f));

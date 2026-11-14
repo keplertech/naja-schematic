@@ -106,10 +106,15 @@ def test_targets_in_the_text_and_json_forms(top):
                    {"id_path": [0, 0], "terminal": "O"}):
         [got] = style_response([{"kind": "net", "target": target, "color": "#1f77b4"}])["items"]
         assert {k: got[k] for k in expected} == expected, target
-    # A top-level port: its name alone, or [[], name(, bit)].
-    for target in ("q", [[], "q"], ":q"):
+    # A top-level port: its name alone, or [[], name(, bit)]. Sent on the
+    # net's driver, which a trace's partial net lists too: the input port
+    # itself, but r's Q for the output q (a receiver).
+    for target in ("clk", [[], "clk"], ":clk"):
         [got] = style_response([{"kind": "net", "target": target}])["items"]
         assert got["id_path"] == [] and "bit" not in got, target
+    for target in ("q", [[], "q"], ":q"):
+        [got] = style_response([{"kind": "net", "target": target}])["items"]
+        assert got["path"] == ["r"] and "bit" not in got, (target, got)
     for target in ("d[1]", [[], "d", 1], {"path": [], "terminal": "d", "bit": 1}):
         [got] = style_response([{"kind": "term", "target": target}])["items"]
         assert (got["id_path"], got["bit"]) == ([], 1), target

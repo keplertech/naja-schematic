@@ -229,6 +229,29 @@ TEST(EquipotentialJson, ParsesTermsAndOccurrences) {
   EXPECT_EQ(occ.pathModels, (std::vector<std::string>{"", ""}));
 }
 
+TEST(EquipotentialJson, ParsesEachPinsNet) {
+  json j = {
+    {"terms", json::array({
+      {{"name", "en"}, {"child_id", 1}, {"direction", 0}, {"net", "en"}, {"net_id", 4}},
+    })},
+    {"occurrences", json::array({
+      {{"path", json::array({json::array({"u1", 0, "FDRE"})})}, {"name", "Q"}, {"child_id", 2},
+       {"direction", 1}, {"net", "q[3]"}, {"net_id", 7}},
+      // An unconnected pin, or an older host: no net.
+      {{"path", json::array({json::array({"u2", 1, "FDRE"})})}, {"name", "D"}, {"child_id", 0},
+       {"direction", 0}},
+    })},
+  };
+  Equipotential e = j.get<Equipotential>();
+  ASSERT_TRUE(e.terms[0].net);
+  EXPECT_EQ(*e.terms[0].net, "en");
+  EXPECT_EQ(e.terms[0].netId, 4u);
+  ASSERT_TRUE(e.occurrences[0].term.net);
+  EXPECT_EQ(*e.occurrences[0].term.net, "q[3]");
+  EXPECT_EQ(e.occurrences[0].term.netId, 7u);
+  EXPECT_FALSE(e.occurrences[1].term.net);
+}
+
 TEST(EquipotentialJson, ParsesPathModelNames) {
   json j = {
     {"terms", json::array()},

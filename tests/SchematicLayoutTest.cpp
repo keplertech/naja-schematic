@@ -134,6 +134,85 @@ TEST(InstanceNames, AVeryLongNameIsCappedInTheFootprint) {
 }
 
 // ---------------------------------------------------------------------------
+// Net labels
+// ---------------------------------------------------------------------------
+
+namespace {
+Port labeledPin(int id, float lx, float ly, const std::string& label) {
+  Port p;
+  p.id = id; p.name = "Q"; p.lx = lx; p.ly = ly;
+  p.netLabel = label; p.netLabelW = charWidth(label);
+  return p;
+}
+bool overlaps(const RouteRect& a, const RouteRect& b) {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+}
+} // namespace
+
+TEST(NetLabels, ALabelSitsAboveItsWireRightPastThePin) {
+  InstanceShape s = box(1, P({"u1"}), 100.f, 50.f);
+  s.ports.push_back(labeledPin(7, 0.5f, 0.f, "en_reg -> 4 loads"));  // right side, mid-height
+  const auto places = netLabelPlaces(s, charWidth);
+  ASSERT_EQ(places.size(), 1u);
+  const auto& l = places[0];
+  const ImVec2 pin = portAnchor(s, s.ports[0]);
+  EXPECT_EQ(l.portId, 7);
+  EXPECT_EQ(l.at.x, pin.x + kNetLabelGap);
+  EXPECT_EQ(l.at.y, pin.y - kNetLabelLift);   // bottom line just over the wire
+  // Its rect starts at the box's edge (joining the box's span: the trunk
+  // goes after it) and ends with the text.
+  EXPECT_EQ(l.rect.x0, s.x + s.w);
+  EXPECT_EQ(l.rect.x1, l.at.x + charWidth("en_reg -> 4 loads"));
+  EXPECT_EQ(l.rect.y1, l.at.y);
+  EXPECT_EQ(l.rect.y0, l.at.y - kNetLabelH);
+  // Clear of the box, its name and its model, and in its footprint.
+  s.showModel = true; s.model = "FDRE";
+  const RouteRect boxRect{ s.x, s.y, s.x + s.w, s.y + s.h };
+  EXPECT_FALSE(overlaps(l.rect, RouteRect{ boxRect.x0, boxRect.y0, boxRect.x1 - 0.01f, boxRect.y1 }));
+  EXPECT_FALSE(overlaps(l.rect, *nameRect(s, charWidth)));
+  EXPECT_FALSE(overlaps(l.rect, *modelRect(s, charWidth)));
+  EXPECT_EQ(footprintWidth(s, charWidth), l.rect.x1 - s.x);
+}
+
+TEST(NetLabels, ALabelLevelWithTheNameRowGoesPastTheName) {
+  // A small gate whose output is level with its name's row: a long name
+  // overhangs the symbol, and the label goes after it.
+  InstanceShape s = box(1, P({"a_long_gate_name"}), 0.f, 100.f, 30.f, 20.f);
+  s.ports.push_back(labeledPin(3, 0.5f, 0.f, "net"));
+  const auto name = nameRect(s, charWidth);
+  ASSERT_TRUE(name);
+  ASSERT_GT(name->x1, s.x + s.w);
+  const auto places = netLabelPlaces(s, charWidth);
+  ASSERT_EQ(places.size(), 1u);
+  EXPECT_EQ(places[0].at.x, name->x1 + kNetLabelGap);
+  EXPECT_EQ(footprintWidth(s, charWidth), places[0].rect.x1 - s.x);
+}
+
+TEST(NetLabels, OnlyLabeledRightSidePinsHaveOne) {
+  InstanceShape s = box(1, P({"u1"}), 0.f, 0.f);
+  s.ports.push_back(labeledPin(1, -0.5f, 0.f, "an input's net"));  // left side
+  Port plain; plain.id = 2; plain.lx = 0.5f;                          // no label
+  s.ports.push_back(plain);
+  EXPECT_TRUE(netLabelPlaces(s, charWidth).empty());
+  EXPECT_EQ(footprintWidth(s, charWidth), kBoxW);
+}
+
+TEST(NetLabels, AnItemCarriesItsPinsNetName) {
+  Equipotential eq{true, {topTerm("en", Direction::Input)}, {}};
+  eq.terms[0].net = "en";
+  eq.occurrences.push_back(occ({"u1"}, "Q", Direction::Output));
+  eq.occurrences.back().term.net = "[3]";   // an unnamed bus's bit
+  eq.occurrences.back().term.netId = 9;
+  eq.occurrences.push_back(occ({"u2"}, "A", Direction::Input));  // an older host: no net
+  std::vector<Item> drivers, receivers;
+  buildItems(&eq, drivers, receivers);
+  ASSERT_EQ(drivers.size(), 2u);
+  EXPECT_EQ(drivers[0].netName, "en");
+  EXPECT_EQ(drivers[1].netName, "<net #9>[3]");
+  EXPECT_EQ(receivers[0].netName, "");
+}
+
+// ---------------------------------------------------------------------------
 // buildItems
 // ---------------------------------------------------------------------------
 

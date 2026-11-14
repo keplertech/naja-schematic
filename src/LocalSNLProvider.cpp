@@ -866,6 +866,22 @@ std::string LocalSNLProvider::buildNetsResponse(
 // With `sinks` set, only the net's drivers and those listed receivers (top
 // terms as SNLOccurrence(term), inst terms as (path, instTerm)) are emitted
 // -- a driver trace shows the path it followed, not every reader on the net.
+// The net a pin is on, at the pin's own level (an instance's parent design,
+// or the top for a port): "net" is its name, "name[bit]" for a bus-net bit
+// ("" or "[bit]" when unnamed), "net_id" the net's id (a bit's bus id).
+// The schematic names a wire tree by its driver's net. Absent when the pin
+// is unconnected. Same as protocol.py's net_fields().
+static void setNet(json& entry, const SNLBitNet* net) {
+  if (!net) return;
+  if (auto* bit = dynamic_cast<const SNLBusNetBit*>(net)) {
+    entry["net"]    = bit->getBus()->getName().getString() + "[" + std::to_string(bit->getBit()) + "]";
+    entry["net_id"] = static_cast<unsigned>(bit->getBus()->getID());
+  } else {
+    entry["net"]    = net->getName().getString();
+    entry["net_id"] = static_cast<unsigned>(net->getID());
+  }
+}
+
 static json equipotentialJson(const SNLEquipotential& equi,
                               const std::set<SNLOccurrence>* sinks = nullptr) {
   json terms = json::array();
@@ -873,7 +889,9 @@ static json equipotentialJson(const SNLEquipotential& equi,
     // A top-level output is a receiver of the net; an input/inout drives it.
     if (sinks && bt->getDirection() == SNLTerm::Direction::Output &&
         !sinks->count(SNLOccurrence(bt))) continue;
-    terms.push_back(bitTermJson(bt));
+    json t = bitTermJson(bt);
+    setNet(t, bt->getNet());
+    terms.push_back(std::move(t));
   }
 
   json occs = json::array();
@@ -896,6 +914,7 @@ static json equipotentialJson(const SNLEquipotential& equi,
                                    static_cast<unsigned>(theInst->getID()),
                                    designName(theInst->getModel())}));
     auto entry = bitTermJson(bt);
+    setNet(entry, it->getNet());
     // The instance's own role: a parameterized primitive can take it from
     // the instance's parameters.
     setTermRole(entry, it);

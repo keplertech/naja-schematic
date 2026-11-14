@@ -19,6 +19,7 @@ void buildItems(const Equipotential* eq,
         item.isTerm      = true;
         item.termChildId = bt.child_id;
         item.termBit     = bt.bit;
+        if (bt.net) item.netName = displayNetLabel(*bt.net, bt.netId);
         (bt.direction == Direction::Input ? drivers : receivers).push_back(std::move(item));
     }
     for (const auto& occ : eq->occurrences) {
@@ -31,6 +32,7 @@ void buildItems(const Equipotential* eq,
         item.termBit     = occ.term.bit;
         item.clock       = occ.term.clock;
         item.role        = occ.term.role;
+        if (occ.term.net) item.netName = displayNetLabel(*occ.term.net, occ.term.netId);
         item.pathIds     = occ.pathIds;
         item.hasInstances = occ.has_instances;
         item.bitTermCount = occ.bit_term_count;
@@ -134,6 +136,7 @@ float footprintWidth(const InstanceShape& s, const NameWidthFn& width) {
     if (!name.empty()) w = std::max(w, width(name));
     const std::string model = shownModel(s, width);
     if (!model.empty()) w = std::max(w, width(model));
+    for (const auto& l : netLabelPlaces(s, width)) w = std::max(w, l.rect.x1 - s.x);
     return w;
 }
 
@@ -145,6 +148,20 @@ std::optional<RouteRect> modelRect(const InstanceShape& s, const NameWidthFn& wi
     const std::string model = shownModel(s, width);
     if (model.empty()) return std::nullopt;
     return RouteRect{ s.x, s.y + s.h, s.x + width(model), s.y + s.h + kNameH };
+}
+
+std::vector<NetLabelPlace> netLabelPlaces(const InstanceShape& s, const NameWidthFn& width) {
+    std::vector<NetLabelPlace> places;
+    const auto name = nameRect(s, width);
+    for (const auto& p : s.ports) {
+        if (p.netLabelW <= 0.f || p.lx < 0.f) continue;
+        const ImVec2 pin = portAnchor(s, p);
+        const float y1 = pin.y - kNetLabelLift, y0 = y1 - kNetLabelH;
+        float x = pin.x + kNetLabelGap;
+        if (name && y0 < name->y1 && y1 > name->y0) x = std::max(x, name->x1 + kNetLabelGap);
+        places.push_back({ { s.x + s.w, y0, x + p.netLabelW, y1 }, ImVec2(x, y1), p.id });
+    }
+    return places;
 }
 
 std::optional<RouteRect> nameRect(const InstanceShape& s, const NameWidthFn& width) {
