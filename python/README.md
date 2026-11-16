@@ -181,6 +181,26 @@ naja-schematic render --verilog design.v --py-primitives prims.py --top top \
   --png out.png --scale 3 --instance-label both --max-sinks 16
 ```
 
+People can use an export for documentation, reviews or bug reports, and
+tools can generate one too: a script, a CI job or an AI agent that has
+found something in a netlist can render it and attach the picture to its
+report, so a person can check the finding at a glance. For example, the
+fan-in cones of two flip-flops in the tinyrocket RISC-V core (in the
+repository's `scripts/`), overlaid:
+
+```bash
+naja-schematic render --verilog scripts/tinyrocket.v \
+  --liberty scripts/NangateOpenCellLibrary_typical.lib scripts/fakeram45_64x32.lib \
+  --trace 'core/div.count[0]$_SDFFE_PP0P_:D' --trace 'core/div.req_tag[0]$_DFFE_PP_:D' \
+  --title "tinyrocket: fan-in cones of two divider flops" --legend --hide-ui-glyphs \
+  --png cones.png --scale 2
+```
+
+![Headless export: the fan-in cones of two flip-flops in the tinyrocket core, each in its own color, with the wires and gates they share striped and outlined](https://raw.githubusercontent.com/keplertech/naja-schematic/main/docs/headless_export.png)
+
+Each cone has its own color. The wires both cones go through are striped
+in both colors, and the gates they share are outlined.
+
 `view_options` (and the flags `--instance-label`, `--sink-rows`,
 `--max-sinks`, `--group-by`; for exports only, `--title`, `--caption`,
 `--legend`, `--hide-ui-glyphs`, also `export_svg()`/`export_png()`

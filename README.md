@@ -167,6 +167,36 @@ naja-schematic-standalone design.v --liberty cells.lib --export cone.svg \
   --trace '{"terminal": "y"}'
 ```
 
+A headless export gives you a picture of exactly the part of the design
+you name, in one command, with no window, display or browser. People can
+use it for documentation, design reviews or bug reports. Tools can
+generate it too: a script, a CI job or an AI agent that has just found
+something in a netlist (a suspicious cone, a formal mismatch) can render
+it and attach the image to its report, so a person can check the finding
+at a glance. The drawing is the one the interactive viewer would show,
+and the SVG is structured (`class`/`data-*` attributes on every net,
+instance and port), so a tool can also read it back.
+
+For example, the fan-in cones of two flip-flops of the divider in the
+tinyrocket RISC-V core shipped in `scripts/`, overlaid:
+
+```bash
+naja-schematic-standalone scripts/tinyrocket.v \
+  --liberty scripts/NangateOpenCellLibrary_typical.lib \
+  --liberty scripts/fakeram45_64x32.lib \
+  --trace '{"path": ["core", "div.count[0]$_SDFFE_PP0P_"], "terminal": "D"}' \
+  --trace '{"path": ["core", "div.req_tag[0]$_DFFE_PP_"], "terminal": "D"}' \
+  --title "tinyrocket: fan-in cones of two divider flops" --legend --hide-ui-glyphs \
+  --png docs/headless_export.png --scale 2
+```
+
+![Headless export: the fan-in cones of two flip-flops in the tinyrocket core, each in its own color, with the wires and gates they share striped and outlined](docs/headless_export.png)
+
+Each cone gets its own color. Wires both cones go through are striped
+in both colors, and the gates they share are outlined. Gate symbols come
+from the Liberty functions of the cells, and the `core (Rocket)` frame is
+the module the gates are in.
+
 `--export out.svg` needs at least one of:
 
 - `--trace '<pin>'` (repeatable): the fan-in cone of a pin.
