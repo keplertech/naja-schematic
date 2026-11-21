@@ -8,6 +8,7 @@ SPDX-PackageDownloadLocation = "https://github.com/keplertech/naja-schematic"
 # never end up double-annotated with both their real license and this one.
 [[annotations]]
 path = [
+  ".github/workflows/coverage.yml",
   ".github/workflows/emscripten.yml",
   ".github/workflows/native-linux.yml",
   ".github/workflows/native-macos.yml",
@@ -21,6 +22,7 @@ path = [
   "CMakeLists.txt",
   "CMakePresets.json",
   "README.md",
+  "codecov.yml",
   "docs/demo.gif",
   "docs/headless_export.png",
   "docs/review_format.md",

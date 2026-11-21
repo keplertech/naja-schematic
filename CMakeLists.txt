@@ -387,6 +387,17 @@ if(NOT EMSCRIPTEN_BUILD)
       NAJA_SCHEMATIC_VERSION_STRING="${NAJA_SCHEMATIC_VERSION}"
     )
 
+    # Line coverage of the test executables only (not naja, which is built
+    # as a subdirectory): .gcda files land next to the objects after ctest,
+    # read with gcovr (see .github/workflows/coverage.yml).
+    option(NAJA_SCHEMATIC_COVERAGE "Instrument the tests for coverage (gcc/clang --coverage)" OFF)
+    if(NAJA_SCHEMATIC_COVERAGE)
+      foreach(t naja-schematic-tests naja-schematic-provider-tests)
+        target_compile_options(${t} PRIVATE --coverage -O0 -g)
+        target_link_options(${t} PRIVATE --coverage)
+      endforeach()
+    endif()
+
     enable_testing()
     include(GoogleTest)
     gtest_discover_tests(naja-schematic-tests)
