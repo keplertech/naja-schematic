@@ -99,12 +99,19 @@ plus options, in any order. Their flags differ slightly:
 | `--source-map FROM=TO` | `--source-map FROM=TO` | Rewrite source paths recorded on another machine (repeatable) |
 | | `--review DIR`, `--author NAME` | Read and write review threads in DIR, a directory kept in git with the design ([format](docs/review_format.md)) |
 | | `--review DIR` alone, `--snapshot ID` | Open the netlist a review thread was written on, stored in the review |
+| `--ui-scale 1.5` | | Make the app's text and spacing bigger (or smaller), for large displays |
 | | `--open` | Open the viewer in a browser |
 | | `--port N`, `--host H` | Where to serve (default `localhost:8081`) |
 
 Without a design, the desktop app starts empty: use the **File** menu (Open Verilog..., Open SystemVerilog..., Open VHDL..., Open naja-if...). A
 diagnosis report can also be loaded later with **File > Load Diagnosis
 JSON...**. `naja-schematic --help` lists every server option.
+
+On a large or high-resolution display, **View > Text Size** makes the
+app's text (menus, panels, dialogs) larger or smaller, in both the desktop
+app and the browser viewer; the schematic's own labels follow its zoom.
+`--ui-scale S` (or `NAJA_SCHEMATIC_UI_SCALE=S` in the environment) starts
+the desktop app at that scale.
 
 Source paths are looked up as recorded, then under each `--source-root` in
 order, then in the current directory. `--source-map /home/ci/flow=/work/flow`

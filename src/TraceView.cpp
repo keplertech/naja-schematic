@@ -25,7 +25,7 @@ void renderColorPopup(const Trace& t) {
     ImGui::PushID(s);
     if (s) ImGui::SameLine();
     ImVec4 c = ImColor(TraceStore::styleColor(s));
-    if (ImGui::ColorButton("##palette", c, ImGuiColorEditFlags_NoTooltip, ImVec2(20, 20))) {
+    if (ImGui::ColorButton("##palette", c, ImGuiColorEditFlags_NoTooltip, ImVec2(ImGui::GetFrameHeight(), ImGui::GetFrameHeight()))) {
       TraceStore::setColor(t.id, TraceStore::styleColor(s));
       g_pickerColor = c;
     }
@@ -81,7 +81,7 @@ void TraceView::render(GUIData& data) {
       if (ImGui::Checkbox("##shown", &visible)) TraceStore::setVisible(t.id, visible);
       ImGui::SameLine();
       if (ImGui::ColorButton("##color", ImColor(TraceStore::color(t.id)).Value,
-                             ImGuiColorEditFlags_NoTooltip, ImVec2(16, 16))) {
+                             ImGuiColorEditFlags_NoTooltip, ImVec2(ImGui::GetTextLineHeight(), ImGui::GetTextLineHeight()))) {
         g_pickerColor = ImColor(TraceStore::color(t.id));
         ImGui::OpenPopup("##pick");
       }

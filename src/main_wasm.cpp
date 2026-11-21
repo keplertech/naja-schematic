@@ -16,6 +16,7 @@
 #include <backends/imgui_impl_opengl3.h>
 
 #include "AppLogic.h"
+#include "UiScale.h"
 #include "GUIData.h"
 #include "GenerationProvider.h"
 #include "JsBridgeProvider.h"
@@ -108,6 +109,7 @@ int main() {
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   setupFonts();
+  setUiScale(initialUiScale());
   ImGui_ImplSDL2_InitForOpenGL(g_state.window, g_state.glContext);
   ImGui_ImplOpenGL3_Init("#version 300 es");
 

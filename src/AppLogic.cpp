@@ -1,4 +1,5 @@
 #include "AppLogic.h"
+#include "UiScale.h"
 
 #include <algorithm>
 #include <iostream>
@@ -148,7 +149,7 @@ static void renderShortcutsWindow(bool& open) {
     }
     ImGui::EndTable();
   };
-  ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_FirstUseEver);
+  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 31, 0), ImGuiCond_FirstUseEver);
   if (ImGui::Begin("Keyboard Shortcuts", &open, ImGuiWindowFlags_NoSavedSettings)) {
     ImGui::SeparatorText("Anywhere");
     table("##anywhere", kAnywhere, IM_COUNTOF(kAnywhere));
@@ -176,6 +177,10 @@ bool appFrame(AppState& state) {
       quit = true;
     }
   }
+
+  // View > Text Size, last frame: the style changes between frames.
+  static float requestedUiScale = 0.0f;
+  if (requestedUiScale > 0.0f) { setUiScale(requestedUiScale); requestedUiScale = 0.0f; }
 
   ImGuiIO& io = ImGui::GetIO();
   ImGui_ImplOpenGL3_NewFrame();
@@ -247,6 +252,23 @@ bool appFrame(AppState& state) {
       if (ImGui::MenuItem("Fit",        NAJA_SHORTCUT("0"))) EquipotentialView::fitView();
       if (ImGui::MenuItem("Show Hierarchy", "", EquipotentialView::showHierarchy()))
         EquipotentialView::setShowHierarchy(!EquipotentialView::showHierarchy());
+      // The size of the app's text and spacing, not the schematic's (its
+      // labels follow its zoom): setUiScale(), also --ui-scale and
+      // $NAJA_SCHEMATIC_UI_SCALE.
+      if (ImGui::BeginMenu("Text Size")) {
+        const float scale = uiScale();
+        if (ImGui::MenuItem("Larger", "", false, scale < kMaxUiScale)) requestedUiScale = scale * 1.25f;
+        if (ImGui::MenuItem("Smaller", "", false, scale > kMinUiScale)) requestedUiScale = scale / 1.25f;
+        if (ImGui::MenuItem("Reset", "", false, scale != 1.0f)) requestedUiScale = 1.0f;
+        float percent = scale * 100.0f;
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
+        // Applied on release: rescaling while dragging moves the slider
+        // under the mouse.
+        ImGui::SliderFloat("##uiscale", &percent, kMinUiScale * 100.0f, kMaxUiScale * 100.0f, "%.0f%%",
+                           ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemDeactivatedAfterEdit()) requestedUiScale = percent / 100.0f;
+        ImGui::EndMenu();
+      }
       // How the schematic is drawn (ViewOptions; also the host's
       // view_options push and the native --instance-label/--sink-rows/
       // --max-sinks/--group-by/--no-convergence-outline flags).
@@ -259,9 +281,9 @@ bool appFrame(AppState& state) {
         ImGui::EndMenu();
       }
       if (ImGui::BeginMenu("Fanout")) {
-        ImGui::SetNextItemWidth(120.0f);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
         ImGui::DragInt("Rows per sink column", &vo.sinkRows, 0.2f, 0, 1000, vo.sinkRows ? "%d" : "no limit");
-        ImGui::SetNextItemWidth(120.0f);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
         ImGui::DragInt("Sinks drawn per net", &vo.maxSinks, 0.2f, 0, 100000, vo.maxSinks ? "%d" : "all");
         ImGui::SeparatorText("Gather the others by");
         for (FanoutGroupBy g : { FanoutGroupBy::Model, FanoutGroupBy::Hierarchy, FanoutGroupBy::Role, FanoutGroupBy::Pin }) {
@@ -294,6 +316,26 @@ bool appFrame(AppState& state) {
   }
 
 #ifndef __EMSCRIPTEN__
+  // Dialog sizes are in font units, so the dialogs grow with the text (UI
+  // scale, or a bigger kBaseFontSizePx) instead of clipping their buttons,
+  // and never get wider than the window.
+  auto dialogWidth = [&io](float ems) {
+    const float em = ImGui::GetFontSize();
+    return std::max(em * 10, std::min(em * ems, io.DisplaySize.x - 2 * em));
+  };
+  auto linesHeight = [](int lines) {
+    return ImGui::GetTextLineHeight() * lines + ImGui::GetStyle().FramePadding.y * 2;
+  };
+  auto buttonWidth = [] { return ImGui::GetFontSize() * 7; };
+  // Put the small button labelled `label` on the current line if it fits
+  // there, else on the next one: a narrow window never pushes it out of reach.
+  auto sameLineIfFits = [](const char* label) {
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float w = ImGui::CalcTextSize(label, nullptr, true).x + st.FramePadding.x * 2;
+    const float right = ImGui::GetItemRectMax().x + st.ItemSpacing.x + w;
+    if (right <= ImGui::GetWindowPos().x + ImGui::GetWindowWidth() - st.WindowPadding.x) ImGui::SameLine();
+  };
+
   // Helper: split a text buffer into non-empty trimmed lines
   auto splitLines = [](const char* buf) {
     std::vector<std::string> out;
@@ -324,10 +366,10 @@ bool appFrame(AppState& state) {
 
   // ==== Open naja-if dialog ====
   if (snlDialogOpen) { ImGui::OpenPopup("Open naja-if"); snlDialogOpen = false; }
-  ImGui::SetNextWindowSize(ImVec2(540, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(dialogWidth(32), 0), ImGuiCond_Always);
   if (ImGui::BeginPopupModal("Open naja-if", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::Text("naja-if directory path:");
-    ImGui::SameLine();
+    sameLineIfFits("Browse...##snl");
     if (ImGui::SmallButton("Browse...##snl")) {
       auto dir = NativeFileDialog::pickDirectory("Select naja-if Directory");
       if (!dir.empty()) {
@@ -339,41 +381,41 @@ bool appFrame(AppState& state) {
     bool ok = ImGui::InputText("##snlpath", snlPathBuf, sizeof(snlPathBuf),
                                ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::Spacing();
-    if ((ImGui::Button("Open", ImVec2(120,0)) || ok) && snlPathBuf[0]) {
+    if ((ImGui::Button("Open", ImVec2(buttonWidth(),0)) || ok) && snlPathBuf[0]) {
       if (localProvider) { localProvider->loadSNL(snlPathBuf); reloadNetlist(state); }
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Cancel", ImVec2(buttonWidth(),0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
 
   // ==== Open Verilog dialog ====
   if (vrlDialogOpen) { ImGui::OpenPopup("Open Verilog"); vrlDialogOpen = false; }
-  ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(dialogWidth(33), 0), ImGuiCond_Always);
   if (ImGui::BeginPopupModal("Open Verilog", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::Text("Verilog source files (one path per line):");
-    ImGui::SameLine();
+    sameLineIfFits("Browse...##vrlsrc");
     if (ImGui::SmallButton("Browse...##vrlsrc")) {
       auto files = NativeFileDialog::pickFiles("Select Verilog Files", {"v"});
       appendPaths(vrlFilesBuf, sizeof(vrlFilesBuf), files);
     }
-    ImGui::InputTextMultiline("##vrlfiles", vrlFilesBuf, sizeof(vrlFilesBuf), ImVec2(-1, 120));
+    ImGui::InputTextMultiline("##vrlfiles", vrlFilesBuf, sizeof(vrlFilesBuf), ImVec2(-1, linesHeight(6)));
     ImGui::Spacing();
     ImGui::Text("Liberty files (optional, one path per line):");
-    ImGui::SameLine();
+    sameLineIfFits("Browse...##vrlliberty");
     if (ImGui::SmallButton("Browse...##vrlliberty")) {
       auto files = NativeFileDialog::pickFiles("Select Liberty Files", {"lib"});
       appendPaths(vrlLibertyBuf, sizeof(vrlLibertyBuf), files);
     }
-    ImGui::InputTextMultiline("##vrlliberty", vrlLibertyBuf, sizeof(vrlLibertyBuf), ImVec2(-1, 80));
+    ImGui::InputTextMultiline("##vrlliberty", vrlLibertyBuf, sizeof(vrlLibertyBuf), ImVec2(-1, linesHeight(4)));
     ImGui::Spacing();
     ImGui::Checkbox("Decode Yosys src attributes", &vrlYosysSrc);
     if (ImGui::IsItemHovered())
       ImGui::SetTooltip("For a Yosys-synthesized netlist: Show Sources then also\n"
                         "lists the RTL each gate came from");
     ImGui::Spacing();
-    if (ImGui::Button("Open", ImVec2(120,0)) && vrlFilesBuf[0]) {
+    if (ImGui::Button("Open", ImVec2(buttonWidth(),0)) && vrlFilesBuf[0]) {
       if (localProvider) {
         localProvider->loadVerilog(splitLines(vrlFilesBuf), splitLines(vrlLibertyBuf), vrlYosysSrc);
         reloadNetlist(state);
@@ -381,32 +423,32 @@ bool appFrame(AppState& state) {
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Cancel", ImVec2(buttonWidth(),0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
 
   // ==== Open SystemVerilog dialog ====
   if (svDialogOpen) { ImGui::OpenPopup("Open SystemVerilog"); svDialogOpen = false; }
-  ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(dialogWidth(33), 0), ImGuiCond_Always);
   if (ImGui::BeginPopupModal("Open SystemVerilog", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::Text("SV/V files or Flist path (one per line):");
-    ImGui::SameLine();
+    sameLineIfFits("Browse SV...");
     if (ImGui::SmallButton("Browse SV...")) {
       auto files = NativeFileDialog::pickFiles("Select SystemVerilog Files", {"sv", "v"});
       appendPaths(svFilesBuf, sizeof(svFilesBuf), files);
     }
-    ImGui::SameLine();
+    sameLineIfFits("Browse Flist...");
     if (ImGui::SmallButton("Browse Flist...")) {
       auto files = NativeFileDialog::pickFiles("Select Flist");
       appendPaths(svFilesBuf, sizeof(svFilesBuf), files);
     }
-    ImGui::InputTextMultiline("##svfiles", svFilesBuf, sizeof(svFilesBuf), ImVec2(-1, 140));
+    ImGui::InputTextMultiline("##svfiles", svFilesBuf, sizeof(svFilesBuf), ImVec2(-1, linesHeight(7)));
     ImGui::Spacing();
     ImGui::Text("Top module (optional -- overrides auto-detection):");
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("##svtop", svTopBuf, sizeof(svTopBuf));
     ImGui::Spacing();
-    if (ImGui::Button("Open", ImVec2(120,0)) && svFilesBuf[0]) {
+    if (ImGui::Button("Open", ImVec2(buttonWidth(),0)) && svFilesBuf[0]) {
       if (localProvider) {
         localProvider->loadSystemVerilog(splitLines(svFilesBuf), svTopBuf);
         reloadNetlist(state);
@@ -414,28 +456,28 @@ bool appFrame(AppState& state) {
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Cancel", ImVec2(buttonWidth(),0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
 
   // ==== Open VHDL dialog ====
   if (vhdlDialogOpen) { ImGui::OpenPopup("Open VHDL"); vhdlDialogOpen = false; }
-  ImGui::SetNextWindowSize(ImVec2(560, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(dialogWidth(33), 0), ImGuiCond_Always);
   if (ImGui::BeginPopupModal("Open VHDL", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
     ImGui::Text("VHDL files, in any order (one per line):");
-    ImGui::SameLine();
+    sameLineIfFits("Browse...");
     if (ImGui::SmallButton("Browse...")) {
       auto files = NativeFileDialog::pickFiles("Select VHDL Files", {"vhd", "vhdl"});
       appendPaths(vhdlFilesBuf, sizeof(vhdlFilesBuf), files);
     }
-    ImGui::InputTextMultiline("##vhdlfiles", vhdlFilesBuf, sizeof(vhdlFilesBuf), ImVec2(-1, 140));
+    ImGui::InputTextMultiline("##vhdlfiles", vhdlFilesBuf, sizeof(vhdlFilesBuf), ImVec2(-1, linesHeight(7)));
     ImGui::Spacing();
     ImGui::Text("Top entity (optional -- else the unique uninstantiated one):");
     ImGui::SetNextItemWidth(-1);
     ImGui::InputText("##vhdltop", vhdlTopBuf, sizeof(vhdlTopBuf));
     ImGui::TextDisabled("naja's VHDL frontend is experimental (bit/bit_vector subset).");
     ImGui::Spacing();
-    if (ImGui::Button("Open", ImVec2(120,0)) && vhdlFilesBuf[0]) {
+    if (ImGui::Button("Open", ImVec2(buttonWidth(),0)) && vhdlFilesBuf[0]) {
       if (localProvider) {
         localProvider->loadVHDL(splitLines(vhdlFilesBuf), vhdlTopBuf);
         reloadNetlist(state);
@@ -443,7 +485,7 @@ bool appFrame(AppState& state) {
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
-    if (ImGui::Button("Cancel", ImVec2(120,0))) ImGui::CloseCurrentPopup();
+    if (ImGui::Button("Cancel", ImVec2(buttonWidth(),0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
 #endif
@@ -624,7 +666,7 @@ bool appFrame(AppState& state) {
 
   // === About modal ===
   if (aboutOpen) { ImGui::OpenPopup("About naja-schematic"); aboutOpen = false; }
-  ImGui::SetNextWindowSize(ImVec2(420, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * 25, 0), ImGuiCond_Always);
   if (ImGui::BeginPopupModal("About naja-schematic", nullptr,
       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
 
@@ -666,7 +708,7 @@ bool appFrame(AppState& state) {
     ImGui::Spacing();
 
     ImGui::SetCursorPosX((ImGui::GetWindowWidth() - 80.0f) * 0.5f);
-    if (ImGui::Button("Close", ImVec2(80, 0)))
+    if (ImGui::Button("Close", ImVec2(ImGui::GetFontSize() * 5, 0)))
       ImGui::CloseCurrentPopup();
 
     ImGui::EndPopup();
