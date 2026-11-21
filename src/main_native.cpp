@@ -13,6 +13,7 @@
 #include <string>
 
 #include "AppLogic.h"
+#include "UiScale.h"
 #include "HeadlessExport.h"
 #include "GUIData.h"
 #include "LocalSNLProvider.h"
@@ -21,7 +22,7 @@
 
 int main(int argc, char* argv[]) {
   // CLI usage: naja-schematic-standalone [<design>...] [--liberty <path>]... [--diagnosis <path>]
-  //                                     [--style <path>]
+  //                                     [--style <path>] [--ui-scale S]
   //                                     [--source-root <dir>]... [--source-map FROM=TO]...
   //                                     [--yosys-src] [--top <name>]
   //                                     [--instance-label name|model|both]
@@ -40,6 +41,9 @@ int main(int argc, char* argv[]) {
   // caller (a script, or naja-agent's skill, after an edit-check cycle) can
   // open a fully annotated view in one command instead of requiring a human
   // to click through File > Open .../Load Diagnosis JSON... by hand.
+  // --ui-scale multiplies the size of the app's text and spacing, for large
+  // displays (default $NAJA_SCHEMATIC_UI_SCALE, else 1; also View > Text
+  // Size; not the schematic's labels, nor exports);
   // --style pre-loads a style_response-shaped JSON (colors, widths, labels
   // on nets, instances and pins; see StyleStore.h), kept in --export too;
   // --yosys-src (.v only) decodes Yosys (* src *) attributes into source
@@ -66,6 +70,7 @@ int main(int argc, char* argv[]) {
   std::string top;
   std::string diagnosisPath;
   std::string stylePath;
+  float uiScaleArg = 0.0f;  // --ui-scale; 0: not given
   std::vector<std::string> libertyPaths;
   bool yosysSrc = false;
   HeadlessExportOptions exportOptions;
@@ -121,6 +126,14 @@ int main(int argc, char* argv[]) {
       (arg == "--trace" ? exportOptions.traces : exportOptions.equipotentials).push_back(*spec);
     } else if (arg == "--diagnosis" && i + 1 < argc) {
       diagnosisPath = argv[++i];
+    } else if (arg == "--ui-scale" && i + 1 < argc) {
+      const std::string text = argv[++i];
+      char* end = nullptr;
+      uiScaleArg = std::strtof(text.c_str(), &end);
+      if (end == text.c_str() || *end || !(uiScaleArg > 0.0f)) {
+        std::cerr << "--ui-scale expects a positive number, got " << text << "\n";
+        return 1;
+      }
     } else if (arg == "--style" && i + 1 < argc) {
       stylePath = argv[++i];
     } else if (arg == "--liberty" && i + 1 < argc) {
@@ -227,6 +240,7 @@ int main(int argc, char* argv[]) {
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   setupFonts();
+  setUiScale(uiScaleArg > 0.0f ? uiScaleArg : initialUiScale());
   ImGui_ImplSDL2_InitForOpenGL(state.window, state.glContext);
   ImGui_ImplOpenGL3_Init("#version 330 core");
 

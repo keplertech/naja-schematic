@@ -101,7 +101,9 @@ since `LocalSNLProvider::loadSystemVerilog()`/`SNLSVConstructor` and
 silently ignoring it), a
 diagnosis JSON to pre-load (`--diagnosis <path>` — see
 `loadDiagnosisFile()` in `AppLogic.cpp`), a style JSON to pre-load
-(`--style <path>`, `loadStyleFile()`; see `style_response`), and/or directories to look up
+(`--style <path>`, `loadStyleFile()`; see `style_response`), a UI scale
+(`--ui-scale S`, default `$NAJA_SCHEMATIC_UI_SCALE`; see `UiScale` under
+Core modules), and/or directories to look up
 relative source file references in (`--source-root <dir>`, repeatable; see
 "Source references" under Wire protocol), path prefixes to rewrite for
 files recorded on another machine (`--source-map FROM=TO`, repeatable),
@@ -1196,6 +1198,16 @@ path the host read, used by the native "Open in Editor".
   so it never overlaps a box, another name or a wire. The view measures it
   with its font (`instanceNameWidth()`); past `kNameMaxW` it's shortened in
   the middle (`shortenMiddle()`), and layout and drawing use the same text.
+- **`UiScale`** — `setUiScale()`: the size of the app's own text and
+  spacing (`style.FontScaleMain` + `ScaleAllSizes()` from the default
+  style, never compounded; fonts are dynamic, so text stays crisp). View >
+  Text Size (applied at the start of the next frame), native
+  `--ui-scale`, `$NAJA_SCHEMATIC_UI_SCALE`. Schematic labels are drawn at
+  explicit world sizes, so they ignore it (their size follows the zoom), as
+  do exports. UI sizes (dialogs, popups, swatches) are written in font
+  units (`ImGui::GetFontSize()`), never pixels, so they grow with it;
+  `sameLineIfFits()` in `AppLogic.cpp` wraps a dialog's Browse buttons
+  rather than pushing them out of reach. `tests/UiScaleTest.cpp`.
 - **`ViewOptions`** — global (static) drawing options: instance label
   (name / model under the box / both), `sinkRows`, `maxSinks`,
   `groupBy`. Read by `EquipotentialView` while building shapes, so they
