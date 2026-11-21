@@ -1,0 +1,17 @@
+# Monitoring only for now: coverage is reported on PRs but never fails them.
+coverage:
+  status:
+    project:
+      default:
+        informational: true
+    patch:
+      default:
+        informational: true
+
+ignore:
+  - "thirdparty/**"
+  - "tests/**"
+
+comment:
+  layout: "diff, flags, files"
+  require_changes: true

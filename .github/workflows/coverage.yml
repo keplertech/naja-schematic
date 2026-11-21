@@ -1,0 +1,55 @@
+name: Coverage
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -yq
+          sudo apt-get install -yq --no-install-recommends \
+            ninja-build pkg-config \
+            bison flex libfl-dev \
+            libboost-dev capnproto libcapnp-dev libtbb-dev \
+            libsdl2-dev libgl1-mesa-dev libglu1-mesa-dev \
+            python3-dev zenity gcovr
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-cov -G Ninja -DCMAKE_BUILD_TYPE=Debug
+          -DNAJA_SCHEMATIC_COVERAGE=ON
+
+      - name: Build tests
+        run: >
+          cmake --build build-cov --parallel "$(nproc)"
+          --target naja-schematic-tests naja-schematic-provider-tests
+
+      - name: Run tests
+        working-directory: build-cov
+        run: ctest --output-on-failure
+
+      - name: Coverage report
+        run: |
+          gcovr --root . --object-directory build-cov \
+            --filter 'src/' \
+            --cobertura coverage.xml --print-summary
+
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          flags: cpp
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
