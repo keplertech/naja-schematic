@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <unordered_map>
 // "Open in Editor": native POSIX hosts only. The browser's files aren't on
@@ -24,6 +25,7 @@
 #include "Console.h"
 #include "INetlistProvider.h"
 #include "SourceStore.h"
+#include "Theme.h"
 #include "VerilogLanguage.h"
 
 namespace {
@@ -57,7 +59,6 @@ TextEditor& editor() {
     TextEditor t;
     t.SetReadOnlyEnabled(true);
     t.SetLanguage(verilogLanguage());
-    t.SetPalette(TextEditor::GetDarkPalette());
     t.SetShowCurrentLineHighlightEnabled(false);
     t.SetShowWhitespacesEnabled(false);
     t.SetShowMatchingBrackets(true);
@@ -299,6 +300,12 @@ void renderFile() {
                        "lines may be off. Load the design again to update them.");
   }
   if (g_font) ImGui::PushFont(g_font, 0.0f);
+  // The editor's own palette, following the theme's panels.
+  static std::optional<bool> paletteLight;
+  if (paletteLight != theme().lightPanels) {
+    paletteLight = theme().lightPanels;
+    editor().SetPalette(*paletteLight ? TextEditor::GetLightPalette() : TextEditor::GetDarkPalette());
+  }
   editor().Render("##SourceText");
   if (g_font) ImGui::PopFont();
 }

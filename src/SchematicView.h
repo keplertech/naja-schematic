@@ -6,6 +6,7 @@
 #include "Types.h"   // ensures InstanceShape, Port, NetWire are known
 #include "SchematicLayout.h"
 #include "SchematicPainter.h"
+#include "Theme.h"
 
 // World width of an instance name drawn with the current ImGui font at
 // SchematicLayout::kNameFontSize: what the layout makes room for.
@@ -123,6 +124,10 @@ public:
     // "more pins" dots of a partial box and the hollow stubs of open pins,
     // which only mean something to a viewer's user (clicks).
     bool hideUiGlyphs = false;
+    // The colors it's drawn in (see Theme.h): paper by default, and on the
+    // export copy whatever the theme; EquipotentialView sets the theme's on
+    // the view it shows.
+    SchematicPalette colors;
 
     // One row of an export's legend (ViewOptions' legend): a net color and
     // what it stands for -- a visible trace's label, or a host style's

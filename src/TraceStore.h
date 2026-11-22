@@ -48,8 +48,9 @@ class TraceStore {
     static void setVisible(int id, bool visible);
     // Gives the trace a color of the user's choosing (alpha forced opaque:
     // a hidden trace fades by alpha). Refused, returning false, for a color
-    // too close to the convergence color, which must stay unambiguous, or
-    // to the white canvas, where it wouldn't show.
+    // close to black or to white: one is the convergence color, which must
+    // stay unambiguous, the other the canvas -- either way round, depending
+    // on the theme (see Theme.h).
     static bool setColor(int id, ImU32 color);
     // Back to the trace's palette color.
     static void resetColor(int id);

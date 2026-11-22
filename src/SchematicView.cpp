@@ -73,42 +73,34 @@ constexpr float kMinBoundaryPortHalfH  = 3.0f;
 constexpr float kBoundaryPortBodyHalfHs = 2.0f;
 constexpr float kBoundaryPortLabelGap   = 4.0f;
 
-// Near-monochrome palette: every instance shares the same flat
-// neutral "paper" fill rather than an arbitrary per-category color, so color
-// stays reserved for diagnosis/selection highlighting rather than decorating
-// every box. The canvas itself is the same convention taken one step
-// further -- a plain white sheet rather than a dark viewport, so the
-// near-black lines/fills above read as ink on paper instead of needing to
-// fight a dark backdrop.
-constexpr ImU32 kCanvasBgColor      = IM_COL32(255, 255, 255, 255);
-constexpr ImU32 kInstanceFillColor  = IM_COL32(214, 216, 220, 255);
-constexpr ImU32 kInstanceLineColor  = IM_COL32(35, 35, 38, 235);
-constexpr ImU32 kPinLineColor       = IM_COL32(40, 40, 40, 235);
-constexpr ImU32 kPinLabelColor      = IM_COL32(45, 45, 50, 235);
-constexpr ImU32 kInstanceNameColor  = IM_COL32(30, 40, 90, 235);
-constexpr ImU32 kInstanceModelColor = IM_COL32(95, 95, 110, 235);
+// Near-monochrome palette (Theme.h's SchematicPalette): every instance
+// shares the same flat neutral fill rather than an arbitrary per-category
+// color, so color stays reserved for diagnosis/selection highlighting rather
+// than decorating every box. The palette is the drawing view's: set by
+// SchematicView::render() for its duration.
+const SchematicPalette* g_palette = nullptr;
+const SchematicPalette& pal() { return g_palette ? *g_palette : paperPalette(); }
+struct PaletteScope {
+    const SchematicPalette* saved = g_palette;
+    explicit PaletteScope(const SchematicPalette& p) { g_palette = &p; }
+    ~PaletteScope() { g_palette = saved; }
+    PaletteScope(const PaletteScope&) = delete;
+    PaletteScope& operator=(const PaletteScope&) = delete;
+};
 // World offset of each box drawn behind a fanout summary (fits in kRowSpacing's
 // room under it: kRowSpacing - kNameH = 10).
 constexpr float kSummaryStackStep   = 3.0f;
 // World-space radius of a gate's negation bubble (NAND/NOR/XNOR/INV).
 constexpr float kBubbleR = 4.0f;
-// Top-level design ports get their own tint so they can't be mistaken for an
-// instance pin or a small instance box. Green on purpose: diagnosis severities
-// use red/amber/blue (DiagnosisStore.cpp), so it doesn't read as a finding.
-constexpr ImU32 kBoundaryPortFillColor = IM_COL32(196, 232, 204, 255);
-constexpr ImU32 kBoundaryPortLineColor = IM_COL32(28, 110, 60, 255);
-// Interaction feedback, not a finding: the pin under the cursor, and an open
-// pin whose net is loading. Blue/violet stay clear of the diagnosis
+// Top-level design ports get their own tint (pal().port*) so they can't be
+// mistaken for an instance pin or a small instance box. Interaction feedback
+// (pal().hover, pending), not a finding, stays clear of the diagnosis
 // red/amber/blue-ish severities by being brighter and used only transiently.
-constexpr ImU32 kPinHoverColor   = IM_COL32(20, 110, 235, 255);
-constexpr ImU32 kPinPendingColor = IM_COL32(150, 90, 220, 255);
 // The selected instance (SelectionStore) gets an outline just outside its
-// box, the selected net a halo around its wires, in the same interaction
-// blue as a hovered pin.
-constexpr ImU32 kSelectionColor = IM_COL32(20, 110, 235, 255);
+// box, the selected net a halo around its wires, in pal().selection.
 void addSelectionOutline(SchematicPainter* dl, ImVec2 rmin, ImVec2 rmax) {
     dl->AddRect(ImVec2(rmin.x - 4.0f, rmin.y - 4.0f), ImVec2(rmax.x + 4.0f, rmax.y + 4.0f),
-                kSelectionColor, 2.0f, 0, 2.5f);
+                pal().selection, 2.0f, 0, 2.5f);
 }
 // Open-pin stub circle (see Port::open), world-space "1x zoom" radius.
 constexpr float kOpenPinBaseR = 3.5f;
@@ -210,7 +202,7 @@ void fillAndStrokeBody(SchematicPainter* dl, std::vector<ImVec2> pts,
     pts.erase(std::unique(pts.begin(), pts.end(), same), pts.end());
     while (pts.size() > 1 && same(pts.front(), pts.back())) pts.pop_back();
     dl->AddConcavePolyFilled(pts.data(), int(pts.size()), fillColor);
-    dl->AddPolyline(pts.data(), int(pts.size()), kInstanceLineColor, 1.25f, ImDrawFlags_Closed);
+    dl->AddPolyline(pts.data(), int(pts.size()), pal().instanceLine, 1.25f, ImDrawFlags_Closed);
     if (diagOutline != 0)
         dl->AddPolyline(pts.data(), int(pts.size()), diagOutline, diagThickness, ImDrawFlags_Closed);
 }
@@ -220,7 +212,7 @@ void fillAndStrokeBody(SchematicPainter* dl, std::vector<ImVec2> pts,
 void drawNegationBubble(SchematicPainter* dl, ImVec2 tip, float radius, ImU32 fillColor) {
     ImVec2 center(tip.x + radius, tip.y);
     dl->AddCircleFilled(center, radius, fillColor);
-    dl->AddCircle(center, radius, kInstanceLineColor, 16, 1.25f);
+    dl->AddCircle(center, radius, pal().instanceLine, 16, 1.25f);
 }
 
 // Draws a dashed closed polygon in screen space.
@@ -321,17 +313,17 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
         const bool hovered = !sv.exporting && p.id == sv.hoveredPortId;
         const bool pending = !sv.exporting && p.pending;
         // A diagnosis color wins over the host style's (StyleStore).
-        ImU32 portColor = hovered ? kPinHoverColor
-                        : pending ? kPinPendingColor
+        ImU32 portColor = hovered ? pal().hover
+                        : pending ? pal().pending
                         : p.color != 0 ? p.color
-                        : p.styleColor != 0 ? p.styleColor : kPinLineColor;
+                        : p.styleColor != 0 ? p.styleColor : pal().pinLine;
         float tickThickness = p.styleWidth > 0.0f ? std::max(1.0f, p.styleWidth * sv.transform.scale)
                                                   : std::max(1.0f, 1.5f * sv.transform.scale);
         if (hovered) tickThickness *= 2.0f;
 
         ImVec2 tickEnd = ImVec2(screenP.x + (isLeft ? -tickLen : tickLen), screenP.y);
         if (hovered)
-            dl->AddCircleFilled(tickEnd, std::max(6.0f, tickLen * 0.9f), IM_COL32(20, 110, 235, 45));
+            dl->AddCircleFilled(tickEnd, std::max(6.0f, tickLen * 0.9f), pal().hoverHalo);
         dl->AddLine(screenP, tickEnd, portColor, tickThickness);
         // An open pin (net not in the view yet) ends in a hollow circle, a
         // loading one in a filled circle: "click here to see more" without
@@ -339,7 +331,7 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
         if (p.open && !sv.hideUiGlyphs) {
             float r = std::max(kMinOpenPinR, kOpenPinBaseR * sv.transform.scale);
             ImVec2 c(tickEnd.x + (isLeft ? -r : r), tickEnd.y);
-            dl->AddCircleFilled(c, r, pending ? portColor : kCanvasBgColor);
+            dl->AddCircleFilled(c, r, pending ? portColor : pal().canvas);
             dl->AddCircle(c, r, portColor, 0, std::max(1.0f, tickThickness * 0.8f));
         }
         // Not connected: the schematic no-connect cross on the stub's end.
@@ -388,10 +380,10 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
             lblPos = isLeft ? ImVec2(tickEnd.x - textSize.x, screenP.y - textSize.y - 1.0f)
                             : ImVec2(tickEnd.x, screenP.y - textSize.y - 1.0f);
         // On a styled fill, inside a box, in whichever ink reads on it.
-        const ImU32 labelColor = hovered ? kPinHoverColor
+        const ImU32 labelColor = hovered ? pal().hover
                                : namesInside && inst.fill != 0
-                                   ? contrastingTextColor(fillOf(inst, kInstanceFillColor))
-                                   : kPinLabelColor;
+                                   ? contrastingTextColor(fillOf(inst, pal().instanceFill))
+                                   : pal().pinLabel;
         dl->AddText(font, fontSize, lblPos, labelColor, label.c_str());
     }
 }
@@ -501,13 +493,13 @@ static void drawInstanceName(SchematicPainter* dl, const InstanceShape& inst,
     if (!shown.empty()) {
         ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, shown.c_str());
         dl->AddText(font, fontSize, ImVec2(rmin.x, rmin.y - ts.y - 2.0f * sv.transform.scale),
-                    kInstanceNameColor, shown.c_str());
+                    pal().instanceName, shown.c_str());
     }
     // The cell model, in the row the layout reserved under the symbol.
     const std::string model = SchematicLayout::shownModel(inst, instanceNameWidth);
     if (!model.empty())
         dl->AddText(font, fontSize, ImVec2(rmin.x, rmin.y + (inst.h + 2.0f) * sv.transform.scale),
-                    kInstanceModelColor, model.c_str());
+                    pal().instanceModel, model.c_str());
 }
 
 // ---------------------------------------------------------------------------
@@ -526,29 +518,29 @@ static void drawGenericInstance(SchematicPainter* dl, const InstanceShape& inst,
             for (float k : { 2.0f, 1.0f }) {
                 const ImVec2 d(kSummaryStackStep * k * sv.transform.scale, kSummaryStackStep * k * sv.transform.scale);
                 const ImVec2 a(rmin.x + d.x, rmin.y + d.y), b(rmax.x + d.x, rmax.y + d.y);
-                dl->AddRectFilled(a, b, fillOf(inst, kInstanceFillColor), 0.0f);
-                dl->AddRect(a, b, kInstanceLineColor, 0.0f, 0, 1.0f);
+                dl->AddRectFilled(a, b, fillOf(inst, pal().instanceFill), 0.0f);
+                dl->AddRect(a, b, pal().instanceLine, 0.0f, 0, 1.0f);
             }
         }
         // Flat fill: a neutral "paper" tone shared by every
         // box, not a per-category color -- color stays reserved for
         // diagnosis/selection highlighting rather than decorating every
         // instance. Sharp corners (no rounding).
-        dl->AddRectFilled(rmin, rmax, fillOf(inst, kInstanceFillColor), 0.0f);
+        dl->AddRectFilled(rmin, rmax, fillOf(inst, pal().instanceFill), 0.0f);
 
         if (inst.partialInterface)
             // Dashing alone (not a color) signals "only a
             // subset of the interface is shown" -- same ink as a fully
             // expanded box's solid border, since color stays reserved for
             // diagnosis/selection highlighting.
-            addDashedRect(dl, rmin, rmax, kInstanceLineColor, 1.25f);
+            addDashedRect(dl, rmin, rmax, pal().instanceLine, 1.25f);
         else
-            dl->AddRect(rmin, rmax, kInstanceLineColor, 0.0f, 0, 1.25f);
+            dl->AddRect(rmin, rmax, pal().instanceLine, 0.0f, 0, 1.25f);
 
         // Diagnosis outline drawn on top so it stays visible regardless of
         // the partialInterface dashed border above.
         if (inst.diagOutline != 0)
-            dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, outlineThickness(inst, sv.transform.scale, 3.5f));
+            dl->AddRect(rmin, rmax, pal().ink(inst.diagOutline), 0.0f, 0, outlineThickness(inst, sv.transform.scale, 3.5f));
         if (inst.selected) addSelectionOutline(dl, rmin, rmax);
 
         drawInstanceName(dl, inst, sv, rmin);
@@ -560,9 +552,9 @@ static void drawGenericInstance(SchematicPainter* dl, const InstanceShape& inst,
                 const float spacing = 7.0f;
                 const float dotY    = rmax.y - dotR - 5.0f;
                 const float dotX    = (rmin.x + rmax.x) * 0.5f;
-                dl->AddCircleFilled({dotX - spacing, dotY}, dotR, kInstanceLineColor);
-                dl->AddCircleFilled({dotX,           dotY}, dotR, kInstanceLineColor);
-                dl->AddCircleFilled({dotX + spacing, dotY}, dotR, kInstanceLineColor);
+                dl->AddCircleFilled({dotX - spacing, dotY}, dotR, pal().instanceLine);
+                dl->AddCircleFilled({dotX,           dotY}, dotR, pal().instanceLine);
+                dl->AddCircleFilled({dotX + spacing, dotY}, dotR, pal().instanceLine);
             }
         }
 
@@ -610,7 +602,7 @@ static void finishGate(SchematicPainter* dl, const InstanceShape& inst, const Sc
     if (negated) {
         float r = kBubbleR * sv.transform.scale;
         drawNegationBubble(dl, ImVec2(bodyRight(rmax, true, sv.transform.scale), (rmin.y + rmax.y) * 0.5f),
-                           r, fillOf(inst, kInstanceFillColor));
+                           r, fillOf(inst, pal().instanceFill));
     }
     if (inst.selected) addSelectionOutline(dl, rmin, rmax);
     drawInstanceName(dl, inst, sv, rmin);
@@ -633,7 +625,7 @@ static void drawAndLikeInstance(SchematicPainter* dl, const InstanceShape& inst,
     pts.push_back(ImVec2(rmin.x, rmin.y));
     appendArcPoints(pts, ImVec2(xm, cy), r, -1.5707963f, 1.5707963f, 24);
     pts.push_back(ImVec2(rmin.x, rmax.y));
-    fillAndStrokeBody(dl, pts, fillOf(inst, kInstanceFillColor), inst.diagOutline,
+    fillAndStrokeBody(dl, pts, fillOf(inst, pal().instanceFill), pal().ink(inst.diagOutline),
                       outlineThickness(inst, sv.transform.scale, 3.0f));
     finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
 }
@@ -662,7 +654,7 @@ static void drawOrLikeInstance(SchematicPainter* dl, const InstanceShape& inst,
     appendQuadBezierPoints(pts, tip, ImVec2(x0 + sw * 0.6f, rmax.y), ImVec2(x0, rmax.y), 16);
     appendQuadBezierPoints(pts, ImVec2(x0, rmax.y), ImVec2(x0 + 2.0f * depth, cy), ImVec2(x0, rmin.y), 12);
     pts.pop_back(); // closes back onto the first point
-    fillAndStrokeBody(dl, pts, fillOf(inst, kInstanceFillColor), inst.diagOutline,
+    fillAndStrokeBody(dl, pts, fillOf(inst, pal().instanceFill), pal().ink(inst.diagOutline),
                       outlineThickness(inst, sv.transform.scale, 3.0f));
 
     // The back curve at height y (a quadratic whose control point sits at
@@ -675,13 +667,13 @@ static void drawOrLikeInstance(SchematicPainter* dl, const InstanceShape& inst,
     for (const auto& p : inst.ports) {
         if (p.lx >= 0.0f) continue;
         ImVec2 at = sv.worldToScreen(sv.portWorldPos(inst, p), canvasPos, canvasSize);
-        dl->AddLine(at, ImVec2(backX(x0, at.y), at.y), kPinLineColor, thickness);
+        dl->AddLine(at, ImVec2(backX(x0, at.y), at.y), pal().pinLine, thickness);
     }
     if (exclusive) {
         std::vector<ImVec2> arc;
         appendQuadBezierPoints(arc, ImVec2(rmin.x, rmax.y), ImVec2(rmin.x + 2.0f * depth, cy),
                                ImVec2(rmin.x, rmin.y), 12);
-        dl->AddPolyline(arc.data(), int(arc.size()), kInstanceLineColor, 1.25f, 0);
+        dl->AddPolyline(arc.data(), int(arc.size()), pal().instanceLine, 1.25f, 0);
     }
     finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
 }
@@ -698,7 +690,7 @@ static void drawBufLikeInstance(SchematicPainter* dl, const InstanceShape& inst,
     ImVec2 mr(bodyRight(rmax, negated, sv.transform.scale), (rmin.y + rmax.y) * 0.5f);
 
     std::vector<ImVec2> pts{ tl, mr, bl };
-    fillAndStrokeBody(dl, pts, fillOf(inst, kInstanceFillColor), inst.diagOutline,
+    fillAndStrokeBody(dl, pts, fillOf(inst, pal().instanceFill), pal().ink(inst.diagOutline),
                       outlineThickness(inst, sv.transform.scale, 3.0f));
     if (isAssign) {
         float fs = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
@@ -706,7 +698,7 @@ static void drawBufLikeInstance(SchematicPainter* dl, const InstanceShape& inst,
             ImFont* font = ImGui::GetFont();
             ImVec2 ts = font->CalcTextSizeA(fs, FLT_MAX, 0.0f, "=");
             dl->AddText(font, fs, ImVec2(tl.x + (mr.x - tl.x) * 0.3f - ts.x * 0.5f, mr.y - ts.y * 0.5f),
-                        contrastingTextColor(fillOf(inst, kInstanceFillColor), 200), "=");
+                        contrastingTextColor(fillOf(inst, pal().instanceFill), 200), "=");
         }
     }
     finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, negated);
@@ -739,8 +731,8 @@ static void drawTieInstance(SchematicPainter* dl, const InstanceShape& inst,
             }
         }
     };
-    if (inst.diagOutline != 0) stroke(inst.diagOutline, outlineThickness(inst, sv.transform.scale, 3.0f));
-    stroke(kInstanceLineColor, std::max(1.25f, 1.5f * sv.transform.scale));
+    if (inst.diagOutline != 0) stroke(pal().ink(inst.diagOutline), outlineThickness(inst, sv.transform.scale, 3.0f));
+    stroke(pal().instanceLine, std::max(1.25f, 1.5f * sv.transform.scale));
     finishGate(dl, inst, sv, canvasPos, canvasSize, rmin, rmax, /*negated=*/false);
 }
 
@@ -760,8 +752,8 @@ static void drawDffInstance(SchematicPainter* dl, const InstanceShape& inst,
         ImVec2 top  = sv.worldToScreen(ImVec2(inst.x,               world.y - notchH * 0.5f), canvasPos, canvasSize);
         ImVec2 bot  = sv.worldToScreen(ImVec2(inst.x,               world.y + notchH * 0.5f), canvasPos, canvasSize);
         ImVec2 apex = sv.worldToScreen(ImVec2(inst.x + notchH * 0.6f, world.y),               canvasPos, canvasSize);
-        dl->AddLine(top, apex, kInstanceLineColor, 1.25f);
-        dl->AddLine(apex, bot, kInstanceLineColor, 1.25f);
+        dl->AddLine(top, apex, pal().instanceLine, 1.25f);
+        dl->AddLine(apex, bot, pal().instanceLine, 1.25f);
         break; // one clock pin is enough to draw the notch once
     }
 }
@@ -782,13 +774,13 @@ static void drawMuxInstance(SchematicPainter* dl, const InstanceShape& inst,
     std::vector<ImVec2> pts = {
         rmin, ImVec2(rmax.x, rmin.y + slant), ImVec2(rmax.x, rmax.y - slant), ImVec2(rmin.x, rmax.y),
     };
-    dl->AddConvexPolyFilled(pts.data(), int(pts.size()), fillOf(inst, kInstanceFillColor));
+    dl->AddConvexPolyFilled(pts.data(), int(pts.size()), fillOf(inst, pal().instanceFill));
     if (inst.partialInterface)
-        addDashedPolygon(dl, pts, kInstanceLineColor, 1.25f);
+        addDashedPolygon(dl, pts, pal().instanceLine, 1.25f);
     else
-        dl->AddPolyline(pts.data(), int(pts.size()), kInstanceLineColor, 1.25f, ImDrawFlags_Closed);
+        dl->AddPolyline(pts.data(), int(pts.size()), pal().instanceLine, 1.25f, ImDrawFlags_Closed);
     if (inst.diagOutline != 0)
-        dl->AddPolyline(pts.data(), int(pts.size()), inst.diagOutline,
+        dl->AddPolyline(pts.data(), int(pts.size()), pal().ink(inst.diagOutline),
                         outlineThickness(inst, sv.transform.scale, 3.5f), ImDrawFlags_Closed);
     if (inst.selected) addSelectionOutline(dl, rmin, rmax);
     drawInstanceName(dl, inst, sv, rmin);
@@ -823,11 +815,11 @@ static void drawOperatorInstance(SchematicPainter* dl, const InstanceShape& inst
     sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
     const ImVec2 c((rmin.x + rmax.x) * 0.5f, (rmin.y + rmax.y) * 0.5f);
     const float r = 0.5f * SchematicLayout::kOperatorGlyphW * 0.8f * sv.transform.scale;
-    dl->AddCircle(c, r, kInstanceLineColor, 24, 1.25f);
+    dl->AddCircle(c, r, pal().instanceLine, 24, 1.25f);
     const char* glyph = operatorGlyph(inst.primitiveType);
     ImFont* font = ImGui::GetFont();
     ImVec2 ts = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, glyph);
-    dl->AddText(font, fontSize, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), kPinLabelColor, glyph);
+    dl->AddText(font, fontSize, ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f), pal().pinLabel, glyph);
 }
 
 // ---------------------------------------------------------------------------
@@ -858,13 +850,13 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
 
     const bool hovered = !sv.exporting && p.id == sv.hoveredPortId;
     const bool pending = !sv.exporting && p.pending;
-    ImU32 outline = hovered ? kPinHoverColor : pending ? kPinPendingColor
+    ImU32 outline = hovered ? pal().hover : pending ? pal().pending
                   : p.color != 0 ? p.color
-                  : p.styleColor != 0 ? p.styleColor : kBoundaryPortLineColor;
+                  : p.styleColor != 0 ? p.styleColor : pal().portLine;
     float lineThickness = p.styleWidth > 0.0f ? std::max(1.0f, p.styleWidth * sv.transform.scale)
                                               : std::max(1.0f, 1.25f * sv.transform.scale);
     const std::string& shownName = p.label.empty() ? p.name : p.label;
-    const ImU32 flagFill = fillOf(inst, kBoundaryPortFillColor);
+    const ImU32 flagFill = fillOf(inst, pal().portFill);
     if (hovered) lineThickness *= 2.0f;
 
     // Name shown whenever instance names are (same visibility threshold),
@@ -900,7 +892,7 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
     if (p.open && !sv.hideUiGlyphs) {
         const float r = std::max(kMinOpenPinR, kOpenPinBaseR * sv.transform.scale);
         const ImVec2 c(anchor.x + (p.isInput ? r : -r), anchor.y);
-        dl->AddCircleFilled(c, r, pending ? outline : kCanvasBgColor);
+        dl->AddCircleFilled(c, r, pending ? outline : pal().canvas);
         dl->AddCircle(c, r, outline, 0, std::max(1.0f, lineThickness * 0.8f));
     }
     // Not connected: a no-connect cross where its wire would start.
@@ -911,14 +903,14 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
         dl->AddLine(ImVec2(c.x - r, c.y + r), ImVec2(c.x + r, c.y - r), outline, lineThickness);
     }
     if (inst.diagOutline != 0)
-        dl->AddPolyline(pts, 5, inst.diagOutline, outlineThickness(inst, sv.transform.scale, 3.0f),
+        dl->AddPolyline(pts, 5, pal().ink(inst.diagOutline), outlineThickness(inst, sv.transform.scale, 3.0f),
                         ImDrawFlags_Closed);
 
     if (fontSize > 0.0f && !shownName.empty()) {
         // Outside the flag: left of an input's base, right of an output's tip.
         const float gap = std::max(2.0f, kBoundaryPortLabelGap * sv.transform.scale);
         const float textX = p.isInput ? baseX - gap - textSize.x : tipX + gap;
-        dl->AddText(font, fontSize, ImVec2(textX, anchor.y - textSize.y * 0.5f), kPinLabelColor,
+        dl->AddText(font, fontSize, ImVec2(textX, anchor.y - textSize.y * 0.5f), pal().pinLabel,
                     shownName.c_str());
     }
 }
@@ -938,11 +930,11 @@ static void drawHierGroupInstance(SchematicPainter* dl, const InstanceShape& ins
     int alpha = std::min(90, 22 + 14 * std::max(0, inst.hierDepth - 1));
     // A styled frame (StyleStore fill) keeps its translucency: wires and
     // nested frames still show through it.
-    const ImU32 tint = inst.fill != 0 ? (inst.fill & ~IM_COL32_A_MASK) : IM_COL32(110, 125, 175, 0);
+    const ImU32 tint = inst.fill != 0 ? (inst.fill & ~IM_COL32_A_MASK) : pal().frameTint;
     dl->AddRectFilled(rmin, rmax, tint | (ImU32(alpha) << IM_COL32_A_SHIFT), 0.0f);
-    dl->AddRect(rmin, rmax, IM_COL32(70, 80, 115, 220), 0.0f, 0, 1.25f);
+    dl->AddRect(rmin, rmax, pal().frameLine, 0.0f, 0, 1.25f);
     if (inst.diagOutline != 0)
-        dl->AddRect(rmin, rmax, inst.diagOutline, 0.0f, 0, outlineThickness(inst, sv.transform.scale, 3.5f));
+        dl->AddRect(rmin, rmax, pal().ink(inst.diagOutline), 0.0f, 0, outlineThickness(inst, sv.transform.scale, 3.5f));
     if (inst.selected) addSelectionOutline(dl, rmin, rmax);
 
     float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale);
@@ -953,7 +945,7 @@ static void drawHierGroupInstance(SchematicPainter* dl, const InstanceShape& ins
                                             (rmax.x - rmin.x) - 2.0f * padding);
         if (!label.empty())
             dl->AddText(font, fontSize, ImVec2(rmin.x + padding, rmin.y + padding),
-                        IM_COL32(35, 40, 60, 235), label.c_str());
+                        pal().frameLabel, label.c_str());
     }
 }
 
@@ -1058,7 +1050,7 @@ void SchematicView::drawNet(SchematicPainter* dl, const NetWire& net, const ImVe
     if (net.isBus) thickness *= 2.0f;
 
     const float stub = std::max(12.0f, 18.0f * transform.scale);
-    ImU32 col = net.color;
+    ImU32 col = pal().ink(net.color);
 
     // Depart/arrive with a short stub so the wire leaves the box orthogonally.
     ImVec2 p0 = srcScreen;
@@ -1137,10 +1129,10 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
         const float halo = thickness + 5.0f;
         for (const auto& seg : route.segments)
             dl->AddLine(worldToScreen(seg.a, canvasPos, canvasSize),
-                        worldToScreen(seg.b, canvasPos, canvasSize), kSelectionColor, halo);
+                        worldToScreen(seg.b, canvasPos, canvasSize), pal().selection, halo);
         for (const auto& seg : route.segments)
             for (ImVec2 w : { seg.a, seg.b })  // square corners and ends
-                dl->AddCircleFilled(worldToScreen(w, canvasPos, canvasSize), halo * 0.5f, kSelectionColor);
+                dl->AddCircleFilled(worldToScreen(w, canvasPos, canvasSize), halo * 0.5f, pal().selection);
     }
     const bool striped = route.stripeColors.size() >= 2 &&
                          kStripeWorldLen * transform.scale >= kMinStripePx;
@@ -1152,11 +1144,11 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
     };
     // A point's color: the stripe of the horizontal axis (corner caps and
     // junction dots, where segments of both orientations meet).
-    auto colorAt = [&](ImVec2 w) { return striped ? stripeAt(w.x) : route.color; };
+    auto colorAt = [&](ImVec2 w) { return striped ? stripeAt(w.x) : pal().ink(route.color); };
     for (const auto& seg : route.segments) {
         if (!striped) {
             dl->AddLine(worldToScreen(seg.a, canvasPos, canvasSize),
-                        worldToScreen(seg.b, canvasPos, canvasSize), route.color, thickness);
+                        worldToScreen(seg.b, canvasPos, canvasSize), pal().ink(route.color), thickness);
             continue;
         }
         const bool horiz = std::abs(seg.a.y - seg.b.y) < 0.5f;
@@ -1199,7 +1191,7 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
             ImFont* font = ImGui::GetFont();
             const ImVec2 at = worldToScreen(route.labelAt, canvasPos, canvasSize);
             const float textH = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, route.labelText.c_str()).y;
-            dl->AddText(font, fontSize, ImVec2(at.x, at.y - textH), route.color, route.labelText.c_str());
+            dl->AddText(font, fontSize, ImVec2(at.x, at.y - textH), pal().ink(route.color), route.labelText.c_str());
         }
     }
 
@@ -1219,7 +1211,7 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
         float slashLen = std::max(6.0f, 9.0f * transform.scale);
         dl->AddLine(ImVec2(mid.x - slashLen * 0.35f, mid.y + slashLen * 0.5f),
                     ImVec2(mid.x + slashLen * 0.35f, mid.y - slashLen * 0.5f),
-                    route.color, thickness * 0.5f);
+                    pal().ink(route.color), thickness * 0.5f);
     }
     const std::string& text = labelOnRun ? route.label : route.isBus && route.label.empty() ? route.netName
                                                                                             : std::string();
@@ -1231,7 +1223,7 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
         const bool styled = labelOnRun;
         ImVec2 at = styled ? ImVec2(mid.x - ts.x * 0.5f, mid.y - ts.y - thickness * 0.5f - 2.0f)
                            : ImVec2(mid.x + 6.0f, mid.y - ts.y - 3.0f);
-        dl->AddText(font, fontSize, at, styled ? route.color : kPinLabelColor, text.c_str());
+        dl->AddText(font, fontSize, at, styled ? pal().ink(route.color) : pal().pinLabel, text.c_str());
     }
 }
 
@@ -1481,8 +1473,9 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
     SchematicPainter* dl = &painter;
     dl->PushClipRect(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y));
 
-    // White "paper" canvas -- see kCanvasBgColor.
-    dl->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), kCanvasBgColor);
+    // The view's palette for this drawing (see pal()), then the sheet.
+    const PaletteScope paletteScope(colors);
+    dl->AddRectFilled(canvasPos, ImVec2(canvasPos.x + canvasSize.x, canvasPos.y + canvasSize.y), pal().canvas);
 
     // Hierarchy group frames go under everything else -- they only outline
     // which module the traced leaves belong to, and are listed parent-first
@@ -1563,8 +1556,6 @@ constexpr float kLegendFontSize  = 12.0f;
 constexpr float kLegendSwatchW   = 24.0f;
 constexpr float kLegendGap       = 6.0f;   // swatch to label
 constexpr float kLegendSpacing   = 18.0f;  // between entries
-constexpr ImU32 kTitleColor      = IM_COL32(20, 20, 25, 255);
-constexpr ImU32 kCaptionColor    = IM_COL32(70, 70, 80, 255);
 
 struct TextBlock {
     std::vector<std::string> lines;
@@ -1660,11 +1651,12 @@ void paintPage(SchematicPainter& p, SchematicView& sheet, const ExportPage& page
         sheet.render(p, ImVec2(0.0f, 0.0f), page.drawing);
         return;
     }
-    p.AddRectFilled(ImVec2(0.0f, 0.0f), page.size, IM_COL32(255, 255, 255, 255));
+    const PaletteScope scope(sheet.colors);
+    p.AddRectFilled(ImVec2(0.0f, 0.0f), page.size, pal().canvas);
     sheet.render(p, page.drawingAt, page.drawing);
     if (!page.title.lines.empty()) {
         p.BeginGroup({ { "class", "title" } });
-        paintText(p, page.title, page.titleAt, kTitleColor);
+        paintText(p, page.title, page.titleAt, pal().title);
         p.EndGroup();
     }
     if (!page.legend.empty()) {
@@ -1672,16 +1664,16 @@ void paintPage(SchematicPainter& p, SchematicView& sheet, const ExportPage& page
         for (const auto& item : page.legend) {
             p.BeginGroup({ { "class", "legend-entry" }, { "data-label", item.entry->label } });
             const float midY = item.at.y + page.legendLineH * 0.5f;
-            p.AddLine(ImVec2(item.at.x, midY), ImVec2(item.at.x + kLegendSwatchW, midY), item.entry->color, 3.0f);
+            p.AddLine(ImVec2(item.at.x, midY), ImVec2(item.at.x + kLegendSwatchW, midY), pal().ink(item.entry->color), 3.0f);
             p.AddText(ImGui::GetFont(), kLegendFontSize, ImVec2(item.at.x + kLegendSwatchW + kLegendGap, item.at.y),
-                      kCaptionColor, item.entry->label.c_str());
+                      pal().caption, item.entry->label.c_str());
             p.EndGroup();
         }
         p.EndGroup();
     }
     if (!page.caption.lines.empty()) {
         p.BeginGroup({ { "class", "caption" } });
-        paintText(p, page.caption, page.captionAt, kCaptionColor);
+        paintText(p, page.caption, page.captionAt, pal().caption);
         p.EndGroup();
     }
 }
@@ -1696,6 +1688,7 @@ bool SchematicView::exportSheet(float margin, SchematicView& sheet, ImVec2& size
     if (!computeWorldBounds(lo, hi)) return false;
     sheet = *this;
     sheet.exporting = true;
+    sheet.colors = paperPalette();  // exports go into documents: always on paper
     sheet.hideUiGlyphs = ViewOptions::current().hideUiGlyphs;
     sheet.hoveredPortId = -1;
     sheet.transform = Transform{};

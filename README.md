@@ -109,6 +109,7 @@ plus options, in any order. Their flags differ slightly:
 | | `--review DIR`, `--author NAME` | Read and write review threads in DIR, a directory kept in git with the design ([format](docs/review_format.md)) |
 | | `--review DIR` alone, `--snapshot ID` | Open the netlist a review thread was written on, stored in the review |
 | `--ui-scale 1.5` | | Make the app's text and spacing bigger (or smaller), for large displays |
+| `--theme dark` | | Start with a color theme: `classic`, `light` or `dark` |
 | | `--open` | Open the viewer in a browser |
 | | `--port N`, `--host H` | Where to serve (default `localhost:8081`) |
 
@@ -121,6 +122,12 @@ app's text (menus, panels, dialogs) larger or smaller, in both the desktop
 app and the browser viewer; the schematic's own labels follow its zoom.
 `--ui-scale S` (or `NAJA_SCHEMATIC_UI_SCALE=S` in the environment) starts
 the desktop app at that scale.
+
+**View > Theme** colors the panels and the schematic together: Classic
+(dark panels, white sheet; the default), Light, or Dark (a dark sheet
+too). `--theme NAME` (or `NAJA_SCHEMATIC_THEME=NAME`) starts the desktop
+app with one. Exported SVG and PNG files are always drawn on a white
+sheet, whatever the theme.
 
 Source paths are looked up as recorded, then under each `--source-root` in
 order, then in the current directory. `--source-map /home/ci/flow=/work/flow`

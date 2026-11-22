@@ -20,6 +20,7 @@
 #include "ReviewView.h"
 #include "SelectionStore.h"
 #include "StyleStore.h"
+#include "Theme.h"
 #include "TraceStore.h"
 
 // Net/instance placement and hierarchy frames live in SchematicLayout
@@ -818,18 +819,20 @@ void EquipotentialView::applyInstanceInternals(
 // Color helpers
 // ---------------------------------------------------------------------------
 namespace {
+// A pin's direction as text: a driver (top-level input, instance output),
+// a receiver, an inout, in the theme's colors.
 ImColor topTermColor(Direction d) {
     switch (d) {
-        case Direction::Input:  return ImColor(255,   0,   0);
-        case Direction::Output: return ImColor(  0, 255,   0);
-        default:                return ImColor(255, 255,   0);
+        case Direction::Input:  return ImColor(theme().driverText);
+        case Direction::Output: return ImColor(theme().receiverText);
+        default:                return ImColor(theme().inoutText);
     }
 }
 ImColor occTermColor(Direction d) {
     switch (d) {
-        case Direction::Input:  return ImColor(  0, 255,   0);
-        case Direction::Output: return ImColor(255,   0,   0);
-        default:                return ImColor(255, 255,   0);
+        case Direction::Input:  return ImColor(theme().receiverText);
+        case Direction::Output: return ImColor(theme().driverText);
+        default:                return ImColor(theme().inoutText);
     }
 }
 
@@ -2225,6 +2228,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         g_hintShapeId = -1;
     }
 
+    g_schematic.colors = theme().schematic;
     g_schematic.render(dl, cpos, inner);
     if (equipotentials.empty() && !hasStartShapes()) {
         // Nothing drawn yet: say how to fill it, which a first-time user
@@ -2235,7 +2239,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                            "Click open pins on the schematic to add more.";
         ImVec2 ts = ImGui::CalcTextSize(hint);
         dl->AddText(ImVec2(cpos.x + (inner.x - ts.x) * 0.5f, cpos.y + (inner.y - ts.y) * 0.5f),
-                    IM_COL32(120, 120, 120, 255), hint);
+                    theme().schematic.hint, hint);
     }
     ImGui::EndChild();
 
@@ -2245,9 +2249,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         wMin.x -= 120.f; wMin.y -= 120.f; wMax.x += 120.f; wMax.y += 120.f;
     }
     ImGui::PushStyleVar(ImGuiStyleVar_GrabMinSize, 24.f);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg,         ImVec4(0.12f, 0.12f, 0.12f, 1));
-    ImGui::PushStyleColor(ImGuiCol_SliderGrab,       ImVec4(0.45f, 0.45f, 0.45f, 1));
-    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, ImVec4(0.65f, 0.65f, 0.65f, 1));
+    ImGui::PushStyleColor(ImGuiCol_FrameBg,          theme().scrollFrame);
+    ImGui::PushStyleColor(ImGuiCol_SliderGrab,       theme().scrollGrab);
+    ImGui::PushStyleColor(ImGuiCol_SliderGrabActive, theme().scrollGrabActive);
     ImGui::SetCursorPos(ImVec2(cur0.x + csz.x, cur0.y));
     ImGui::VSliderFloat("##VS", ImVec2(scrollSz, csz.y),
         &g_schematic.transform.offset.y, wMax.y, wMin.y, "");

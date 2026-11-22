@@ -13,6 +13,7 @@
 #include <string>
 
 #include "AppLogic.h"
+#include "Theme.h"
 #include "UiScale.h"
 #include "HeadlessExport.h"
 #include "GUIData.h"
@@ -22,7 +23,7 @@
 
 int main(int argc, char* argv[]) {
   // CLI usage: naja-schematic-standalone [<design>...] [--liberty <path>]... [--diagnosis <path>]
-  //                                     [--style <path>] [--ui-scale S]
+  //                                     [--style <path>] [--ui-scale S] [--theme classic|light|dark]
   //                                     [--source-root <dir>]... [--source-map FROM=TO]...
   //                                     [--yosys-src] [--top <name>]
   //                                     [--instance-label name|model|both]
@@ -44,6 +45,9 @@ int main(int argc, char* argv[]) {
   // --ui-scale multiplies the size of the app's text and spacing, for large
   // displays (default $NAJA_SCHEMATIC_UI_SCALE, else 1; also View > Text
   // Size; not the schematic's labels, nor exports);
+  // --theme picks the app's colors, panels and schematic together
+  // (default $NAJA_SCHEMATIC_THEME, else classic; also View > Theme;
+  // exports always draw on paper);
   // --style pre-loads a style_response-shaped JSON (colors, widths, labels
   // on nets, instances and pins; see StyleStore.h), kept in --export too;
   // --yosys-src (.v only) decodes Yosys (* src *) attributes into source
@@ -71,6 +75,7 @@ int main(int argc, char* argv[]) {
   std::string diagnosisPath;
   std::string stylePath;
   float uiScaleArg = 0.0f;  // --ui-scale; 0: not given
+  std::optional<ThemeId> themeArg;  // --theme
   std::vector<std::string> libertyPaths;
   bool yosysSrc = false;
   HeadlessExportOptions exportOptions;
@@ -126,6 +131,13 @@ int main(int argc, char* argv[]) {
       (arg == "--trace" ? exportOptions.traces : exportOptions.equipotentials).push_back(*spec);
     } else if (arg == "--diagnosis" && i + 1 < argc) {
       diagnosisPath = argv[++i];
+    } else if (arg == "--theme" && i + 1 < argc) {
+      const std::string text = argv[++i];
+      themeArg = parseTheme(text);
+      if (!themeArg) {
+        std::cerr << "--theme expects classic, light or dark, got " << text << "\n";
+        return 1;
+      }
     } else if (arg == "--ui-scale" && i + 1 < argc) {
       const std::string text = argv[++i];
       char* end = nullptr;
@@ -240,7 +252,8 @@ int main(int argc, char* argv[]) {
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   setupFonts();
-  setUiScale(uiScaleArg > 0.0f ? uiScaleArg : initialUiScale());
+  setTheme(themeArg.value_or(initialTheme()));
+  setUiScale(uiScaleArg > 0.0f ? uiScaleArg : initialUiScale());  // applies the theme's colors
   ImGui_ImplSDL2_InitForOpenGL(state.window, state.glContext);
   ImGui_ImplOpenGL3_Init("#version 330 core");
 

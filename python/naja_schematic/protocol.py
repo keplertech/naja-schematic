@@ -23,7 +23,8 @@ log = logging.getLogger("naja_schematic")
 # ...) and loadSystemVerilog's frontend_options; nets by id
 # (SNLDesign.getNetByID, SNLNet.getID), for review anchors.
 # 0.7.35: content hashes (NLUniverse.getContentHash), review snapshot ids.
-MIN_NAJAEDA_VERSION = (0, 7, 35)  # keep in step with pyproject.toml
+# 0.8.0: the release the C++ viewer is built against (thirdparty/naja).
+MIN_NAJAEDA_VERSION = (0, 8, 0)  # keep in step with pyproject.toml
 
 
 def check_najaeda_version():
