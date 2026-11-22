@@ -134,8 +134,8 @@ class NetlistTree {
     // The selection panel's rows of `kind` for `instance`.
     void renderPanelRows(NetlistTreeNode* instance, RevealLeaf::Kind kind);
     // Draws `rows` (siblings) one under the other. A closed row outside the
-    // window's visible area is only its height: a level with thousands of
-    // rows costs what its visible ones do. Not skipped: a row a reveal opens
+    // window's visible area is only its height, and its width when last
+    // drawn: a level with thousands of rows costs what its visible ones do. Not skipped: a row a reveal opens
     // or scrolls to, or whose context menu is open.
     static void renderRows(const std::vector<NetlistTreeNode*>& rows, RevealView& view);
     // Rows render() and renderSelectionPanel() drew in full last time (tests).
@@ -262,6 +262,8 @@ class NetlistTreeNode {
 
     void*       parent_               {nullptr};
     bool        hasRequestedChildren_ {false};
+    // The row's width when last drawn (0: never drawn), from its indent.
+    float       rowWidth_             {0.f};
 };
 
 class NetlistTreeInstanceNode : public NetlistTreeNode {

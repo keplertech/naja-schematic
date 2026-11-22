@@ -1,5 +1,7 @@
 #include "NetlistTree.h"
 
+#include <algorithm>
+
 #include <imgui.h>
 #include <imgui_internal.h>
 
@@ -133,9 +135,10 @@ void NetlistTree::renderRows(const std::vector<NetlistTreeNode*>& rows, RevealVi
   ImGuiStorage* storage = ImGui::GetStateStorage();
   float y = ImGui::GetCursorScreenPos().y;
   float skipped = 0.f;  // height of the skipped rows not yet stepped over
+  float skippedWidth = 0.f;  // the widest of them, when last drawn
   auto flush = [&] {
-    if (skipped > 0.f) ImGui::Dummy(ImVec2(0.f, skipped - spacing));
-    skipped = 0.f;
+    if (skipped > 0.f) ImGui::Dummy(ImVec2(skippedWidth, skipped - spacing));
+    skipped = skippedWidth = 0.f;
   };
   for (auto* row : rows) {
     const unsigned guiID = row->guiID_;
@@ -145,6 +148,7 @@ void NetlistTree::renderRows(const std::vector<NetlistTreeNode*>& rows, RevealVi
         !view.forceOpen.count(guiID) && view.scrollTo != guiID &&
         !ImGui::IsPopupOpen(id, ImGuiPopupFlags_None)) {
       skipped += step;
+      skippedWidth = std::max(skippedWidth, row->rowWidth_);
       y += step;
       continue;
     }
@@ -412,6 +416,13 @@ void NetlistTreeNode::render(NetlistTree::RevealView& view) {
   if (getColor() != 0) {
     ImGui::PushStyleColor(ImGuiCol_Text, getColor());
   }
+  // The row's own width (label and badge, from its indent), measured as the
+  // window's content extent over just this row: what renderRows() keeps
+  // the content wide by when it skips the row.
+  ImGuiWindow* window = ImGui::GetCurrentWindow();
+  const float rowX = window->DC.CursorPos.x;
+  const float maxX = window->DC.CursorMaxPos.x;
+  window->DC.CursorMaxPos.x = rowX;
   auto isOpen = ImGui::TreeNodeEx((void*)(intptr_t)guiID_, flags, "%s", getLabel().c_str());
   if (getColor() != 0) {
     ImGui::PopStyleColor();
@@ -537,6 +548,8 @@ void NetlistTreeNode::render(NetlistTree::RevealView& view) {
     ImGui::SameLine();
     ImGui::TextColored(ImColor(ReviewStore::openColor(review.threads)).Value, "[%zu]", open);
   }
+  rowWidth_ = window->DC.CursorMaxPos.x - rowX;
+  window->DC.CursorMaxPos.x = std::max(maxX, window->DC.CursorMaxPos.x);
   if (isOpen and not isLeaf()) {
     if (children_ != nullptr) {
       NetlistTree::renderRows(*children_, view);
