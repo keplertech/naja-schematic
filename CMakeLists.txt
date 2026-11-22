@@ -296,6 +296,20 @@ else()
 
   # Enable compile_commands.json for clangd / VS Code IntelliSense
   set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+  # ---- install ----
+  include(GNUInstallDirs)
+  file(RELATIVE_PATH NAJA_SCHEMATIC_BIN_TO_LIB
+    ${CMAKE_INSTALL_FULL_BINDIR} ${CMAKE_INSTALL_FULL_LIBDIR})
+  if(APPLE)
+    set(NAJA_SCHEMATIC_RPATH_ORIGIN "@loader_path")
+  else()
+    set(NAJA_SCHEMATIC_RPATH_ORIGIN "$ORIGIN")
+  endif()
+  set_target_properties(naja-schematic-standalone PROPERTIES
+    INSTALL_RPATH "${NAJA_SCHEMATIC_RPATH_ORIGIN}/${NAJA_SCHEMATIC_BIN_TO_LIB}")
+  install(TARGETS naja-schematic-standalone
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
 # ============================================================
