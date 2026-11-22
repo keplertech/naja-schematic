@@ -281,6 +281,90 @@ float lowerMedian(std::vector<float> v) {
 }
 } // namespace
 
+namespace {
+// How much more a hinted node's height counts than one pin's alignment.
+constexpr float kHintWeight = 1000.f;
+
+// Levels with hints (see Stability in SchematicLayout.h): the hinted nodes
+// of one hinted level are one group, the groups chained in level order at
+// their hinted distances; every other node is a group of its own. Edges
+// between groups are levelled by longest path, after breaking cycles with
+// the chain walked first, so a cycle is always broken on a real edge. An
+// edge within a group, or between two hinted groups the wrong way round, is
+// a back edge. `topo` gets the nodes in a topological order.
+void hintedLevels(const std::vector<PlaceNode>& nodes, const std::vector<PlaceEdge>& edges,
+                  const std::vector<std::vector<int>>& outEdges, std::vector<char>& isBack,
+                  std::vector<int>& level, std::vector<int>& topo) {
+    const int n = int(nodes.size());
+    std::vector<int> cols;
+    for (const auto& p : nodes) if (p.hinted) cols.push_back(p.hintLevel);
+    std::sort(cols.begin(), cols.end());
+    cols.erase(std::unique(cols.begin(), cols.end()), cols.end());
+    const int chained = int(cols.size());
+    std::vector<int> group(n);
+    int groups = chained;
+    for (int v = 0; v < n; ++v)
+        group[v] = nodes[v].hinted
+                       ? int(std::lower_bound(cols.begin(), cols.end(), nodes[v].hintLevel) - cols.begin())
+                       : groups++;
+
+    struct GEdge { int to, weight, edge; };  // edge -1: the chain
+    std::vector<std::vector<GEdge>> gOut(groups);
+    for (int k = 0; k + 1 < chained; ++k) gOut[k].push_back({ k + 1, cols[k + 1] - cols[k], -1 });
+    for (int v = 0; v < n; ++v)
+        for (int e : outEdges[v]) {
+            const int a = group[edges[e].u], b = group[edges[e].v];
+            if (a == b || (a < chained && b < chained && a > b)) { isBack[e] = 1; continue; }
+            gOut[a].push_back({ b, 1, e });
+        }
+
+    // Cycle breaking, chain groups first (their chain edge first): the
+    // chain is the DFS's first path, so it's never a back edge.
+    std::vector<char> state(groups, 0);
+    std::vector<std::vector<char>> gBack(groups);
+    for (int g = 0; g < groups; ++g) gBack[g].assign(gOut[g].size(), 0);
+    for (int root = 0; root < groups; ++root) {
+        if (state[root]) continue;
+        std::vector<std::pair<int, size_t>> stack{ { root, 0 } };
+        state[root] = 1;
+        while (!stack.empty()) {
+            auto& [g, next] = stack.back();
+            if (next == gOut[g].size()) { state[g] = 2; stack.pop_back(); continue; }
+            const size_t i = next++;
+            const int to = gOut[g][i].to;
+            if (state[to] == 1) {
+                gBack[g][i] = 1;
+                if (gOut[g][i].edge >= 0) isBack[size_t(gOut[g][i].edge)] = 1;
+            } else if (state[to] == 0) {
+                state[to] = 1;
+                stack.push_back({ to, 0 });
+            }
+        }
+    }
+
+    std::vector<int> indeg(groups, 0), gLevel(groups, 0), gTopo;
+    for (int g = 0; g < groups; ++g)
+        for (size_t i = 0; i < gOut[g].size(); ++i) if (!gBack[g][i]) ++indeg[gOut[g][i].to];
+    for (int g = 0; g < groups; ++g) if (!indeg[g]) gTopo.push_back(g);
+    for (size_t k = 0; k < gTopo.size(); ++k) {
+        const int g = gTopo[k];
+        for (size_t i = 0; i < gOut[g].size(); ++i) {
+            if (gBack[g][i]) continue;
+            const GEdge& ge = gOut[g][i];
+            gLevel[ge.to] = std::max(gLevel[ge.to], gLevel[g] + ge.weight);
+            if (--indeg[ge.to] == 0) gTopo.push_back(ge.to);
+        }
+    }
+    std::vector<std::vector<int>> members(groups);
+    for (int v = 0; v < n; ++v) {
+        level[v] = gLevel[group[v]];
+        members[group[v]].push_back(v);
+    }
+    topo.clear();
+    for (int g : gTopo) topo.insert(topo.end(), members[g].begin(), members[g].end());
+}
+} // namespace
+
 Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vector<PlaceNet>& nets,
                            int maxSinkRows) {
     const int n = int(nodes.size());
@@ -302,35 +386,42 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
         inEdges[edges[e].v].push_back(e);
     }
 
-    // 1. Cycle breaking: an edge to a node still on the DFS stack closes a
-    //    loop (e.g. a flop's feedback) and is left out of the layering.
-    std::vector<char> isBack(edges.size(), 0), state(n, 0);
-    for (int root = 0; root < n; ++root) {
-        if (state[root]) continue;
-        std::vector<std::pair<int, size_t>> stack{ { root, 0 } };
-        state[root] = 1;
-        while (!stack.empty()) {
-            auto& [v, next] = stack.back();
-            if (next == outEdges[v].size()) { state[v] = 2; stack.pop_back(); continue; }
-            int e = outEdges[v][next++];
-            int w = edges[e].v;
-            if (state[w] == 1) isBack[e] = 1;
-            else if (state[w] == 0) { state[w] = 1; stack.push_back({ w, 0 }); }
+    const bool hinted = std::any_of(nodes.begin(), nodes.end(), [](const PlaceNode& p) { return p.hinted; });
+    std::vector<char> isBack(edges.size(), 0);
+    std::vector<int> topo;
+    if (!hinted) {
+        // 1. Cycle breaking: an edge to a node still on the DFS stack closes a
+        //    loop (e.g. a flop's feedback) and is left out of the layering.
+        std::vector<char> state(n, 0);
+        for (int root = 0; root < n; ++root) {
+            if (state[root]) continue;
+            std::vector<std::pair<int, size_t>> stack{ { root, 0 } };
+            state[root] = 1;
+            while (!stack.empty()) {
+                auto& [v, next] = stack.back();
+                if (next == outEdges[v].size()) { state[v] = 2; stack.pop_back(); continue; }
+                int e = outEdges[v][next++];
+                int w = edges[e].v;
+                if (state[w] == 1) isBack[e] = 1;
+                else if (state[w] == 0) { state[w] = 1; stack.push_back({ w, 0 }); }
+            }
         }
-    }
 
-    // 2. Longest-path levels over the forward edges (Kahn order)...
-    std::vector<int> indeg(n, 0), topo;
-    for (int e = 0; e < int(edges.size()); ++e) if (!isBack[e]) ++indeg[edges[e].v];
-    for (int v = 0; v < n; ++v) if (!indeg[v]) topo.push_back(v);
-    for (size_t i = 0; i < topo.size(); ++i) {
-        int u = topo[i];
-        for (int e : outEdges[u]) {
-            if (isBack[e]) continue;
-            int v = edges[e].v;
-            out.level[v] = std::max(out.level[v], out.level[u] + 1);
-            if (--indeg[v] == 0) topo.push_back(v);
+        // 2. Longest-path levels over the forward edges (Kahn order)...
+        std::vector<int> indeg(n, 0);
+        for (int e = 0; e < int(edges.size()); ++e) if (!isBack[e]) ++indeg[edges[e].v];
+        for (int v = 0; v < n; ++v) if (!indeg[v]) topo.push_back(v);
+        for (size_t i = 0; i < topo.size(); ++i) {
+            int u = topo[i];
+            for (int e : outEdges[u]) {
+                if (isBack[e]) continue;
+                int v = edges[e].v;
+                out.level[v] = std::max(out.level[v], out.level[u] + 1);
+                if (--indeg[v] == 0) topo.push_back(v);
+            }
         }
+    } else {
+        hintedLevels(nodes, edges, outEdges, isBack, out.level, topo);
     }
     // ...then send every node that only feeds top-level outputs (e.g. a tie
     // cell on an output) to the last column, beside the output ports, rather
@@ -338,7 +429,7 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
     int lastLevel = 0;
     for (int v = 0; v < n; ++v) lastLevel = std::max(lastLevel, out.level[v]);
     for (int v = 0; v < n; ++v) {
-        if (!nodes[v].drivesOutput) continue;
+        if (!nodes[v].drivesOutput || nodes[v].hinted) continue;
         bool hasSucc = false;
         for (int e : outEdges[v]) if (!isBack[e]) hasSucc = true;
         if (!hasSucc) out.level[v] = lastLevel;
@@ -348,6 +439,7 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
     // than all stacked in column 0.
     for (auto it = topo.rbegin(); it != topo.rend(); ++it) {
         int v = *it;
+        if (nodes[v].hinted) continue;
         bool hasPred = false;
         int  minSucc = INT_MAX;
         for (int e : inEdges[v])  if (!isBack[e]) hasPred = true;
@@ -363,6 +455,20 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
     // 3. Crossing reduction: barycenter sweeps, down then up. A neighbor
     //    counts at its order index plus the fraction of its height where
     //    the pin sits, so pin order on a tall box matters too.
+    // Hinted nodes keep their top-to-bottom order: whatever order a layer
+    // gets, they're put back in it in their hinted order, in the slots they
+    // took (the others stay where the sweep put them).
+    auto keepHintOrder = [&](std::vector<int>& layer) {
+        if (!hinted) return;
+        std::vector<size_t> slots;
+        std::vector<int>    olds;
+        for (size_t i = 0; i < layer.size(); ++i)
+            if (nodes[layer[i]].hinted) { slots.push_back(i); olds.push_back(layer[i]); }
+        std::stable_sort(olds.begin(), olds.end(),
+                         [&](int a, int b) { return nodes[a].hintY < nodes[b].hintY; });
+        for (size_t k = 0; k < slots.size(); ++k) layer[slots[k]] = olds[k];
+    };
+    for (auto& layer : layers) keepHintOrder(layer);
     std::vector<float> order(n, 0.f);
     auto renumber = [&] {
         for (auto& layer : layers)
@@ -398,9 +504,12 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
                 return isSink[a.second] && isSink[b.second] && nodes[a.second].rank < nodes[b.second].rank;
             });
             for (size_t i = 0; i < keyed.size(); ++i) layer[i] = keyed[i].second;
+            keepHintOrder(layer);
             renumber();
         }
     }
+
+    out.logicLevel = out.level;
 
     // 6 (before the columns are measured). Sink grid: a column with too
     //    many sinks is dealt into several, each a level of its own. Its
@@ -504,7 +613,7 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
     std::vector<float> y(n, 0.f);
     for (auto& layer : layers) {
         float cy = 0.f;
-        for (int v : layer) { y[v] = cy; cy += nodes[v].h + kRowSpacing; }
+        for (int v : layer) { y[v] = nodes[v].hinted ? nodes[v].hintY : cy; cy += nodes[v].h + kRowSpacing; }
     }
     // A sink grid is placed as a whole: its bands top to bottom, each one's
     // rows level with its driver's pin as far as the bands above allow, the
@@ -558,8 +667,14 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
                 };
                 for (int e : inEdges[v])  visit(edges[e].u, edges[e].du, edges[e].dv);
                 for (int e : outEdges[v]) visit(edges[e].v, edges[e].dv, edges[e].du);
-                target.push_back(want.empty() ? y[v] : lowerMedian(want));
-                weight.push_back(want.empty() ? 0.05f : float(want.size()));
+                if (nodes[v].hinted) {
+                    // Stays put; only a node squeezed in beside it moves it.
+                    target.push_back(nodes[v].hintY);
+                    weight.push_back(kHintWeight);
+                } else {
+                    target.push_back(want.empty() ? y[v] : lowerMedian(want));
+                    weight.push_back(want.empty() ? 0.05f : float(want.size()));
+                }
                 h.push_back(nodes[v].h);
             }
             auto placed = packColumn(target, weight, h, kRowSpacing);

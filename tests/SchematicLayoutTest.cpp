@@ -458,6 +458,185 @@ TEST(LayeredPlacement, ALargerRandomGraphHasNoOverlapsAndIsDeterministic) {
   }
 }
 
+// --- Stability: hints from an earlier layout -------------------------------
+
+namespace {
+// Nodes [0, count) hinted where `was` put them.
+std::vector<PlaceNode> hinted(std::vector<PlaceNode> nodes, const Placement& was, size_t count) {
+  for (size_t i = 0; i < count; ++i) {
+    nodes[i].hinted    = true;
+    nodes[i].hintLevel = was.logicLevel[i];
+    nodes[i].hintY     = was.pos[i].y;
+  }
+  return nodes;
+}
+// Columns of hinted nodes keep their order and stay one column each: the
+// level differences between them never shrink, and are unchanged when
+// `exact`.
+void expectColumnsKept(const Placement& was, const Placement& now, size_t count, bool exact) {
+  for (size_t i = 0; i < count; ++i)
+    for (size_t j = 0; j < count; ++j) {
+      const int before = was.logicLevel[j] - was.logicLevel[i];
+      const int after  = now.logicLevel[j] - now.logicLevel[i];
+      if (before == 0) { EXPECT_EQ(after, 0) << i << "," << j; continue; }
+      if (exact) { EXPECT_EQ(after, before) << i << "," << j; continue; }
+      if (before > 0) EXPECT_GE(after, before) << i << "," << j;
+    }
+}
+// The vertical offsets between hinted nodes are unchanged.
+void expectHeightsKept(const Placement& was, const Placement& now, size_t count) {
+  for (size_t i = 1; i < count; ++i)
+    EXPECT_FLOAT_EQ(now.pos[i].y - now.pos[0].y, was.pos[i].y - was.pos[0].y) << i;
+}
+
+// The random graph above, with `n` nodes.
+void randomGraph(int n, std::vector<PlaceNode>& nodes, std::vector<PlaceNet>& nets) {
+  unsigned seed = 7;
+  auto rnd = [&](unsigned k) { seed = seed * 1103515245u + 12345u; return int((seed >> 16) % k); };
+  for (int i = 0; i < n; ++i) {
+    nodes.push_back({kBoxW + 10.f * float(rnd(4)), kBoxH + kPinPitch * float(rnd(3))});
+    if (i > 0) nets.push_back(link(rnd(unsigned(i)), {i}, 20.f, 20.f));
+    if (i > 2) nets.push_back(link(rnd(unsigned(i)), {i}, 20.f, 40.f));
+  }
+}
+} // namespace
+
+TEST(StablePlacement, ALayoutHintedWithItselfStaysTheSame) {
+  std::vector<PlaceNode> nodes;
+  std::vector<PlaceNet> nets;
+  randomGraph(40, nodes, nets);
+  const Placement was = layeredPlacement(nodes, nets);
+  const Placement now = layeredPlacement(hinted(nodes, was, nodes.size()), nets);
+  EXPECT_EQ(now.logicLevel, was.logicLevel);
+  for (size_t i = 0; i < nodes.size(); ++i) {
+    EXPECT_EQ(now.pos[i].x, was.pos[i].x) << i;
+    EXPECT_EQ(now.pos[i].y, was.pos[i].y) << i;
+  }
+}
+
+TEST(StablePlacement, ANewDriverOfTheFirstNodeMovesTheOthersTogether) {
+  // 0 -> 1 -> 2, then 3 -> 0 arrives: everything shown moves one column
+  // right, as one, and keeps its heights.
+  std::vector<PlaceNode> nodes(4, {kBoxW, kBoxH});
+  const std::vector<PlaceNet> before{link(0, {1}), link(1, {2})};
+  std::vector<PlaceNode> three(nodes.begin(), nodes.begin() + 3);
+  const Placement was = layeredPlacement(three, before);
+
+  std::vector<PlaceNet> after = before;
+  after.push_back(link(3, {0}));
+  const Placement now = layeredPlacement(hinted(nodes, was, 3), after);
+  EXPECT_EQ(now.logicLevel, (std::vector<int>{1, 2, 3, 0}));
+  expectColumnsKept(was, now, 3, true);
+  expectHeightsKept(was, now, 3);
+  EXPECT_EQ(now.pos[3].y + 20.f, now.pos[0].y + 20.f);  // the new one lines up
+}
+
+// What the issue's video showed: a net between two boxes already shown
+// (here 2 -> 0, against their columns) used to move one of them, and
+// everything after it, across the sheet. Hinted, it's a feedback wire and
+// nothing moves.
+TEST(StablePlacement, ANetAgainstTheShownColumnsMovesNothing) {
+  std::vector<PlaceNode> nodes(4, {kBoxW, kBoxH});
+  const std::vector<PlaceNet> before{link(0, {1}), link(2, {3})};
+  const Placement was = layeredPlacement(nodes, before);
+  ASSERT_LT(was.logicLevel[0], was.logicLevel[1]);
+  ASSERT_LT(was.logicLevel[2], was.logicLevel[3]);
+
+  std::vector<PlaceNet> after = before;
+  after.push_back(link(3, {0}));
+  // Unhinted, 0 and 1 go right of 3.
+  const Placement fresh = layeredPlacement(nodes, after);
+  ASSERT_GT(fresh.logicLevel[0], fresh.logicLevel[3]);
+
+  const Placement now = layeredPlacement(hinted(nodes, was, 4), after);
+  EXPECT_EQ(now.logicLevel, was.logicLevel);
+  for (size_t i = 0; i < 4; ++i) {
+    EXPECT_EQ(now.pos[i].y, was.pos[i].y) << i;
+    // Only the channel the new wire crosses widens, by its track.
+    EXPECT_GE(now.pos[i].x, was.pos[i].x) << i;
+    EXPECT_LE(now.pos[i].x, was.pos[i].x + kTrackPitch) << i;
+  }
+}
+
+TEST(StablePlacement, ShownNodesKeepTheirOrderInAColumn) {
+  // 0, 1, 2 drive the top, middle and bottom pins of 3: by barycenter they
+  // stack 0, 1, 2. Hinted the other way up, they stay that way.
+  std::vector<PlaceNode> nodes{{kBoxW, kBoxH}, {kBoxW, kBoxH}, {kBoxW, kBoxH}, {kBoxW, 120.f}};
+  const std::vector<PlaceNet> nets{link(0, {3}, 20.f, 20.f), link(1, {3}, 20.f, 60.f),
+                                   link(2, {3}, 20.f, 100.f)};
+  const Placement fresh = layeredPlacement(nodes, nets);
+  ASSERT_LT(fresh.pos[0].y, fresh.pos[1].y);
+  ASSERT_LT(fresh.pos[1].y, fresh.pos[2].y);
+
+  Placement flipped = fresh;
+  std::swap(flipped.pos[0].y, flipped.pos[2].y);
+  const Placement now = layeredPlacement(hinted(nodes, flipped, 4), nets);
+  EXPECT_GT(now.pos[0].y, now.pos[1].y);
+  EXPECT_GT(now.pos[1].y, now.pos[2].y);
+  expectNoOverlap(nodes, now);
+}
+
+TEST(StablePlacement, ANodeBetweenTwoShownColumnsWidensTheGap) {
+  // 0 -> 1 shown; then 0 -> 2 -> 1 arrives: 2 needs a column between them.
+  std::vector<PlaceNode> nodes(3, {kBoxW, kBoxH});
+  std::vector<PlaceNode> two(nodes.begin(), nodes.begin() + 2);
+  const Placement was = layeredPlacement(two, {link(0, {1})});
+  const Placement now = layeredPlacement(hinted(nodes, was, 2), {link(0, {1}), link(0, {2}), link(2, {1})});
+  EXPECT_EQ(now.logicLevel, (std::vector<int>{0, 2, 1}));
+  expectColumnsKept(was, now, 2, false);
+  expectHeightsKept(was, now, 2);
+}
+
+TEST(StablePlacement, ANodeSqueezedIntoAColumnPushesItsNeighborsApart) {
+  // 0 and 1 drive 3's top and bottom pins, shown close together; 2 arrives
+  // driving its middle pin and lands between them.
+  std::vector<PlaceNode> nodes{{kBoxW, kBoxH}, {kBoxW, kBoxH}, {kBoxW, kBoxH}, {kBoxW, 120.f}};
+  std::vector<PlaceNode> shown{nodes[0], nodes[1], nodes[3]};
+  const Placement was3 = layeredPlacement(shown, {link(0, {2}, 20.f, 20.f), link(1, {2}, 20.f, 100.f)});
+  // As nodes 0, 1, 3 of the new graph.
+  Placement was = was3;
+  was.pos.insert(was.pos.begin() + 2, ImVec2());
+  was.logicLevel.insert(was.logicLevel.begin() + 2, 0);
+  std::vector<PlaceNode> hint = nodes;
+  for (size_t i : {size_t(0), size_t(1), size_t(3)}) {
+    hint[i].hinted    = true;
+    hint[i].hintLevel = was.logicLevel[i];
+    hint[i].hintY     = was.pos[i].y;
+  }
+  const Placement now = layeredPlacement(hint, {link(0, {3}, 20.f, 20.f), link(1, {3}, 20.f, 100.f),
+                                                link(2, {3}, 20.f, 60.f)});
+  EXPECT_LT(now.pos[0].y, now.pos[2].y);
+  EXPECT_LT(now.pos[2].y, now.pos[1].y);
+  expectNoOverlap(nodes, now);
+}
+
+TEST(StablePlacement, GrowingARandomGraphKeepsWhatWasShown) {
+  std::vector<PlaceNode> all;
+  std::vector<PlaceNet> allNets;
+  randomGraph(60, all, allNets);
+  // Grow it ten nodes at a time, each step hinted with the one before.
+  Placement was;
+  size_t shown = 0;
+  for (size_t count = 20; count <= all.size(); count += 10) {
+    std::vector<PlaceNode> nodes(all.begin(), all.begin() + long(count));
+    std::vector<PlaceNet> nets;
+    for (const auto& net : allNets)
+      if (size_t(net.drivers[0].node) < count && size_t(net.receivers[0].node) < count) nets.push_back(net);
+    const Placement now = layeredPlacement(shown ? hinted(nodes, was, shown) : nodes, nets);
+    expectNoOverlap(nodes, now);
+    if (shown) {
+      expectColumnsKept(was, now, shown, false);
+      // Top-to-bottom order in a column is kept.
+      for (size_t i = 0; i < shown; ++i)
+        for (size_t j = 0; j < shown; ++j)
+          if (was.logicLevel[i] == was.logicLevel[j] && was.pos[i].y < was.pos[j].y)
+            EXPECT_LT(now.pos[i].y, now.pos[j].y) << count << ": " << i << " above " << j;
+    }
+    was = now;
+    shown = count;
+  }
+}
+
 TEST(StackPorts, PortsKeepTheirHeightUnlessCrowded) {
   EXPECT_EQ(stackPorts({0.f, 100.f}), (std::vector<float>{0.f, 100.f}));
   auto ys = stackPorts({50.f, 50.f, 7.f});
