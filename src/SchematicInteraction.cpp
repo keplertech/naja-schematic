@@ -108,4 +108,43 @@ View revealRect(View view, ImVec2 rMin, ImVec2 rMax, ImVec2 canvas, float margin
     return view;
 }
 
+ShapeKey shapeKey(const InstanceShape& shape) {
+    const bool flag = shape.modelName == "port" && !shape.ports.empty();
+    return { shape.path, flag ? shape.ports[0].name : std::string(), shape.isHierGroup };
+}
+
+ShapeRects shapeRects(const std::vector<InstanceShape>& shapes) {
+    ShapeRects rects;
+    for (const auto& s : shapes) rects[shapeKey(s)] = { s.x, s.y, s.w, s.h };
+    return rects;
+}
+
+ShapeRect rebase(const ShapeRect& r, const View& before, const View& after) {
+    // screen = (world - offset) * scale, the same in both views.
+    const float k = before.scale / std::max(after.scale, 1e-6f);
+    return { (r.x - before.offset.x) * k + after.offset.x,
+             (r.y - before.offset.y) * k + after.offset.y,
+             r.w * k, r.h * k };
+}
+
+float transitionProgress(double elapsed, double duration) {
+    if (duration <= 0.0 || elapsed >= duration) return 1.0f;
+    if (elapsed <= 0.0) return 0.0f;
+    const float u = 1.0f - float(elapsed / duration);
+    return 1.0f - u * u * u;  // ease-out cubic
+}
+
+void interpolateShapes(std::vector<InstanceShape>& shapes, const ShapeRects& from, float t) {
+    auto lerp = [t](float a, float b) { return a + (b - a) * t; };
+    for (auto& s : shapes) {
+        auto it = from.find(shapeKey(s));
+        if (it == from.end()) continue;
+        const ShapeRect& r = it->second;
+        s.x = lerp(r.x, s.x);
+        s.y = lerp(r.y, s.y);
+        s.w = lerp(r.w, s.w);
+        s.h = lerp(r.h, s.h);
+    }
+}
+
 } // namespace SchematicInteraction

@@ -594,12 +594,23 @@ the view yet are "open" (`Port::open`, drawn with a hollow-circle stub), and a
 while it loads; `SchematicInteraction::PendingRequests` stops repeat sends).
 A single click on a merged bus pin shows its bits instead. Hovering a pin
 highlights it and shows a tooltip naming its click action. When the requested
-net arrives the view pans so the clicked box stays put on screen, even though
-the whole schematic is laid out again; then, if what the net added (boxes and
-port flags not shown before the click) lands off the canvas, the view pans
-just enough to show it next to the clicked box, zooming out only when it
-can't fit at the current zoom (`SchematicInteraction::revealRect`, extents
-from `shapeWorldExtent()`). Pins are hit-tested nearest-first by
+net arrives the view pans so the clicked *pin* stays put on screen -- under
+the cursor that clicked it -- even though the whole schematic is laid out
+again, and nothing else moves the view: what the net adds off the canvas
+stays there (panning to it used to move the pin away from the cursor).
+And it changes as little as possible: the layout before the click's net
+arrived becomes the placement's hints (`g_layoutHints`, see "Stability"
+under `SchematicLayout`), so the boxes already shown keep their columns,
+order and heights, and a net against their columns is drawn as a feedback
+wire rather than moving them; only a pin click does this -- any other
+change (expanding a box, a tree action, a host push, a headless export)
+lays out fresh. What still moves is animated: for `kTransitionSeconds` the view draws a
+copy (`g_drawn`) in which each shape shown before the click slides from its
+old screen place to its new one (`SchematicInteraction::shapeRects()`/
+`rebase()`/`interpolateShapes()`, keyed by `shapeKey()`), and routed wires,
+whose segments can't follow the boxes, fade in (`SchematicView::wireAlpha`
+through a `FadedPainter`). Only the drawing is animated: `g_schematic`,
+hit-testing and exports have the new layout at once. Pins are hit-tested nearest-first by
 `SchematicInteraction::pickPin`. `GUIData::addEquipotential()` rejects a net
 whose endpoints are all already shown (`equipotentialCovers()`), so neither a
 re-click nor a trace re-listing a shown net draws its wires twice.
@@ -1214,6 +1225,11 @@ and a leaf reveal (review Go To) also selects the panel's tab
   - `layeredPlacement()`: Sugiyama-style placement. It breaks cycles, assigns
     longest-path levels, orders each column by barycenter, then places heights
     by isotonic regression so connected pins line up (straight wires).
+    Stability: a `PlaceNode` may carry a hint (an earlier layout's
+    `Placement::logicLevel` and `pos.y`); hinted nodes keep their columns
+    (grouped and chained, `hintedLevels()`), their order in a column and
+    their heights, and the rest is fitted around them. With no hints the
+    result is exactly the unhinted layout (`StablePlacement` tests).
   - `stackPorts()`: top-level ports on the sheet's left/right edges.
   - `routeNets()`: one orthogonal tree per driving pin. Trunks go in the
     box-free channels between columns, on distinct tracks that respect

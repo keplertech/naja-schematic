@@ -150,6 +150,20 @@ inline constexpr float kOperatorGlyphW = 2.f * kPinPitch;
 //      wires cross another driver's sinks. Each grid column is a level of
 //      its own (Placement::level), with a channel before it like any
 //      other. 0: no limit.
+// Stability: a node can carry a hint, where an earlier layout put it (its
+// Placement::logicLevel and pos.y). When any node has one, the hinted nodes
+// keep their arrangement and the others are fitted around them:
+//   - columns: hinted nodes keep their columns relative to each other (one
+//     column stays one column, in the same left-to-right order, no closer
+//     together); an edge between two of them going the other way, or within
+//     a column, is drawn as a feedback wire instead of moving them. The
+//     others are levelled around them by longest path, which may move a
+//     whole run of hinted columns right to make room, together;
+//   - order: in a column, hinted nodes keep their top-to-bottom order;
+//   - heights: hinted nodes stay at their heights unless a node placed
+//     between two of them needs room.
+//   Sink grids (step 6) are laid out as usual. With no hints, nothing above
+//   applies: the layout is exactly the unhinted one.
 // Pure geometry: the result depends only on the inputs, in their order.
 // ---------------------------------------------------------------------------
 struct PlaceNode {
@@ -159,6 +173,10 @@ struct PlaceNode {
     // barycenter: e.g. the loads of one driver pin): lower first. The
     // caller's, e.g. the natural order of the names (naturalLess).
     int   rank = 0;
+    // Where an earlier layout put it (see Stability above).
+    bool  hinted    = false;
+    int   hintLevel = 0;    // that layout's Placement::logicLevel
+    float hintY     = 0.f;  // that layout's Placement::pos.y
 };
 struct PlacePin {
     int   node = 0;
@@ -171,6 +189,9 @@ struct PlaceNet {
 struct Placement {
     std::vector<ImVec2> pos;    // top-left per node
     std::vector<int>    level;  // logic level per node (0 = leftmost column)
+    // The level before sink grids split columns (step 6): what a later
+    // layout takes as PlaceNode::hintLevel.
+    std::vector<int>    logicLevel;
 };
 Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vector<PlaceNet>& nets,
                            int maxSinkRows = 0);

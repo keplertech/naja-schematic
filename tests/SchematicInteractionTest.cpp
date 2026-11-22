@@ -215,6 +215,97 @@ TEST(RevealRect, NeverZoomsOutPastMinScaleAndThenShowsTheTopLeft) {
 }
 
 // ---------------------------------------------------------------------------
+// Re-layout transitions
+// ---------------------------------------------------------------------------
+
+namespace {
+InstanceShape shapeAt(InstancePath path, float x, float y, float w = 100.f, float h = 50.f) {
+  InstanceShape s;
+  s.path = std::move(path);
+  s.x = x; s.y = y; s.w = w; s.h = h;
+  return s;
+}
+InstanceShape flag(const std::string& name, float x, float y) {
+  InstanceShape s = shapeAt({}, x, y, 0.f, 0.f);
+  s.modelName = "port";
+  Port p;
+  p.name = name;
+  s.ports.push_back(p);
+  return s;
+}
+} // namespace
+
+TEST(Transition, ShapesAreKeyedByPathFlagNameAndFrame) {
+  const InstancePath u{{3, "u"}};
+  InstanceShape box = shapeAt(u, 0.f, 0.f);
+  InstanceShape frame = box;
+  frame.isHierGroup = true;
+  EXPECT_NE(shapeKey(box), shapeKey(frame));
+  // Port flags all have the top's path: their name tells them apart.
+  EXPECT_NE(shapeKey(flag("a", 0.f, 0.f)), shapeKey(flag("b", 0.f, 0.f)));
+  EXPECT_EQ(shapeKey(flag("a", 0.f, 0.f)), shapeKey(flag("a", 50.f, 9.f)));
+  // An instance is its ids, not its name.
+  EXPECT_EQ(shapeKey(shapeAt({{3, "renamed"}}, 0.f, 0.f)), shapeKey(box));
+}
+
+TEST(Transition, ProgressEasesFromZeroToOne) {
+  EXPECT_EQ(transitionProgress(-1.0, 0.3), 0.f);
+  EXPECT_EQ(transitionProgress(0.0, 0.3), 0.f);
+  EXPECT_EQ(transitionProgress(0.3, 0.3), 1.f);
+  EXPECT_EQ(transitionProgress(5.0, 0.3), 1.f);
+  float last = 0.f;
+  for (int i = 1; i < 30; ++i) {
+    const float t = transitionProgress(0.3 * i / 30.0, 0.3);
+    EXPECT_GT(t, last);
+    last = t;
+  }
+  // Eased out: more than halfway at half time.
+  EXPECT_GT(transitionProgress(0.15, 0.3), 0.5f);
+  EXPECT_EQ(transitionProgress(0.1, 0.0), 1.f);  // no duration: done
+}
+
+TEST(Transition, RebaseKeepsTheScreenPlace) {
+  const View before{ImVec2(10.f, 20.f), 2.f};
+  const View after{ImVec2(-40.f, 5.f), 0.5f};
+  const ShapeRect r{30.f, 60.f, 100.f, 40.f};
+  const ShapeRect q = rebase(r, before, after);
+  auto screen = [](float w, float off, float scale) { return (w - off) * scale; };
+  EXPECT_FLOAT_EQ(screen(q.x, after.offset.x, after.scale), screen(r.x, before.offset.x, before.scale));
+  EXPECT_FLOAT_EQ(screen(q.y, after.offset.y, after.scale), screen(r.y, before.offset.y, before.scale));
+  EXPECT_FLOAT_EQ(q.w * after.scale, r.w * before.scale);
+  EXPECT_FLOAT_EQ(q.h * after.scale, r.h * before.scale);
+}
+
+TEST(Transition, InterpolatesKnownShapesAndLeavesNewOnesInPlace) {
+  const InstancePath a{{1, "a"}}, b{{2, "b"}};
+  std::vector<InstanceShape> was = {shapeAt(a, 0.f, 0.f), flag("in", -50.f, 10.f)};
+  std::vector<InstanceShape> now = {shapeAt(a, 200.f, 100.f, 120.f, 50.f), shapeAt(b, 400.f, 0.f),
+                                    flag("in", -50.f, 30.f)};
+  const ShapeRects from = shapeRects(was);
+
+  auto at = [&](float t) {
+    std::vector<InstanceShape> s = now;
+    interpolateShapes(s, from, t);
+    return s;
+  };
+  auto start = at(0.f);
+  EXPECT_EQ(start[0].x, 0.f);
+  EXPECT_EQ(start[0].y, 0.f);
+  EXPECT_EQ(start[0].w, 100.f);
+  EXPECT_EQ(start[1].x, 400.f);  // new: already where it goes
+  EXPECT_EQ(start[2].y, 10.f);
+  auto mid = at(0.5f);
+  EXPECT_FLOAT_EQ(mid[0].x, 100.f);
+  EXPECT_FLOAT_EQ(mid[0].y, 50.f);
+  EXPECT_FLOAT_EQ(mid[0].w, 110.f);
+  EXPECT_FLOAT_EQ(mid[2].y, 20.f);
+  auto end = at(1.f);
+  EXPECT_EQ(end[0].x, 200.f);
+  EXPECT_EQ(end[0].y, 100.f);
+  EXPECT_EQ(end[2].y, 30.f);
+}
+
+// ---------------------------------------------------------------------------
 // pickWire
 // ---------------------------------------------------------------------------
 

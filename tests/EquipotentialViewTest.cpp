@@ -12,6 +12,7 @@
 
 #include <imgui.h>
 #include <cmath>
+#include <map>
 #include <cstdio>
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
@@ -259,7 +260,7 @@ Equipotential u9DrivesU2B() {
 }
 } // namespace
 
-TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
+TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsItUnderTheCursor) {
   showFirstNet();
   expandU2();
   // Zoomed out (about u2) far enough that what the net adds is on screen
@@ -271,7 +272,7 @@ TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
   }
   moveTo(pinScreen({{2, "u2"}}, "B"));
   click();
-  const ImVec2 before = boxCenterScreen({{2, "u2"}});
+  const ImVec2 before = pinScreen({{2, "u2"}}, "B");
   const float scaleBefore = sv().transform.scale;
 
   add(u9DrivesU2B());
@@ -280,36 +281,172 @@ TEST_F(SchematicClicks, ArrivingNetClosesThePinAndKeepsTheClickedBoxInPlace) {
   ASSERT_NE(shape({{5, "core"}, {9, "u9"}}), nullptr);
   EXPECT_FALSE(pin({{2, "u2"}}, "B")->open);
   EXPECT_FALSE(pin({{2, "u2"}}, "B")->pending);
-  const ImVec2 after = boxCenterScreen({{2, "u2"}});
+  const ImVec2 after = pinScreen({{2, "u2"}}, "B");
   EXPECT_NEAR(after.x, before.x, 0.5f);
   EXPECT_NEAR(after.y, before.y, 0.5f);
   EXPECT_EQ(sv().transform.scale, scaleBefore);  // no re-fit zoom either
 }
 
-// At the fitted zoom of two boxes, u9 would land off the canvas: the view
-// pans/zooms out just enough to show it next to the clicked box.
-TEST_F(SchematicClicks, WhatAPinClickAddsOffScreenIsBroughtIntoView) {
+// The issue this guards: at the fitted zoom of two boxes, u9 lands off the
+// canvas, and the view used to pan (and zoom out) to show it -- moving the
+// clicked pin away from the cursor. The pin stays put; u9 is panned to by
+// hand.
+TEST_F(SchematicClicks, WhatAPinClickAddsOffScreenDoesNotMoveTheView) {
   showFirstNet();
   expandU2();
   moveTo(pinScreen({{2, "u2"}}, "B"));
   click();
+  const ImVec2 before = pinScreen({{2, "u2"}}, "B");
   const float scaleBefore = sv().transform.scale;
 
   add(u9DrivesU2B());
-  frame(2);
-
-  const ImVec2 lo = EquipotentialView::canvasOriginForTesting();
-  const ImVec2 hi(lo.x + ImGui::GetIO().DisplaySize.x, lo.y + ImGui::GetIO().DisplaySize.y);
-  for (const InstancePath& path : {InstancePath{{5, "core"}, {9, "u9"}}, InstancePath{{2, "u2"}}}) {
-    const InstanceShape* s = shape(path);
-    ASSERT_NE(s, nullptr);
-    const ImVec2 a = toScreen(ImVec2(s->x, s->y)), b = toScreen(ImVec2(s->x + s->w, s->y + s->h));
-    EXPECT_GE(a.x, lo.x) << displayPath(path);
-    EXPECT_GE(a.y, lo.y) << displayPath(path);
-    EXPECT_LE(b.x, hi.x) << displayPath(path);
-    EXPECT_LE(b.y, hi.y) << displayPath(path);
+  for (int i = 0; i < 30; ++i) {  // through the transition and after
+    frame();
+    const ImVec2 now = pinScreen({{2, "u2"}}, "B");
+    EXPECT_NEAR(now.x, before.x, 0.5f) << "frame " << i;
+    EXPECT_NEAR(now.y, before.y, 0.5f) << "frame " << i;
+    EXPECT_EQ(sv().transform.scale, scaleBefore) << "frame " << i;
   }
-  EXPECT_LE(sv().transform.scale, scaleBefore);  // zoomed out at most, never in
+  ASSERT_NE(shape({{5, "core"}, {9, "u9"}}), nullptr);
+}
+
+namespace {
+std::map<InstancePath, ImVec2> boxCorners(const SchematicView& v) {
+  std::map<InstancePath, ImVec2> out;
+  for (const auto& s : v.instances)
+    if (!s.isHierGroup && s.modelName != "port") out[s.path] = ImVec2(s.x, s.y);
+  return out;
+}
+} // namespace
+
+// Adding a net re-lays out everything: boxes already shown are drawn sliding
+// from where they were on screen to their new place, rather than jumping,
+// while the view itself (hit-testing, exports) has the new layout at once.
+TEST_F(SchematicClicks, ShownBoxesSlideToTheirNewPlace) {
+  showFirstNet();
+  expandU2();
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  frame();
+  std::map<InstancePath, ImVec2> beforeScreen;
+  for (const auto& [path, corner] : boxCorners(sv())) beforeScreen[path] = toScreen(corner);
+  ASSERT_EQ(beforeScreen.size(), 2u);
+
+  add(u9DrivesU2B());
+  frame();  // the net arrives: drawn where the boxes were
+  ASSERT_NE(shape({{5, "core"}, {9, "u9"}}), nullptr);
+  const SchematicView& drawn = EquipotentialView::drawnForTesting();
+  EXPECT_NE(&drawn, &sv());
+  EXPECT_EQ(drawn.wireAlpha, 0.f);
+  bool someMoved = false;
+  for (const auto& [path, corner] : boxCorners(drawn)) {
+    auto was = beforeScreen.find(path);
+    if (was == beforeScreen.end()) continue;  // u9: new, drawn in place
+    const ImVec2 at = toScreen(corner);
+    EXPECT_NEAR(at.x, was->second.x, 0.5f) << displayPath(path);
+    EXPECT_NEAR(at.y, was->second.y, 0.5f) << displayPath(path);
+    const InstanceShape* placed = shape(path);
+    ASSERT_NE(placed, nullptr);
+    const ImVec2 target = toScreen(ImVec2(placed->x, placed->y));
+    someMoved |= std::abs(target.x - at.x) > 1.f || std::abs(target.y - at.y) > 1.f;
+  }
+  EXPECT_TRUE(someMoved) << "the test needs a re-layout that moves a shown box";
+  EXPECT_EQ(boxCorners(drawn).count({{5, "core"}, {9, "u9"}}), 1u);
+
+  // Halfway through: on its way, wires still faint.
+  frame(9);
+  {
+    const SchematicView& mid = EquipotentialView::drawnForTesting();
+    EXPECT_NE(&mid, &sv());
+    EXPECT_LT(mid.wireAlpha, 1.f);
+  }
+
+  // Once it's over the drawing is the view itself.
+  frame(12);
+  EXPECT_EQ(&EquipotentialView::drawnForTesting(), &sv());
+  EXPECT_EQ(sv().wireAlpha, 1.f);
+}
+
+namespace {
+// u1.Q -> u2.A and u3.Q -> u4.A, side by side: u1 and u3 in the first
+// column, u2 and u4 in the second. u2's output Y is open.
+void showTwoPairs(std::vector<Equipotential*>& eqs) {
+  Equipotential a{true, {}, {}};
+  a.occurrences.push_back(occ("u1", 1, "Q", 10, Direction::Output, 1));
+  a.occurrences.push_back(occ("u2", 2, "A", 20, Direction::Input, 2));
+  eqs.push_back(new Equipotential(a));
+  Equipotential b{true, {}, {}};
+  b.occurrences.push_back(occ("u3", 3, "Q", 30, Direction::Output, 2));
+  b.occurrences.push_back(occ("u4", 4, "A", 40, Direction::Input, 1));
+  eqs.push_back(new Equipotential(b));
+}
+// u2.Y -> u3.B: against the columns (from the second back to the first).
+Equipotential u2DrivesU3B() {
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u2", 2, "Y", 22, Direction::Output, 2));
+  e.occurrences.push_back(occ("u3", 3, "B", 31, Direction::Input, 2));
+  return e;
+}
+} // namespace
+
+// The issue's video: clicking a pin whose net reaches a box already shown,
+// in an earlier column, moved that box (and what it drives) to the right of
+// the clicked one. Now the boxes keep their columns and order, and the net
+// is drawn as a feedback wire.
+TEST_F(SchematicClicks, AClickedNetAgainstTheColumnsMovesNoBox) {
+  showTwoPairs(eqs);
+  frame(3);
+  EquipotentialView::applyInstanceExpansion(InstancePath{{2, "u2"}}, {
+      {"A", Direction::Input, 20, std::nullopt},
+      {"Y", Direction::Output, 22, std::nullopt},
+  });
+  frame(2);
+  const InstancePath u1{{1, "u1"}}, u2{{2, "u2"}}, u3{{3, "u3"}}, u4{{4, "u4"}};
+  ASSERT_EQ(shape(u1)->x, shape(u3)->x);
+  ASSERT_EQ(shape(u2)->x, shape(u4)->x);
+  ASSERT_LT(shape(u1)->x, shape(u2)->x);
+  ASSERT_TRUE(pin(u2, "Y")->open);
+  const bool u1Above = shape(u1)->y < shape(u3)->y;
+
+  moveTo(pinScreen(u2, "Y"));
+  click();
+  const ImVec2 pinBefore = pinScreen(u2, "Y");
+  add(u2DrivesU3B());
+  frame(30);
+
+  EXPECT_FALSE(pin(u2, "Y")->open);
+  EXPECT_EQ(shape(u3)->x, shape(u1)->x);  // still in the first column
+  EXPECT_EQ(shape(u4)->x, shape(u2)->x);
+  EXPECT_LT(shape(u3)->x, shape(u2)->x);
+  EXPECT_EQ(shape(u1)->y < shape(u3)->y, u1Above);
+  const ImVec2 pinAfter = pinScreen(u2, "Y");
+  EXPECT_NEAR(pinAfter.x, pinBefore.x, 0.5f);
+  EXPECT_NEAR(pinAfter.y, pinBefore.y, 0.5f);
+}
+
+// The same net arriving without a click (a tree action, a host push, a
+// headless export) gets a fresh layout: u3 goes right of u2.
+TEST_F(SchematicClicks, ANetNotFromAClickIsLaidOutFresh) {
+  showTwoPairs(eqs);
+  frame(3);
+  add(u2DrivesU3B());
+  frame(3);
+  EXPECT_GT(shape({{3, "u3"}})->x, shape({{2, "u2"}})->x);
+}
+
+// A view cleared mid-transition draws its new contents directly.
+TEST_F(SchematicClicks, ResetEndsATransition) {
+  showFirstNet();
+  expandU2();
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  add(u9DrivesU2B());
+  frame();
+  ASSERT_NE(&EquipotentialView::drawnForTesting(), &sv());
+  EquipotentialView::resetLayout();
+  EXPECT_EQ(&EquipotentialView::drawnForTesting(), &sv());
+  frame();
+  EXPECT_EQ(&EquipotentialView::drawnForTesting(), &sv());
 }
 
 TEST_F(SchematicClicks, ClickOnMergedBusPinShowsItsBits) {

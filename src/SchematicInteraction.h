@@ -95,10 +95,46 @@ struct View {
 // `canvas`-pixel canvas with `margin` pixels around it: unchanged if it
 // already is, else panned by the smallest amount, and zoomed out (about the
 // canvas center, never below minScale) only when the rect is too big for the
-// canvas at the current zoom. Used to show what a pin click just added
-// without re-fitting the whole drawing. A rect too big even at minScale is
-// shown from its top-left.
+// canvas at the current zoom. Used to show the object a review thread's Go
+// To names (EquipotentialView::focusObject()) without re-fitting the whole
+// drawing. A rect too big even at minScale is shown from its top-left.
 View revealRect(View view, ImVec2 rMin, ImVec2 rMax, ImVec2 canvas, float margin,
                 float minScale);
+
+// --- Re-layout transitions ----------------------------------------------
+// Adding a net lays the whole schematic out again, so boxes already shown can
+// jump to another column or row. Rather than have them teleport, the view
+// draws each one sliding from where it was on screen to its new place over
+// kTransitionSeconds (EquipotentialView keeps the state; these are the pure
+// parts).
+inline constexpr double kTransitionSeconds = 0.3;
+
+// A shape's identity from one layout to the next: its instance path, a
+// top-level port flag's name (every flag's path is the top's, {}), and
+// whether it's a module frame (a frame and a box of the same instance can
+// both be shown).
+using ShapeKey = std::tuple<InstancePath, std::string, bool>;
+ShapeKey shapeKey(const InstanceShape& shape);
+
+struct ShapeRect {
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+};
+using ShapeRects = std::map<ShapeKey, ShapeRect>;
+
+// Every shape's world rect, by key.
+ShapeRects shapeRects(const std::vector<InstanceShape>& shapes);
+
+// The world rect that shows, in view `after`, at the same screen place and
+// size as `r` did in view `before`.
+ShapeRect rebase(const ShapeRect& r, const View& before, const View& after);
+
+// How far a transition is `elapsed` seconds into `duration`: 0 at the start,
+// 1 from the end on, eased out (fast first, settling gently).
+float transitionProgress(double elapsed, double duration = kTransitionSeconds);
+
+// Each shape found in `from` moved and resized by `t` (0..1) of the way
+// from its rect there to its own: at 0 where it was, at 1 unchanged. A shape
+// not in `from` (new) stays where it is.
+void interpolateShapes(std::vector<InstanceShape>& shapes, const ShapeRects& from, float t);
 
 } // namespace SchematicInteraction

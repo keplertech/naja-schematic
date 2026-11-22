@@ -1493,10 +1493,14 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
     // before. A net nested inside an expanded instance (containerShapeId set)
     // is drawn later instead -- see drawSubtree below -- so that instance's
     // opaque box fill doesn't get painted over it afterward.
-    for (const auto& route : routes) {
-        dl->BeginGroup(netGroup(route.netName, route.ref, route.label));
-        drawRoute(dl, route, canvasPos, canvasSize);
-        dl->EndGroup();
+    if (wireAlpha > 0.0f) {
+        FadedPainter faded(painter, wireAlpha);
+        SchematicPainter* wl = wireAlpha < 1.0f ? &faded : dl;
+        for (const auto& route : routes) {
+            wl->BeginGroup(netGroup(route.netName, route.ref, route.label));
+            drawRoute(wl, route, canvasPos, canvasSize);
+            wl->EndGroup();
+        }
     }
     // Unrouted wires, one group per run of wires from the same driver pin.
     auto drawNets = [&](int containerShapeId) {
