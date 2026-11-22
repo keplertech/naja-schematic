@@ -127,8 +127,8 @@ static void renderShortcutsWindow(bool& open) {
   static const Row kMouse[] = {
     {"Wheel",                        "Zoom about the cursor"},
     {"Right or middle drag",         "Pan"},
-    {"Click an open (hollow) pin",   "Add its net to the schematic"},
-    {"Click a bus pin",              "Show its bits"},
+    {"Click an open pin or port",    "Add its net to the schematic"},
+    {"Click a bus pin or port",      "Show its bits"},
     {"Double-click a dashed box",    "Show all of its pins"},
     {"Click a box",                  "Select the instance (also in the tree)"},
     {"Click a stacked (summary) box","Show the sinks it gathers (View > Fanout)"},

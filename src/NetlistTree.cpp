@@ -4,6 +4,7 @@
 
 #include "Console.h"
 #include "DiagnosisStore.h"
+#include "EquipotentialView.h"
 #include "INetlistProvider.h"
 #include "ReviewStore.h"
 #include "ReviewView.h"
@@ -375,8 +376,22 @@ void NetlistTreeNode::render() {
     }
   } else if (isInstanceNode()) {
     if (ImGui::BeginPopupContextItem()) {
-      // The top design has no box of its own to draw.
-      if (!isRoot()) {
+      if (isRoot()) {
+        // The top design has no box of its own: it's the sheet itself, its
+        // ports on the edges -- with what's inside when it's small enough
+        // to draw at once, else only its ports, to explore from.
+        bool clicked = ImGui::MenuItem("Show Contents in Schematic (replace view)");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Clears the schematic and draws everything the top contains,\n"
+                            "up to %u instances (beyond that, only its ports)",
+                            EquipotentialView::kMaxTopViewInstances);
+        if (clicked) EquipotentialView::requestTopView(true, false);
+        clicked = ImGui::MenuItem("Show Ports in Schematic (replace view)");
+        if (ImGui::IsItemHovered())
+          ImGui::SetTooltip("Clears the schematic and draws the top's ports,\n"
+                            "each open: click one to add its net");
+        if (clicked) EquipotentialView::requestTopView(false, false);
+      } else {
         bool clicked = ImGui::MenuItem("Show in Schematic (replace view)");
         viewModeTooltip(true);
         if (clicked) getTree()->sendShowInstance(getInstancePath());

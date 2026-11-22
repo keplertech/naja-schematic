@@ -121,6 +121,7 @@ int main() {
   else
     g_state.provider = new GenerationProvider(new WebSocketProvider(webSocketUrl()));
 
+  g_state.showTopOnLoad = true;
   try {
     setupProvider(g_state);
   } catch (const std::exception& e) {

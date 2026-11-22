@@ -60,9 +60,15 @@ your own tool).
 - **Trace to Driver**: the whole combinational fan-in cone of a pin, back
   to flip-flops and ports. Overlay several traces: each gets its own color,
   shared wires are striped and shared gates outlined.
+- **The top design as a sheet**: on load, the top is drawn as a schematic
+  page, ports on its edges and no frame around it -- everything it contains
+  when that's at most 250 instances, else only its ports, to explore from
+  (a large flat netlist can't be read on one page). Right-click the top in
+  the design tree for Show Contents / Show Ports.
 - **Grow the schematic by hand**: start from any instance (right-click it
-  in the design tree, then Show in Schematic), click an open pin to add its
-  net, double-click a box to show all of its pins.
+  in the design tree, then Show in Schematic) or from the top's ports,
+  click an open pin or port to add its net, double-click a box to show all
+  of its pins.
 - **Design tree**, loaded lazily so large netlists open fast: instances,
   ports, nets and bus bits.
 - **Show Sources**: where an instance, pin or net is declared and, for
@@ -210,6 +216,8 @@ the module the gates are in.
 - `--trace '<pin>'` (repeatable): the fan-in cone of a pin.
 - `--equipotential '<pin>'` (repeatable): one net.
 - `--focus '["u1", "u2"]'`: one instance drawn alone, with all its pins.
+  `--focus '[]'` draws the top design as a sheet: its contents, or only its
+  ports past 250 instances.
 
 A pin is `{"path": ["u1"], "terminal": "A", "bit": 0}`: `path` is the
 instance that holds it (leave it out for a top-level port), `bit` is only
@@ -278,8 +286,8 @@ Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 |---|---|
 | Wheel | Zoom about the cursor |
 | Right or middle drag | Pan |
-| Click an open (hollow) pin | Add its net to the schematic |
-| Click a bus pin | Show its bits |
+| Click an open (hollow) pin or port | Add its net to the schematic |
+| Click a bus pin or bus port (`d[7:0]`) | Show its bits |
 | Double-click a dashed box | Show all of its pins |
 | Click a box | Select the instance (also in the design tree) |
 | Click a stacked (summary) box | Show the sinks it gathers (a net's sinks past *View > Fanout*'s limit) |

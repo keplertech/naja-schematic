@@ -51,6 +51,9 @@ static bool               g_skipNextAutoFit  = false;
 // the view is panned so that box stays put on screen, even though adding a
 // net can re-lay out everything (hierarchy frames grow and shift).
 static InstancePath       g_keepInPlacePath;
+// Or, for a top-level port flag (whose path is the top's, {}, like every
+// flag's), its name.
+static std::string        g_keepInPlacePort;
 // Screen pixels kept clear around what a pin click brings into view.
 static constexpr float    kRevealMargin = 40.0f;
 static ImVec2             g_keepInPlaceWorld{};
@@ -357,6 +360,9 @@ static std::optional<InstancePath> g_pendingZoomGroup;
 
 // Instances shown on their own (showInstance), by instance path.
 static std::map<InstancePath, EquipotentialView::StartInstance> g_startInstances;
+// Top-level ports shown as flags with no net yet (showTopPorts), in the
+// top's order.
+static std::vector<EquipotentialView::ExpandedPort> g_startPorts;
 
 // Fanout summaries (SchematicLayout::planFanout): the groups the user
 // expanded, by the net (its first driver pin, or a top-level port by name)
@@ -453,6 +459,15 @@ static SchematicInteraction::PinRequestKey pinRequestKey(const PortEquiRequest& 
     return SchematicInteraction::pinRequestKey(r.pathIds, r.termId, r.bit);
 }
 
+// The shape whose pin was clicked last (see requestPinNet()): a box by its
+// path, a top-level port flag by its name.
+static bool isKeptInPlace(const InstanceShape& inst) {
+    if (inst.isHierGroup || inst.path != g_keepInPlacePath) return false;
+    if (inst.modelName == "port")
+        return !g_keepInPlacePort.empty() && !inst.ports.empty() && inst.ports[0].name == g_keepInPlacePort;
+    return g_keepInPlacePort.empty();
+}
+
 // Sends load_equipotential for `port` (sitting on `inst`) unless it's already
 // in flight, and arranges for `inst` to stay where it is on screen when the
 // net arrives.
@@ -468,6 +483,7 @@ static void requestPinNet(const InstanceShape& inst, const Port& port) {
     g_provider->send(j.dump());
     g_skipNextAutoFit  = true;
     g_keepInPlacePath  = inst.path;
+    g_keepInPlacePort  = inst.modelName == "port" ? port.name : std::string();
     g_keepInPlaceWorld = ImVec2(inst.x, inst.y);
     g_shownBeforePinNet.clear();
     g_portsBeforePinNet.clear();
@@ -680,6 +696,8 @@ void EquipotentialView::clearNets() { g_pendingClear = true; }
 
 void EquipotentialView::resetLayout() {
     g_startInstances.clear();
+    g_startPorts.clear();
+    g_keepInPlacePort.clear();
     g_expandedInstances.clear();
     g_pendingExpansions.clear();
     g_expandedBuses.clear();
@@ -726,6 +744,41 @@ void EquipotentialView::showInstance(const StartInstance& start) {
     g_expandedInstances[start.path] = start.ports;
 }
 
+void EquipotentialView::showTopPorts(const std::vector<ExpandedPort>& ports) {
+    g_startPorts = ports;
+}
+
+bool EquipotentialView::hasStartShapes() {
+    return !g_startInstances.empty() || !g_startPorts.empty();
+}
+
+void EquipotentialView::requestTopView(bool contents, bool automatic) {
+    if (!g_provider) return;
+    json req;
+    req["request"]       = "load_top_view";
+    req["contents"]      = contents;
+    req["max_instances"] = kMaxTopViewInstances;
+    if (automatic) req["auto"] = true;
+    g_provider->send(req.dump());
+}
+
+std::vector<EquipotentialView::ExpandedPort> EquipotentialView::portsFromJson(const json& terms) {
+    std::vector<ExpandedPort> ports;
+    if (!terms.is_array()) return ports;
+    for (const auto& t : terms) {
+        ExpandedPort ep;
+        ep.childId = t.value("child_id", 0u);
+        ep.name    = displayPinLabel(t.value("name", std::string("")), ep.childId);
+        if (t.contains("bit") && !t["bit"].is_null()) ep.bit = t["bit"].get<int>();
+        ep.clock   = t.value("clock", false);
+        int dirInt   = t.value("direction", 0);
+        ep.direction = dirInt == 1 ? Direction::Output
+                     : dirInt == 2 ? Direction::Inout : Direction::Input;
+        ports.push_back(std::move(ep));
+    }
+    return ports;
+}
+
 std::optional<EquipotentialView::StartInstance>
 EquipotentialView::startInstanceFromResolved(const json& reply) {
     if (!reply.value("found", false) || !reply.contains("instance") || !reply["instance"].is_object())
@@ -743,17 +796,7 @@ EquipotentialView::startInstanceFromResolved(const json& reply) {
     start.primitiveType = primitiveTypeFromString(inst.value("primitive_type", std::string("unknown")));
     start.hasInstances = inst.value("has_instances", false);
     start.hasSources = inst.value("has_sources", false);
-    for (const auto& t : inst.value("terms", json::array())) {
-        ExpandedPort ep;
-        ep.childId = t.value("child_id", 0u);
-        ep.name    = displayPinLabel(t.value("name", std::string("")), ep.childId);
-        if (t.contains("bit") && !t["bit"].is_null()) ep.bit = t["bit"].get<int>();
-        ep.clock   = t.value("clock", false);
-        int dirInt   = t.value("direction", 0);
-        ep.direction = dirInt == 1 ? Direction::Output
-                     : dirInt == 2 ? Direction::Inout : Direction::Input;
-        start.ports.push_back(std::move(ep));
-    }
+    start.ports = portsFromJson(inst.value("terms", json::array()));
     return start;
 }
 
@@ -1211,6 +1254,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // Instances shown on their own (showInstance): a box even with no net
     // through it yet. Their pins come from g_expandedInstances, all open
     // until a net reaches them.
+    totalItems += int(g_startPorts.size());
     for (const auto& [path, start] : g_startInstances) {
         ++totalItems;
         auto& mi = minsts[path];
@@ -1611,7 +1655,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         sheetX1 = std::max(sheetX1, inst.x + footprintWidth(inst, instanceNameWidth));
     }
     if (sheetX0 > sheetX1) { sheetX0 = kLeftMargin; sheetX1 = kLeftMargin; }
-    struct PortStub { size_t ei; std::string label; Direction direction; int portId; float wantY; };
+    // ei: the equipotential the port is on, or kNoEqui for a port shown
+    // with no net yet (showTopPorts()), drawn open.
+    constexpr size_t kNoEqui = size_t(-1);
+    // isBus: an open bus's bits merged into one flag (see below).
+    struct PortStub { size_t ei; std::string label; Direction direction; int portId; float wantY;
+                      bool isBus = false; };
     std::vector<PortStub> leftStubs, rightStubs;
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
@@ -1646,13 +1695,58 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
         }
     }
+    // The top's ports no shown net reaches yet (showTopPorts()), open, after
+    // the connected ones on their side, in the top's order. A bus's open
+    // bits are one flag ("b[7:0]", or "b (*3)" when some bits are wired
+    // already) until it's clicked, like a box's bus pin: then one flag per
+    // bit, and "Collapse Bus" (pin menu) merges them back.
+    if (!g_startPorts.empty()) {
+        std::set<std::pair<unsigned, int>> shown;
+        for (const auto* stubs : { &leftStubs, &rightStubs })
+            for (const auto& st : *stubs)
+                if (auto it = g_portEquiByPortId.find(st.portId); it != g_portEquiByPortId.end())
+                    shown.insert({ it->second.termId, it->second.bit.value_or(-1) });
+        float below[2] = { -1e30f, -1e30f };
+        for (int side = 0; side < 2; ++side)
+            for (const auto& st : side == 0 ? leftStubs : rightStubs)
+                below[side] = std::max(below[side], st.wantY);
+        // Open bits per bus (term, direction), in the top's order.
+        std::map<std::pair<unsigned, Direction>, std::vector<int>> openBits;
+        for (const auto& ep : g_startPorts)
+            if (ep.bit && !shown.count({ ep.childId, *ep.bit }))
+                openBits[{ ep.childId, ep.direction }].push_back(*ep.bit);
+        std::set<std::pair<unsigned, Direction>> merged;
+        for (const auto& ep : g_startPorts) {
+            if (shown.count({ ep.childId, ep.bit.value_or(-1) })) continue;
+            const bool isInput = ep.direction == Direction::Input;
+            float& y = below[isInput ? 0 : 1];
+            const std::string base = stripBusIndex(ep.name);
+            const BusGroupKey key{ InstancePath{}, base, isInput };
+            const auto& bits = ep.bit ? openBits[{ ep.childId, ep.direction }] : std::vector<int>{};
+            if (bits.size() > 1 && !g_expandedBuses.count(key)) {
+                if (!merged.insert({ ep.childId, ep.direction }).second) continue;  // flag drawn
+                const int pid = nextPortId++;
+                g_busGroupByPortId[pid] = key;
+                g_busTermByPortId[pid]  = { {}, ep.childId, std::nullopt };
+                y = y < -1e29f ? 0.f : y + kPinPitch;
+                (isInput ? leftStubs : rightStubs).push_back(
+                    { kNoEqui, busLabel(base, bits), ep.direction, pid, y, true });
+                continue;
+            }
+            const int pid = nextPortId++;
+            g_portEquiByPortId[pid] = { {}, ep.childId, ep.bit };
+            if (bits.size() > 1) g_expandedBusGroupByPortId[pid] = key;
+            y = y < -1e29f ? 0.f : y + kPinPitch;
+            (isInput ? leftStubs : rightStubs).push_back({ kNoEqui, ep.name, ep.direction, pid, y });
+        }
+    }
     // Input ports driving a labeled net: the label goes right past the flag,
     // so every input port moves left to make room for the widest, and its
     // wire reaches the routing channel `leftPortRoom` later (see the routing
     // below): the label is never under a wire's trunk or a box.
     float leftPortRoom = 0.f;
     for (const auto& st : leftStubs)
-        if (!styleLabelByEi[st.ei].empty())
+        if (st.ei != kNoEqui && !styleLabelByEi[st.ei].empty())
             leftPortRoom = std::max(leftPortRoom, 2.f * kNetLabelGap + netLabelWidth(styleLabelByEi[st.ei]));
     for (auto* stubs : { &leftStubs, &rightStubs }) {
         std::vector<float> want;
@@ -1679,14 +1773,24 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             p.ly = 0.f;
             p.direction = st.direction;
             p.isInput   = isInput;
-            p.color     = DiagnosisStore::netColor({}, stripBusIndex(st.label));
-            if (isInput && !styleLabelByEi[st.ei].empty()) {
+            // A merged bus flag's label may be "b (*3)": its base is before the space.
+            p.color     = DiagnosisStore::netColor({}, stripBusIndex(st.isBus ? st.label.substr(0, st.label.find(' '))
+                                                                               : st.label));
+            if (st.isBus) {
+                p.open  = true;
+                p.isBus = true;
+            } else if (st.ei == kNoEqui) {
+                p.open    = true;
+                p.pending = g_pendingPinNets.isPending(pinRequestKey(g_portEquiByPortId[p.id]),
+                                                       ImGui::GetTime());
+            } else if (isInput && !styleLabelByEi[st.ei].empty()) {
                 p.netLabel  = styleLabelByEi[st.ei];
                 p.netLabelW = netLabelWidth(p.netLabel);
             }
             inst.ports.push_back(p);
-            for (auto& we : equiEnds[st.ei])
-                if (we.isTerm && we.portId == st.portId) we.termInstId = inst.id;
+            if (st.ei != kNoEqui)
+                for (auto& we : equiEnds[st.ei])
+                    if (we.isTerm && we.portId == st.portId) we.termInstId = inst.id;
             g_schematic.instances.push_back(std::move(inst));
         }
     }
@@ -1946,7 +2050,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             // wherever the re-layout moved it (screen = (world - offset) *
             // scale, so shifting offset by the world delta cancels it out).
             for (const auto& inst : g_schematic.instances) {
-                if (inst.isHierGroup || inst.path != g_keepInPlacePath) continue;
+                if (!isKeptInPlace(inst)) continue;
                 g_schematic.transform.offset.x += inst.x - g_keepInPlaceWorld.x;
                 g_schematic.transform.offset.y += inst.y - g_keepInPlaceWorld.y;
                 break;
@@ -1962,7 +2066,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 const bool isNew  = isPort
                     ? !inst.ports.empty() && !g_portsBeforePinNet.count(inst.ports[0].name)
                     : !g_shownBeforePinNet.count(inst.path);
-                const bool clicked = !isPort && inst.path == g_keepInPlacePath;
+                const bool clicked = isKeptInPlace(inst);
                 if (!isNew && !clicked) continue;
                 added |= isNew;
                 ImVec2 a, b;
@@ -1978,6 +2082,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 g_schematic.transform.scale  = v.scale;
             }
             g_keepInPlacePath.clear();
+            g_keepInPlacePort.clear();
             g_shownBeforePinNet.clear();
             g_portsBeforePinNet.clear();
         } else if (!(g_focus && g_focus->requested)) {
@@ -2121,12 +2226,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     }
 
     g_schematic.render(dl, cpos, inner);
-    if (equipotentials.empty() && g_startInstances.empty()) {
-        // Nothing drawn yet: the schematic is only ever filled from a pin's
-        // context menu, which a first-time user has no way to guess.
-        const char* hint = "Right-click a pin in the Netlist Hierarchy (e.g. top > Terms > a port)\n"
+    if (equipotentials.empty() && !hasStartShapes()) {
+        // Nothing drawn yet: say how to fill it, which a first-time user
+        // has no way to guess.
+        const char* hint = "Right-click the top design in the Netlist Hierarchy and choose\n"
+                           "Show Contents or Show Ports, or right-click a pin there\n"
                            "and choose Show Equipotential or Trace to Driver.\n"
-                           "Right-click pins on the schematic to add more.";
+                           "Click open pins on the schematic to add more.";
         ImVec2 ts = ImGui::CalcTextSize(hint);
         dl->AddText(ImVec2(cpos.x + (inner.x - ts.x) * 0.5f, cpos.y + (inner.y - ts.y) * 0.5f),
                     IM_COL32(120, 120, 120, 255), hint);

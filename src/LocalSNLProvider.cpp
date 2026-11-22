@@ -685,6 +685,8 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildPropertiesResponse(req));
   } else if (request == "resolve_instance") {
     msgCb_(buildResolveInstanceResponse(req));
+  } else if (request == "load_top_view") {
+    msgCb_(buildTopViewResponse(req));
   } else if (request == "instance_selected") {
     // A notification (the user's selection), for hosts that script the
     // viewer -- nothing to answer in the standalone app.
@@ -882,6 +884,48 @@ static void setNet(json& entry, const SNLBitNet* net) {
   }
 }
 
+// One instance pin of a net, as an equipotential "occurrences" entry:
+// `pathArr` holds the levels above the pin's instance ([name, child_id,
+// model_name] each), the instance itself is appended.
+static json instTermOccurrenceJson(json pathArr, const SNLInstTerm* it) {
+  auto* bt = it->getBitTerm();
+  // Each path entry is [name, child_id, model_name]: the model name lets
+  // the schematic label the hierarchical module boxes it draws around a
+  // driver trace (see EquipotentialView's hierarchy grouping).
+  auto* theInst = it->getInstance();
+  pathArr.push_back(json::array({instanceName(theInst),
+                                 static_cast<unsigned>(theInst->getID()),
+                                 designName(theInst->getModel())}));
+  auto entry = bitTermJson(bt);
+  setNet(entry, it->getNet());
+  // The instance's own role: a parameterized primitive can take it from
+  // the instance's parameters.
+  setTermRole(entry, it);
+  entry["path"] = std::move(pathArr);
+  if (auto* model = theInst->getModel()) {
+    entry["design_ref"] = {
+      {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
+      {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
+      {"design_id",  static_cast<unsigned>(model->getID())}
+    };
+  }
+  entry["primitive_type"] = toString(getPrimitiveType(theInst));
+  entry["has_instances"] = hasAnySubInstances(theInst->getModel());
+  // Lets the view tell whether every pin of this instance is already on
+  // screen (solid box) or only a subset (dashed, double-click to expand).
+  if (auto* model = theInst->getModel())
+    entry["bit_term_count"] = model->getBitTerms().size();
+  withSources(entry, instanceHasSources(theInst));
+  return entry;
+}
+
+// A top-level port as an equipotential "terms" entry.
+static json bitTermWithNetJson(const SNLBitTerm* bt) {
+  json t = bitTermJson(bt);
+  setNet(t, bt->getNet());
+  return t;
+}
+
 static json equipotentialJson(const SNLEquipotential& equi,
                               const std::set<SNLOccurrence>* sinks = nullptr) {
   json terms = json::array();
@@ -889,9 +933,7 @@ static json equipotentialJson(const SNLEquipotential& equi,
     // A top-level output is a receiver of the net; an input/inout drives it.
     if (sinks && bt->getDirection() == SNLTerm::Direction::Output &&
         !sinks->count(SNLOccurrence(bt))) continue;
-    json t = bitTermJson(bt);
-    setNet(t, bt->getNet());
-    terms.push_back(std::move(t));
+    terms.push_back(bitTermWithNetJson(bt));
   }
 
   json occs = json::array();
@@ -899,41 +941,13 @@ static json equipotentialJson(const SNLEquipotential& equi,
     auto* it = occ.getInstTerm();
     if (sinks && it->getDirection() == SNLTerm::Direction::Input &&
         !sinks->count(occ)) continue;
-    auto* bt = it->getBitTerm();
-    // Each path entry is [name, child_id, model_name]: the model name lets
-    // the schematic label the hierarchical module boxes it draws around a
-    // driver trace (see EquipotentialView's hierarchy grouping).
+    // The occurrence path is to the parent design.
     json pathArr = json::array();
     for (auto* inst : occ.getPath().getInstances())
       pathArr.push_back(json::array({instanceName(inst),
                                      static_cast<unsigned>(inst->getID()),
                                      designName(inst->getModel())}));
-    // The occurrence path is to the parent design; append the instance itself
-    auto* theInst = it->getInstance();
-    pathArr.push_back(json::array({instanceName(theInst),
-                                   static_cast<unsigned>(theInst->getID()),
-                                   designName(theInst->getModel())}));
-    auto entry = bitTermJson(bt);
-    setNet(entry, it->getNet());
-    // The instance's own role: a parameterized primitive can take it from
-    // the instance's parameters.
-    setTermRole(entry, it);
-    entry["path"] = std::move(pathArr);
-    if (auto* model = theInst->getModel()) {
-      entry["design_ref"] = {
-        {"db_id",      static_cast<unsigned>(model->getDB()->getID())},
-        {"library_id", static_cast<unsigned>(model->getLibrary()->getID())},
-        {"design_id",  static_cast<unsigned>(model->getID())}
-      };
-    }
-    entry["primitive_type"] = toString(getPrimitiveType(theInst));
-    entry["has_instances"] = hasAnySubInstances(theInst->getModel());
-    // Lets the view tell whether every pin of this instance is already on
-    // screen (solid box) or only a subset (dashed, double-click to expand).
-    if (auto* model = theInst->getModel())
-      entry["bit_term_count"] = model->getBitTerms().size();
-    withSources(entry, instanceHasSources(theInst));
-    occs.push_back(std::move(entry));
+    occs.push_back(instTermOccurrenceJson(std::move(pathArr), it));
   }
   return json{{"terms", std::move(terms)}, {"occurrences", std::move(occs)}};
 }
@@ -1195,6 +1209,110 @@ std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) cons
     {"terms",         allBitTermsJson(design)}
   };
   withSources(reply["instance"], instanceHasSources(instance));
+  return reply.dump();
+}
+
+// ---------------------------------------------------------------------------
+// load_top_view: the top design as a sheet -- its ports, and, when it's
+// small enough to read, its contents: every top-level net as an
+// equipotential-shaped body (top-level ports in "terms", the pins of the
+// top's own instances, one level deep, in "occurrences"), so the viewer
+// lays it out like any other set of nets, with no frame around it. Nets
+// joined by an assign are one body (the viewer hides assigns, as the
+// tree does); anonymous constant tie-off nets are left out, as in
+// nets_response. Mirrors protocol.py's _handle_load_top_view().
+// ---------------------------------------------------------------------------
+static constexpr size_t kMaxTopViewInstances = 250;
+
+static bool isAssignInstance(const SNLInstance* inst) {
+  return inst->getModel() && NLDB0::isAssign(inst->getModel());
+}
+
+static json topViewNets(const SNLDesign* top) {
+  std::vector<SNLBitNet*> bitNets;
+  std::map<const SNLBitNet*, size_t> indexOf;
+  auto add = [&](SNLBitNet* bn) {
+    indexOf.emplace(bn, bitNets.size());
+    bitNets.push_back(bn);
+  };
+  for (auto* net : top->getNets()) {
+    if (auto* bus = dynamic_cast<SNLBusNet*>(net)) {
+      const int lo = std::min(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
+      const int hi = std::max(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
+      for (int b = lo; b <= hi; ++b)
+        if (auto* bit = bus->getBit(b)) add(bit);
+    } else if (auto* bn = dynamic_cast<SNLBitNet*>(net)) {
+      add(bn);
+    }
+  }
+  // Union-find over the nets an assign joins.
+  std::vector<size_t> parent(bitNets.size());
+  for (size_t i = 0; i < parent.size(); ++i) parent[i] = i;
+  auto find = [&](size_t i) {
+    while (parent[i] != i) i = parent[i] = parent[parent[i]];
+    return i;
+  };
+  for (auto* inst : top->getInstances()) {
+    if (!isAssignInstance(inst)) continue;
+    std::optional<size_t> first;
+    for (auto* it : inst->getInstTerms()) {
+      auto found = it->getNet() ? indexOf.find(it->getNet()) : indexOf.end();
+      if (found == indexOf.end()) continue;
+      if (!first) first = find(found->second);
+      else        parent[find(found->second)] = *first;
+    }
+  }
+  // Groups in the order of their first net.
+  std::vector<size_t> order;
+  std::map<size_t, std::vector<size_t>> groups;
+  for (size_t i = 0; i < bitNets.size(); ++i) {
+    auto& g = groups[find(i)];
+    if (g.empty()) order.push_back(find(i));
+    g.push_back(i);
+  }
+  json bodies = json::array();
+  for (size_t root : order) {
+    const auto& members = groups[root];
+    if (std::all_of(members.begin(), members.end(),
+                    [&](size_t i) { return isAnonymousConstantNet(bitNets[i]); }))
+      continue;
+    json terms = json::array(), occs = json::array();
+    for (size_t i : members) {
+      for (auto* comp : bitNets[i]->getComponents()) {
+        if (auto* it = dynamic_cast<SNLInstTerm*>(comp)) {
+          if (!isAssignInstance(it->getInstance()))
+            occs.push_back(instTermOccurrenceJson(json::array(), it));
+        } else if (auto* bt = dynamic_cast<SNLBitTerm*>(comp)) {
+          terms.push_back(bitTermWithNetJson(bt));
+        }
+      }
+    }
+    if (terms.size() + occs.size() < 2) continue;  // nothing to wire
+    bodies.push_back({{"terms", std::move(terms)}, {"occurrences", std::move(occs)}});
+  }
+  return bodies;
+}
+
+std::string LocalSNLProvider::buildTopViewResponse(const json& req) const {
+  json reply = {{"response", "top_view_response"}, {"found", false}};
+  // Echoed: the viewer's automatic request on load only draws into an
+  // empty view.
+  if (req.contains("auto")) reply["auto"] = req["auto"];
+  auto* top = db_ ? db_->getTopDesign() : nullptr;
+  if (!top) return reply.dump();
+  size_t count = 0;
+  for (auto* inst : top->getInstances())
+    if (!isAssignInstance(inst)) ++count;
+  size_t maxInstances = kMaxTopViewInstances;
+  if (req.contains("max_instances") && req["max_instances"].is_number_integer())
+    maxInstances = static_cast<size_t>(std::max<long long>(0, req["max_instances"].get<long long>()));
+  const bool contents = req.value("contents", false) && count <= maxInstances;
+  reply["found"]          = true;
+  reply["name"]           = designName(top);
+  reply["ports"]          = allBitTermsJson(top);
+  reply["instance_count"] = count;
+  reply["contents"]       = contents;
+  reply["nets"]           = contents ? topViewNets(top) : json::array();
   return reply.dump();
 }
 

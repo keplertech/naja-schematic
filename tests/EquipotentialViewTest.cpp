@@ -450,6 +450,122 @@ TEST_F(SchematicClicks, ResetLayoutDropsTheStartInstance) {
   EXPECT_EQ(shape({{5, "core"}, {7, "u7"}}), nullptr);
 }
 
+// The top design as a sheet (load_top_view): its ports are flags on the
+// sheet's edges, open until a net reaches them.
+std::vector<EquipotentialView::ExpandedPort> topPorts() {
+  return EquipotentialView::portsFromJson(nlohmann::json::parse(R"([
+    {"name": "a", "child_id": 0, "direction": 0},
+    {"name": "b[0]", "child_id": 1, "direction": 0, "bit": 0},
+    {"name": "y", "child_id": 2, "direction": 1}])"));
+}
+
+const InstanceShape* portFlag(const SchematicView& sv, const std::string& name) {
+  for (const auto& s : sv.instances)
+    if (s.modelName == "port" && !s.ports.empty() && s.ports[0].name == name) return &s;
+  return nullptr;
+}
+
+TEST_F(SchematicClicks, TopPortsAreOpenFlagsInputsLeftOutputsRight) {
+  EquipotentialView::showTopPorts(topPorts());
+  EXPECT_TRUE(EquipotentialView::hasStartShapes());
+  frame(3);
+  for (auto name : {"a", "b[0]", "y"}) {
+    const InstanceShape* f = portFlag(sv(), name);
+    ASSERT_NE(f, nullptr) << name;
+    EXPECT_TRUE(f->ports[0].open) << name;
+  }
+  EXPECT_LT(portFlag(sv(), "a")->x, portFlag(sv(), "y")->x);
+  EXPECT_NE(portFlag(sv(), "a")->y, portFlag(sv(), "b[0]")->y);  // stacked, not on top of each other
+
+  EquipotentialView::resetLayout();
+  EXPECT_FALSE(EquipotentialView::hasStartShapes());
+  frame(2);
+  EXPECT_EQ(portFlag(sv(), "a"), nullptr);
+}
+
+TEST_F(SchematicClicks, ClickingAnOpenTopPortLoadsItsNetWithTheTopPath) {
+  EquipotentialView::showTopPorts(topPorts());
+  frame(3);
+  const InstanceShape* b0 = portFlag(sv(), "b[0]");
+  ASSERT_NE(b0, nullptr);
+  const ImVec2 at = portAnchor(*b0, b0->ports[0]);
+  moveTo(toScreen(ImVec2(at.x + 4.f, at.y)));
+  click();
+
+  auto reqs = sent("load_equipotential");
+  ASSERT_EQ(reqs.size(), 1u);
+  EXPECT_EQ(reqs[0]["path"], nlohmann::json::array());
+  EXPECT_EQ(reqs[0]["term_id"], 1);
+  EXPECT_EQ(reqs[0]["bit"], 0);
+  frame();
+  EXPECT_TRUE(portFlag(sv(), "b[0]")->ports[0].pending);  // filled while it loads
+}
+
+TEST_F(SchematicClicks, ANetReachingATopPortReplacesItsOpenFlag) {
+  EquipotentialView::showTopPorts(topPorts());
+  Equipotential e{true, {}, {}};
+  e.terms.push_back(BitTerm{"a", 0, Direction::Input, std::nullopt});
+  e.occurrences.push_back(occ("u1", 1, "A", 10, Direction::Input, 1));
+  add(e);
+  frame(3);
+  int flagsA = 0;
+  for (const auto& s : sv().instances)
+    if (s.modelName == "port" && !s.ports.empty() && s.ports[0].name == "a") ++flagsA;
+  EXPECT_EQ(flagsA, 1);                                // one flag, wired
+  EXPECT_FALSE(portFlag(sv(), "a")->ports[0].open);
+  EXPECT_TRUE(portFlag(sv(), "y")->ports[0].open);     // the others still open
+  ASSERT_EQ(sv().routes.size(), 1u);
+}
+
+TEST_F(SchematicClicks, AnOpenTopBusIsOneFlagUntilClicked) {
+  EquipotentialView::showTopPorts(EquipotentialView::portsFromJson(nlohmann::json::parse(R"([
+    {"name": "d[0]", "child_id": 4, "direction": 0, "bit": 0},
+    {"name": "d[1]", "child_id": 4, "direction": 0, "bit": 1},
+    {"name": "d[2]", "child_id": 4, "direction": 0, "bit": 2},
+    {"name": "d[3]", "child_id": 4, "direction": 0, "bit": 3}])")));
+  frame(3);
+  const InstanceShape* bus = portFlag(sv(), "d[3:0]");
+  ASSERT_NE(bus, nullptr);
+  EXPECT_TRUE(bus->ports[0].isBus);
+  EXPECT_EQ(portFlag(sv(), "d[0]"), nullptr);
+
+  // A click shows the bits (no request: nothing to load yet)...
+  const ImVec2 at = portAnchor(*bus, bus->ports[0]);
+  moveTo(toScreen(ImVec2(at.x + 4.f, at.y)));
+  click();
+  frame();
+  EXPECT_TRUE(sent("load_equipotential").empty());
+  EXPECT_EQ(portFlag(sv(), "d[3:0]"), nullptr);
+  for (auto name : {"d[0]", "d[1]", "d[2]", "d[3]"}) {
+    ASSERT_NE(portFlag(sv(), name), nullptr) << name;
+    EXPECT_TRUE(portFlag(sv(), name)->ports[0].open) << name;
+  }
+
+  // ...each of which then loads its own net.
+  const InstanceShape* d2 = portFlag(sv(), "d[2]");
+  const ImVec2 at2 = portAnchor(*d2, d2->ports[0]);
+  moveTo(toScreen(ImVec2(at2.x + 4.f, at2.y)));
+  click();
+  auto reqs = sent("load_equipotential");
+  ASSERT_EQ(reqs.size(), 1u);
+  EXPECT_EQ(reqs[0]["term_id"], 4);
+  EXPECT_EQ(reqs[0]["bit"], 2);
+}
+
+TEST_F(SchematicClicks, AWiredBitLeavesTheRestOfItsBusMerged) {
+  EquipotentialView::showTopPorts(EquipotentialView::portsFromJson(nlohmann::json::parse(R"([
+    {"name": "d[0]", "child_id": 4, "direction": 0, "bit": 0},
+    {"name": "d[1]", "child_id": 4, "direction": 0, "bit": 1},
+    {"name": "d[2]", "child_id": 4, "direction": 0, "bit": 2}])")));
+  Equipotential e{true, {}, {}};
+  e.terms.push_back(BitTerm{"d", 4, Direction::Input, 1});
+  e.occurrences.push_back(occ("u1", 1, "A", 10, Direction::Input, 1));
+  add(e);
+  frame(3);
+  EXPECT_NE(portFlag(sv(), "d[1]"), nullptr);       // wired, on its own
+  EXPECT_NE(portFlag(sv(), "d (*2)"), nullptr);     // the open bits 0 and 2
+}
+
 // An escaped instance name can contain '/': the top-level instance "a/b" and
 // instance b inside a are two boxes, and each click reports its own path.
 TEST_F(SchematicClicks, NamesContainingSlashesStayOneLevel) {

@@ -166,6 +166,9 @@ void setupProvider(AppState& state) {
           root.value("name", std::string("<unnamed root>")),
           designRef, false, false, root.value("has_children", false), false);
       }
+      // The top as a sheet: its contents if it's small enough to read,
+      // else its ports (see top_view_response below).
+      if (state.showTopOnLoad) EquipotentialView::requestTopView(true, true);
     } else if (resp == "instances_response" || resp == "primitives_response" || resp == "children_loaded") {
       unsigned gui_id = 0;
       std::vector<InstanceResponseJson> children;
@@ -482,6 +485,39 @@ void setupProvider(AppState& state) {
         EquipotentialView::showInstance(*start);
       }
       if (!add) SelectionStore::select(*path, SelectionStore::Origin::Host);
+    } else if (resp == "top_view_response") {
+      // The top design as a sheet: its ports as flags on the edges, open
+      // until a net reaches them, and its contents -- every top-level net,
+      // as equipotentials -- when the host sent them (the top was small
+      // enough). Replaces the view, except for the request made on load,
+      // which only draws into an empty one: whatever a host pushed
+      // meanwhile (a focus, a net) is kept.
+      if (!j.value("found", false)) return;
+      if (j.value("auto", false) &&
+          (!state.guiData->equipotentials_.empty() || EquipotentialView::hasStartShapes()))
+        return;
+      ShowNetStore::forget();
+      state.guiData->clearEquipotentials();
+      EquipotentialView::resetLayout();
+      EquipotentialView::showTopPorts(EquipotentialView::portsFromJson(j.value("ports", json::array())));
+      size_t added = 0;
+      if (j.contains("nets") && j["nets"].is_array())
+        for (const auto& e : j["nets"])
+          if (state.guiData->addEquipotential(new Equipotential(e.get<Equipotential>()))) ++added;
+      state.tableEquipotentialCount = std::max<size_t>(added, 1);
+      const std::string name = j.value("name", std::string("top"));
+      const size_t count = j.value("instance_count", size_t(0));
+      if (j.value("contents", false)) {
+        Console::Log("Showing " + name + ": " + std::to_string(count) + " instance(s), " +
+                     std::to_string(added) + " net(s)");
+      } else if (count > EquipotentialView::kMaxTopViewInstances) {
+        Console::Log(name + " has " + std::to_string(count) + " instances, more than " +
+                     std::to_string(EquipotentialView::kMaxTopViewInstances) +
+                     " can be drawn at once: showing its ports. Click a port to add its net, "
+                     "or right-click it to trace its fan-in.");
+      } else {
+        Console::Log("Showing the ports of " + name);
+      }
     } else if (resp == "error") {
       std::cerr << "Backend error: " << j["message"] << std::endl;
       // A refused review write: shown in the Review tab.

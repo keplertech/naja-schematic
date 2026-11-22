@@ -850,7 +850,9 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
     ImVec2 anchor = sv.worldToScreen(ImVec2(inst.x, inst.y), canvasPos, canvasSize);
 
     const bool hovered = !sv.exporting && p.id == sv.hoveredPortId;
-    ImU32 outline = hovered ? kPinHoverColor : p.color != 0 ? p.color
+    const bool pending = !sv.exporting && p.pending;
+    ImU32 outline = hovered ? kPinHoverColor : pending ? kPinPendingColor
+                  : p.color != 0 ? p.color
                   : p.styleColor != 0 ? p.styleColor : kBoundaryPortLineColor;
     float lineThickness = p.styleWidth > 0.0f ? std::max(1.0f, p.styleWidth * sv.transform.scale)
                                               : std::max(1.0f, 1.25f * sv.transform.scale);
@@ -885,6 +887,15 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
     };
     dl->AddConvexPolyFilled(pts, 5, flagFill);
     dl->AddPolyline(pts, 5, outline, lineThickness, ImDrawFlags_Closed);
+    // Open (its net isn't in the view yet, see Port::open): a hollow
+    // circle where its wire would start, filled while it loads -- the same
+    // "click here to see more" as an instance's open pin.
+    if (p.open && !sv.hideUiGlyphs) {
+        const float r = std::max(kMinOpenPinR, kOpenPinBaseR * sv.transform.scale);
+        const ImVec2 c(anchor.x + (p.isInput ? r : -r), anchor.y);
+        dl->AddCircleFilled(c, r, pending ? outline : kCanvasBgColor);
+        dl->AddCircle(c, r, outline, 0, std::max(1.0f, lineThickness * 0.8f));
+    }
     // Not connected: a no-connect cross where its wire would start.
     if (p.unconnected) {
         const float r = halfH * 0.6f;

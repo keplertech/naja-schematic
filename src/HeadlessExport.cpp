@@ -6,6 +6,8 @@
 #include <iostream>
 
 #include "AppLogic.h"
+#include "EquipotentialView.h"
+#include "GUIData.h"
 #include "HeadlessView.h"
 #include "LocalSNLProvider.h"
 #include "SchematicView.h"
@@ -90,9 +92,13 @@ int runHeadlessExport(LocalSNLProvider* provider, const HeadlessExportOptions& o
     return p.is_array() && p.empty();
   };
   if (options.focus && isTop(*options.focus)) {
-    std::cerr << "--focus []: the top design has no box to draw; use --equipotential or "
-                 "--trace on its ports ({\"terminal\":\"<port>\"})\n";
-    status = 1;
+    // The top design as a sheet, as the GUI draws it on load: its contents
+    // when small enough, else only its ports.
+    EquipotentialView::requestTopView(true, false);
+    if (view.state().guiData->equipotentials_.empty())
+      std::cerr << "--focus []: the top's contents aren't drawn (more than "
+                << EquipotentialView::kMaxTopViewInstances
+                << " instances, or no nets): only its ports\n";
   } else if (options.focus) {
     json req = *options.focus;
     req["request"] = "resolve_instance";
