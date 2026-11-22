@@ -82,6 +82,25 @@ void NetlistTree::createRootNode(
   root_ = new NetlistTreeInstanceNode(this, name, design_ref, hasTerms, hasPrimitives, hasInstances, hasNets, hasSources);
 }
 
+namespace {
+
+// The selected row must stand out more than the row under the mouse. The
+// default theme does the opposite (hovered at 80% opacity, selected at 31%),
+// so after a context-menu click the row under the closed menu looked
+// selected. Here the selection takes the strong accent and hover a faint
+// one, both from the current theme. Pops 2 colors.
+void pushRowColors() {
+  const ImGuiStyle& style = ImGui::GetStyle();
+  ImVec4 accent = style.Colors[ImGuiCol_HeaderHovered];
+  ImVec4 faint  = accent;
+  accent.w = 0.85f;
+  faint.w  = 0.22f;
+  ImGui::PushStyleColor(ImGuiCol_Header, accent);
+  ImGui::PushStyleColor(ImGuiCol_HeaderHovered, faint);
+}
+
+}  // namespace
+
 void NetlistTree::render() {
   // A selection made elsewhere (schematic click, host focus_instance) is
   // revealed here; one made by clicking this tree is already visible.
@@ -94,19 +113,8 @@ void NetlistTree::render() {
   }
   advanceReveal();
   if (root_) {
-    // The selected row must stand out more than the row under the mouse.
-    // The default theme does the opposite (hovered at 80% opacity, selected
-    // at 31%), so after a context-menu click the row under the closed menu
-    // looked selected. Here the selection takes the strong accent and hover
-    // a faint one, both from the current theme.
-    const ImGuiStyle& style = ImGui::GetStyle();
-    ImVec4 accent = style.Colors[ImGuiCol_HeaderHovered];
-    ImVec4 faint  = accent;
-    accent.w = 0.85f;
-    faint.w  = 0.22f;
-    ImGui::PushStyleColor(ImGuiCol_Header, accent);
-    ImGui::PushStyleColor(ImGuiCol_HeaderHovered, faint);
-    root_->render();
+    pushRowColors();
+    root_->render(treeView_);
     ImGui::PopStyleColor(2);
   } else {
     ImGui::Text("Loading Root Node...");
@@ -217,10 +225,16 @@ void NetlistTree::advanceReveal() {
         }
       }
       highlighted_ = target->guiID_;
+      // The selection panel shows the instance's rows at its top level:
+      // only a bus row to open there.
+      panelView_ = RevealView{};
+      if (target != row) panelView_.forceOpen.insert(row->guiID_);
+      panelView_.scrollTo = target->guiID_;
+      panelFocus_ = revealLeaf_->kind;
     }
   }
-  for (auto* n : toOpen) forceOpen_.insert(n->guiID_);
-  scrollTo_ = target->guiID_;
+  for (auto* n : toOpen) treeView_.forceOpen.insert(n->guiID_);
+  treeView_.scrollTo = target->guiID_;
   revealPath_.reset();
   revealLeaf_.reset();
 }
@@ -269,7 +283,83 @@ InstancePath NetlistTreeNode::getInstancePath() const {
   return parent ? parent->getInstancePath() : InstancePath();
 }
 
-void NetlistTreeNode::render() {
+NetlistTreeNode* NetlistTree::selectionPanelInstance() const {
+  return SelectionStore::hasSelection() ? findInstance(SelectionStore::selected()) : root_;
+}
+
+void NetlistTree::renderSelectionPanel() {
+  if (!root_) {
+    ImGui::TextDisabled("Loading...");
+    return;
+  }
+  NetlistTreeNode* node = selectionPanelInstance();
+  if (!node) {
+    ImGui::TextDisabled("Loading %s...", displayPath(SelectionStore::selected()).c_str());
+    return;
+  }
+  auto* inst = node->getInstanceNode();
+  if (inst->isRoot()) {
+    ImGui::TextUnformatted(inst->getLabel().c_str());
+    if (!SelectionStore::hasSelection()) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(top: select an instance to see its own)");
+    }
+  } else {
+    ImGui::TextUnformatted(displayPath(inst->getInstancePath()).c_str());
+    if (!inst->getModelName().empty()) {
+      ImGui::SameLine();
+      ImGui::TextDisabled("(%s)", inst->getModelName().c_str());
+    }
+  }
+  // The top's terms are its ports, an instance's its pins. A fixed tab ID,
+  // so the tab stays selected as the label changes.
+  const char* termsTab = inst->isRoot() ? "Ports###Terms" : "Pins###Terms";
+  if (ImGui::BeginTabBar("##SelectionTabs")) {
+    for (auto kind : {RevealLeaf::Kind::Term, RevealLeaf::Kind::Net}) {
+      ImGuiTabItemFlags flags = panelFocus_ == kind ? ImGuiTabItemFlags_SetSelected : 0;
+      if (ImGui::BeginTabItem(kind == RevealLeaf::Kind::Term ? termsTab : "Nets", nullptr, flags)) {
+        ImGui::BeginChild("##Rows", ImVec2(0, 0), false, ImGuiWindowFlags_HorizontalScrollbar);
+        pushRowColors();
+        renderPanelRows(inst, kind);
+        ImGui::PopStyleColor(2);
+        ImGui::EndChild();
+        ImGui::EndTabItem();
+      }
+    }
+    panelFocus_.reset();
+    ImGui::EndTabBar();
+  }
+}
+
+void NetlistTree::renderPanelRows(NetlistTreeNode* instance, RevealLeaf::Kind kind) {
+  const bool isTerm = kind == RevealLeaf::Kind::Term;
+  const auto type = isTerm ? NetlistTreeGroupNode::Type::Terms : NetlistTreeGroupNode::Type::Nets;
+  instance->expand();  // an instance node's groups are created locally
+  NetlistTreeNode* group = nullptr;
+  for (auto* child : *instance->children_) {
+    auto* g = dynamic_cast<NetlistTreeGroupNode*>(child);
+    if (g && g->getType() == type) { group = g; break; }
+  }
+  if (!group) {
+    ImGui::TextDisabled(!isTerm ? "No nets." : instance->isRoot() ? "No ports." : "No pins.");
+    return;
+  }
+  if (!group->children_) {
+    if (!group->hasRequestedChildren_) {
+      group->hasRequestedChildren_ = true;
+      group->sendLoadRequest();
+    }
+    ImGui::TextDisabled("Loading...");
+    return;
+  }
+  if (group->children_->empty()) {
+    ImGui::TextDisabled(!isTerm ? "No nets." : instance->isRoot() ? "No ports." : "No pins.");
+    return;
+  }
+  for (auto* row : *group->children_) row->render(panelView_);
+}
+
+void NetlistTreeNode::render(NetlistTree::RevealView& view) {
   expand();
   NetlistTree* tree = getTree();
   ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
@@ -280,7 +370,7 @@ void NetlistTreeNode::render() {
       tree->highlighted_ == guiID_) {
     flags = flags | ImGuiTreeNodeFlags_Selected;
   }
-  if (tree->forceOpen_.erase(guiID_)) {
+  if (view.forceOpen.erase(guiID_)) {
     ImGui::SetNextItemOpen(true);
   }
   if (getColor() != 0) {
@@ -290,9 +380,9 @@ void NetlistTreeNode::render() {
   if (getColor() != 0) {
     ImGui::PopStyleColor();
   }
-  if (tree->scrollTo_ == guiID_) {
+  if (view.scrollTo == guiID_) {
     ImGui::SetScrollHereY(0.5f);
-    tree->scrollTo_.reset();
+    view.scrollTo.reset();
   }
   // Clicking an instance's label (not its open/close arrow) selects it.
   if (isInstanceNode() && ImGui::IsItemClicked(ImGuiMouseButton_Left) && !ImGui::IsItemToggledOpen()) {
@@ -414,7 +504,7 @@ void NetlistTreeNode::render() {
   if (isOpen and not isLeaf()) {
     if (children_ != nullptr) {
       for (auto child : *children_) {
-        child->render();
+        child->render(view);
       }
     } else {
       auto flags = ImGuiTreeNodeFlags_Leaf;
@@ -502,7 +592,8 @@ NetlistTreeGroupNode::NetlistTreeGroupNode(
 std::string NetlistTreeGroupNode::getLabel() const {
   switch (type_) {
     case Type::Terms:
-      return "Terms";
+      // A design's own terms are its ports; an instance's, its pins.
+      return getParent()->isRoot() ? "Ports" : "Pins";
     case Type::Nets:
       return "Nets";
     case Type::Primitives:

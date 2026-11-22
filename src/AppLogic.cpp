@@ -130,13 +130,13 @@ static void renderShortcutsWindow(bool& open) {
     {"Click an open pin or port",    "Add its net to the schematic"},
     {"Click a bus pin or port",      "Show its bits"},
     {"Double-click a dashed box",    "Show all of its pins"},
-    {"Click a box",                  "Select the instance (also in the tree)"},
+    {"Click a box",                  "Select the instance (also in the tree, its pins and nets below it)"},
     {"Click a stacked (summary) box","Show the sinks it gathers (View > Fanout)"},
     {"Click a wire",                 "Select (highlight) its net"},
     {"Click a box's hierarchy glyph","Show / hide what is inside it"},
     {"Click a review badge",         "Open its thread in the Review tab"},
     {"Right-click",                  "Context menu: trace, sources, properties, comment, fit, clear"},
-    {"Right-click a tree row",       "Its menu; Add Comment... starts a review thread (with --review)"},
+    {"Right-click a tree, pin or net row", "Its menu; Add Comment... starts a review thread (with --review)"},
   };
   auto table = [](const char* id, const Row* rows, size_t n) {
     if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) return;
@@ -502,12 +502,18 @@ bool appFrame(AppState& state) {
   ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, io.DisplaySize.y - menuBarHeight));
   ImGui::Begin("MainWindow", nullptr, window_flags);
   {
-    static float leftWidthTop    = 300.0f;
+    // Two columns: the left one holds the hierarchy tree over the
+    // selection panel (the selected instance's terms and nets), the right
+    // one the schematic over the tabs. Each column has its own horizontal
+    // splitter.
+    static float leftWidth       = 300.0f;
+    static float treeHeight      = -1.0f;
     static float schematicHeight = -1.0f;
     const float  minPanelW = 0.0f;
     const float  maxPanelW = io.DisplaySize.x - 100.0f;
     const float  minPanelH = 40.0f;
     float totalH = ImGui::GetContentRegionAvail().y;
+    if (treeHeight < 0.0f)      treeHeight      = totalH * 0.65f;
     if (schematicHeight < 0.0f) schematicHeight = totalH * 0.65f;
     // Show Sources: the reference list plus readable code need more than
     // the default bottom panel. Grow it to this share of the height, once
@@ -535,11 +541,28 @@ bool appFrame(AppState& state) {
         ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
     };
 
-    // === Top row: tree | vsplitter | schematic ===
-    ImGui::BeginChild("SchematicRow", ImVec2(0, schematicHeight), false,
+    auto hSplitter = [&](const char* id, float& height) {
+      ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
+      ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f,0.3f,0.3f,0.5f));
+      ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.2f,0.2f,0.2f,0.5f));
+      ImGui::Button(id, ImVec2(-1, 4.0f));
+      ImGui::PopStyleColor(3);
+      if (ImGui::IsItemActive()) {
+        height += ImGui::GetIO().MouseDelta.y;
+        float maxH = totalH - minPanelH - 4.0f;
+        if (height < minPanelH) height = minPanelH;
+        if (height > maxH)      height = maxH;
+      }
+      if (ImGui::IsItemHovered() || ImGui::IsItemActive())
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+    };
+
+    // === Left column: tree / hsplitter / selection panel ===
+    // A child width of 0 means "fill the rest": keep a collapsed column at 1.
+    ImGui::BeginChild("LeftColumn", ImVec2(std::max(leftWidth, 1.0f), 0), false,
       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     {
-      ImGui::BeginChild("TreePanel", ImVec2(leftWidthTop, 0), true);
+      ImGui::BeginChild("TreePanel", ImVec2(0, treeHeight), true);
       {
         ImGui::Text("Netlist Hierarchy");
         ImGui::Separator();
@@ -556,10 +579,25 @@ bool appFrame(AppState& state) {
       }
       ImGui::EndChild();
 
-      vSplitter("##VSplitTop", leftWidthTop);
+      hSplitter("##HSplitLeft", treeHeight);
 
-      ImGui::SameLine();
-      ImGui::BeginChild("SchematicPanel", ImVec2(0, 0), true,
+      // The selected instance's Pins / Nets (the top's Ports / Nets).
+      ImGui::BeginChild("SelectionPanel", ImVec2(0, 0), true,
+        ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+      if (state.guiData->netlist_ && state.connected)
+        state.guiData->netlist_->renderSelectionPanel();
+      ImGui::EndChild();
+    }
+    ImGui::EndChild();
+
+    vSplitter("##VSplit", leftWidth);
+
+    // === Right column: schematic / hsplitter / tabs ===
+    ImGui::SameLine();
+    ImGui::BeginChild("RightColumn", ImVec2(0, 0), false,
+      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+    {
+      ImGui::BeginChild("SchematicPanel", ImVec2(0, schematicHeight), true,
         ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
       {
         if (EquipotentialView::takePendingClear()) {
@@ -583,28 +621,11 @@ bool appFrame(AppState& state) {
         }
       }
       ImGui::EndChild();
-    }
-    ImGui::EndChild();
 
-    // === Horizontal splitter ===
-    ImGui::PushStyleColor(ImGuiCol_Button,        ImVec4(0,0,0,0));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f,0.3f,0.3f,0.5f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,  ImVec4(0.2f,0.2f,0.2f,0.5f));
-    ImGui::Button("##HSplitter", ImVec2(-1, 4.0f));
-    ImGui::PopStyleColor(3);
-    if (ImGui::IsItemActive()) {
-      schematicHeight += ImGui::GetIO().MouseDelta.y;
-      float maxH = totalH - minPanelH - 4.0f;
-      if (schematicHeight < minPanelH) schematicHeight = minPanelH;
-      if (schematicHeight > maxH)      schematicHeight = maxH;
-    }
-    if (ImGui::IsItemHovered() || ImGui::IsItemActive())
-      ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+      hSplitter("##HSplitter", schematicHeight);
 
-    // === Bottom row: Table / Diagnostics / RTL Source tabs ===
-    ImGui::BeginChild("TableRow", ImVec2(0, 0), false,
-      ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-    {
+      // Equipotential / Traces / Review / Source / Properties tabs, under
+      // the schematic.
       ImGui::BeginChild("TablePanel", ImVec2(0, 0), true,
         ImGuiWindowFlags_AlwaysVerticalScrollbar | ImGuiWindowFlags_HorizontalScrollbar);
       {

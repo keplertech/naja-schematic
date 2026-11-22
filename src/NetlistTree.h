@@ -93,6 +93,19 @@ class NetlistTree {
     NetlistTreeNode* findInstance(const InstancePath& path) const;
     // The term/net row a leaf reveal highlighted, if any.
     NetlistTreeNode* highlightedNode() const;
+
+    // The selection panel (bottom left): the pins and nets of the selected
+    // instance, or the ports and nets of the top design when no instance is
+    // selected, as two tabs. Its rows are this tree's own term/net nodes, drawn with
+    // the same menus, review badges and colors; the panel requests their
+    // group (load_terms/load_nets) the first time it shows it. A leaf reveal
+    // also selects the matching tab and scrolls to the row there.
+    void renderSelectionPanel();
+    // The instance the panel shows; nullptr while its tree level is still
+    // loading (the tree's reveal of the selection loads it).
+    NetlistTreeNode* selectionPanelInstance() const;
+    // The tab a leaf reveal asked the panel to select, until it renders.
+    std::optional<RevealLeaf::Kind> selectionPanelFocus() const { return panelFocus_; }
   private:
     friend class NetlistTreeNode;
     INetlistProvider*       ws_                    {nullptr};
@@ -106,8 +119,17 @@ class NetlistTree {
     // The term/net row a leaf reveal ended on, drawn selected.
     std::optional<unsigned>     highlighted_;
     // Nodes render() must open (once each) / scroll to, after a reveal.
-    std::set<unsigned>      forceOpen_;
-    std::optional<unsigned> scrollTo_;
+    // The tree and the selection panel draw the same row nodes, each in its
+    // own window, so each has its own.
+    struct RevealView {
+      std::set<unsigned>      forceOpen;
+      std::optional<unsigned> scrollTo;
+    };
+    RevealView              treeView_;
+    RevealView              panelView_;
+    std::optional<RevealLeaf::Kind> panelFocus_;
+    // The selection panel's rows of `kind` for `instance`.
+    void renderPanelRows(NetlistTreeNode* instance, RevealLeaf::Kind kind);
     // Last SelectionStore revision render() reacted to.
     unsigned                seenSelectionRevision_ {0};
 };
@@ -226,7 +248,7 @@ class NetlistTreeNode {
     unsigned    guiID_                {0};
     Children*   children_             {nullptr};
   private:
-    void render();
+    void render(NetlistTree::RevealView& view);
 
     void*       parent_               {nullptr};
     bool        hasRequestedChildren_ {false};
@@ -275,6 +297,7 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual bool hasSources() const override { return hasSources_; }
     virtual bool isInstanceNode() const override { return true; }
     const std::string& getName() const { return name_; }
+    const std::string& getModelName() const { return modelName_; }
   private:
     bool        isRoot_         {false};
     std::string name_           {};

@@ -11,8 +11,8 @@ void PropertiesView::render() {
   if (!PropertiesStore::hasProperties()) {
     ImGui::TextDisabled("No object selected.");
     ImGui::TextWrapped(
-      "Right-click an instance or term in the tree, or an instance box on "
-      "the schematic, and choose \"Show Properties\".");
+      "Select an instance in the tree or on the schematic, or right-click "
+      "a pin or net row and choose \"Show Properties\".");
     return;
   }
 
