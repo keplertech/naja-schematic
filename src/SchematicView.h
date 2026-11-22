@@ -125,11 +125,6 @@ public:
     static constexpr double kMaxPngPixels = 120e6;
     // Set on the copy exportSvg() draws: skips transient interaction feedback.
     bool exporting = false;
-    // Opacity of the routed wires (0..1). Below 1 only on the copy
-    // EquipotentialView draws while boxes slide to a new layout: a route's
-    // segments are world polylines that can't follow the boxes, so they fade
-    // in instead. Never set on the view itself, so exports are unaffected.
-    float wireAlpha = 1.0f;
     // Set on the export copy by ViewOptions' hide_ui_glyphs: leaves out the
     // "more pins" dots of a partial box and the hollow stubs of open pins,
     // which only mean something to a viewer's user (clicks).

@@ -604,13 +604,9 @@ under `SchematicLayout`), so the boxes already shown keep their columns,
 order and heights, and a net against their columns is drawn as a feedback
 wire rather than moving them; only a pin click does this -- any other
 change (expanding a box, a tree action, a host push, a headless export)
-lays out fresh. What still moves is animated: for `kTransitionSeconds` the view draws a
-copy (`g_drawn`) in which each shape shown before the click slides from its
-old screen place to its new one (`SchematicInteraction::shapeRects()`/
-`rebase()`/`interpolateShapes()`, keyed by `shapeKey()`), and routed wires,
-whose segments can't follow the boxes, fade in (`SchematicView::wireAlpha`
-through a `FadedPainter`). Only the drawing is animated: `g_schematic`,
-hit-testing and exports have the new layout at once. Pins are hit-tested nearest-first by
+lays out fresh. The new layout is drawn at once, never animated: sliding
+boxes and fading wires in made every wire blink on each click, for little
+gain once the hints keep boxes in place. Pins are hit-tested nearest-first by
 `SchematicInteraction::pickPin`. `GUIData::addEquipotential()` rejects a net
 whose endpoints are all already shown (`equipotentialCovers()`), so neither a
 re-click nor a trace re-listing a shown net draws its wires twice.
