@@ -2,6 +2,7 @@
 #include "SelectionStore.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <cfloat>
 #include <cmath>
 #include <optional>
@@ -511,6 +512,61 @@ TEST_F(TreeReveal, OffScreenRowsAreSkippedAtTheirHeight) {
   io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
   frame();
   EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{kRows - 1, "u" + std::to_string(kRows - 1)}}));
+
+  SelectionStore::clear();
+  ImGui::DestroyContext();
+}
+
+// A skipped row still counts toward the tree's width, as it was last drawn:
+// the horizontal extent doesn't shrink when the longest name scrolls away.
+TEST_F(TreeReveal, OffScreenRowsKeepTheirWidth) {
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(800.f, 600.f);
+  io.DeltaTime   = 1.f / 60.f;
+  io.IniFilename = nullptr;
+  unsigned char* px; int w, h;
+  io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+  float pitch = 0.f, right = 0.f;
+  std::optional<float> scrollTo;
+  auto frame = [&] {
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImVec2(300, 500));
+    ImGui::Begin("Tree", nullptr, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_HorizontalScrollbar);
+    if (scrollTo) ImGui::SetScrollY(*scrollTo);
+    pitch = ImGui::GetTextLineHeightWithSpacing();
+    tree.render();
+    right = ImGui::GetCurrentWindow()->DC.CursorMaxPos.x;
+    ImGui::End();
+    ImGui::Render();
+  };
+  constexpr int kRows = 5000, kLong = 2500;
+  SelectionStore::clear();
+  tree.reveal(InstancePath{{0, "u0"}});
+  frame();
+  auto inst = take("load_instances");
+  auto prim = take("load_primitives");
+  ASSERT_EQ(inst.size(), 1u);
+  ASSERT_EQ(prim.size(), 1u);
+  std::vector<Child> children;
+  for (int i = 0; i < kRows; ++i)
+    children.push_back({i == kLong ? std::string(200, 'x') : "u" + std::to_string(i), i, false});
+  answer(inst[0]["gui_id"].get<unsigned>(), children);
+  answer(prim[0]["gui_id"].get<unsigned>(), {});
+  scrollTo = 0.f;
+  frame(); frame();
+  const float narrow = right;
+
+  scrollTo = (kLong + 4) * pitch - 200.f;  // the long row in view
+  frame(); frame();
+  const float wide = right;
+  EXPECT_GT(wide, narrow + 500.f);
+
+  scrollTo = 0.f;  // and out of view again
+  frame(); frame();
+  EXPECT_FLOAT_EQ(right, wide);
+  EXPECT_LT(tree.rowsDrawnForTesting(), 60u);
 
   SelectionStore::clear();
   ImGui::DestroyContext();

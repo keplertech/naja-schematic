@@ -1121,8 +1121,11 @@ and a leaf reveal (review Go To) also selects the panel's tab
   a closed row outside the window's visible area at its height without
   drawing it (unless a reveal opens or scrolls to it, or its menu is
   open), so a level with thousands of instances costs per frame what its
-  visible rows do; the selection panel uses it too. Test:
-  `TreeReveal.OffScreenRowsAreSkippedAtTheirHeight`.
+  visible rows do; the selection panel uses it too. A skipped row keeps
+  the width it had when last drawn (`NetlistTreeNode::rowWidth_`), so the
+  horizontal extent doesn't shrink as long names scroll away. Tests:
+  `TreeReveal.OffScreenRowsAreSkippedAtTheirHeight`,
+  `TreeReveal.OffScreenRowsKeepTheirWidth`.
 - **`GUIData`** — top-level UI state container (the netlist tree plus the list
   of currently-displayed `Equipotential`s).
 - **`SchematicView`** / **`EquipotentialView`** — the two main render panels;
