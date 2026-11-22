@@ -45,6 +45,138 @@ void buildItems(const Equipotential* eq,
 }
 
 // ---------------------------------------------------------------------------
+// Opened instances
+// ---------------------------------------------------------------------------
+namespace {
+// A pin: the instance it's on (an occurrence's path, or an opened
+// instance's own pin), its term id and bit (-1: not a bus bit).
+using PinKey = std::tuple<InstancePath, unsigned, int>;
+
+PinKey pinKey(const InstancePath& path, const BitTerm& t) { return { path, t.child_id, t.bit.value_or(-1) }; }
+
+bool strictlyInside(const InstancePath& outer, const InstancePath& path) {
+    return path.size() > outer.size() && std::equal(outer.begin(), outer.end(), path.begin());
+}
+} // namespace
+
+OpenedView openInstances(const std::vector<const Equipotential*>& shown,
+                         const std::map<InstancePath, OpenedInstance>& opened) {
+    // Pieces: the shown nets, then every opened instance's nets (`owner`).
+    struct Piece { const Equipotential* eq; const OpenedInstance* owner; };
+    std::vector<Piece> pieces;
+    for (const auto* eq : shown)
+        if (eq) pieces.push_back({ eq, nullptr });
+    for (const auto& [path, oi] : opened)
+        for (const auto& net : oi.nets) pieces.push_back({ &net, &oi });
+
+    // Every pin a piece has; an opened instance's net also has the
+    // instance's own pins (its terms).
+    std::map<PinKey, std::vector<size_t>> piecesOfPin;
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        for (const auto& occ : pieces[i].eq->occurrences) piecesOfPin[pinKey(occ.path, occ.term)].push_back(i);
+        if (pieces[i].owner)
+            for (const auto& t : pieces[i].eq->terms) piecesOfPin[pinKey(pieces[i].owner->path, t)].push_back(i);
+    }
+    // Joined where they share a pin, when an opened instance's net is one
+    // of them (two shown nets stay apart, as they're drawn without it).
+    std::vector<size_t> parent(pieces.size());
+    for (size_t i = 0; i < parent.size(); ++i) parent[i] = i;
+    auto find = [&](size_t i) {
+        while (parent[i] != i) i = parent[i] = parent[parent[i]];
+        return i;
+    };
+    for (const auto& [key, ids] : piecesOfPin) {
+        if (std::none_of(ids.begin(), ids.end(), [&](size_t i) { return pieces[i].owner != nullptr; })) continue;
+        for (size_t k = 1; k < ids.size(); ++k) parent[find(ids[k])] = find(ids[0]);
+    }
+
+    // Flag ids, per opened instance: its pins in the order its nets list them.
+    std::map<PinKey, unsigned> flagIndex;
+    for (const auto& [path, oi] : opened) {
+        unsigned next = 0;
+        for (const auto& net : oi.nets)
+            for (const auto& t : net.terms)
+                if (flagIndex.emplace(pinKey(path, t), next).second) ++next;
+    }
+
+    OpenedView view;
+    std::map<size_t, std::vector<size_t>> members;  // by root, in piece order
+    std::vector<size_t> roots;
+    for (size_t i = 0; i < pieces.size(); ++i) {
+        auto& m = members[find(i)];
+        if (m.empty()) roots.push_back(find(i));
+        m.push_back(i);
+    }
+    for (size_t root : roots) {
+        Equipotential out;
+        out.found = true;
+        bool anyShown = false, direct = false;
+        std::set<std::pair<unsigned, int>> termSeen;
+        std::set<PinKey> occSeen;
+        struct Flag { const OpenedInstance* owner; const BitTerm* term; };
+        std::vector<Flag> flags;
+        std::set<PinKey> flagSeen;
+        for (size_t i : members[root]) {
+            const Piece& pc = pieces[i];
+            if (!pc.owner) {
+                anyShown = true;
+                direct   = direct || pc.eq->direct;
+                for (int id : pc.eq->traceIds)
+                    if (std::find(out.traceIds.begin(), out.traceIds.end(), id) == out.traceIds.end())
+                        out.traceIds.push_back(id);
+                for (const auto& [id, insts] : pc.eq->traceInstances)
+                    out.traceInstances[id].insert(insts.begin(), insts.end());
+                for (const auto& t : pc.eq->terms)
+                    if (termSeen.insert({ t.child_id, t.bit.value_or(-1) }).second) out.terms.push_back(t);
+            } else {
+                for (const auto& t : pc.eq->terms)
+                    if (flagSeen.insert(pinKey(pc.owner->path, t)).second) flags.push_back({ pc.owner, &t });
+            }
+            for (const auto& occ : pc.eq->occurrences) {
+                if (opened.count(occ.path)) continue;  // drawn as its contents
+                if (occSeen.insert(pinKey(occ.path, occ.term)).second) out.occurrences.push_back(occ);
+            }
+        }
+        out.direct = anyShown ? direct : true;
+        // A pin of an opened instance gets a flag when nothing on its net is
+        // outside the instance: everything else is inside it, or another of
+        // its own pins (a net passing through).
+        std::vector<const InstancePath*> anchors;
+        for (const auto& occ : out.occurrences) anchors.push_back(&occ.path);
+        static const InstancePath kTop;
+        for (size_t k = 0; k < out.terms.size(); ++k) anchors.push_back(&kTop);
+        std::vector<InstTermOccurrence> flagOccs;  // appended after: `anchors` points into the list
+        for (const auto& f : flags) {
+            const InstancePath& owner = f.owner->path;
+            bool alone = std::all_of(anchors.begin(), anchors.end(),
+                                     [&](const InstancePath* a) { return strictlyInside(owner, *a); });
+            for (const auto& g : flags)
+                alone = alone && (g.owner->path == owner || strictlyInside(owner, g.owner->path));
+            if (!alone) continue;
+            InstTermOccurrence occ;
+            occ.path = owner;
+            occ.path.push_back({ kBoundaryIdBase + flagIndex[pinKey(owner, *f.term)], "" });
+            occ.pathIds    = pathIds(owner);
+            occ.pathModels = f.owner->pathModels;
+            occ.pathModels.push_back("");
+            occ.term       = *f.term;
+            // Seen from inside: an input pin drives the net, an output
+            // receives it.
+            occ.term.direction = f.term->direction == Direction::Input  ? Direction::Output
+                               : f.term->direction == Direction::Output ? Direction::Input
+                                                                        : Direction::Inout;
+            occ.bit_term_count = 1;
+            view.boundary[occ.path] = { owner, f.owner->pathModels, *f.term };
+            flagOccs.push_back(std::move(occ));
+        }
+        for (auto& occ : flagOccs) out.occurrences.push_back(std::move(occ));
+        if (out.terms.size() + out.occurrences.size() < 1) continue;
+        view.nets.push_back(std::move(out));
+    }
+    return view;
+}
+
+// ---------------------------------------------------------------------------
 // Symbols
 // ---------------------------------------------------------------------------
 namespace {

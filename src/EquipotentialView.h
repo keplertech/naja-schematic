@@ -19,35 +19,6 @@ class EquipotentialView {
       bool                 clock = false;      // a sequential cell's clock pin
     };
 
-    // --- Hierarchy embedding (nested boxes) ---
-    // One sub-instance one level inside an expanded instance's model.
-    struct InstanceChild {
-      std::string name;
-      unsigned    childId = 0;
-      DesignRef   designRef{};
-      PrimitiveType primitiveType = PrimitiveType::Unknown;
-      bool        hasInstances = false;  // can itself be expanded further
-      bool        hasSources = false;    // has source references (get_sources)
-    };
-    // One endpoint of an internal net: a bit term on a specific sub-instance
-    // (instChildId set), or the parent instance's own boundary port
-    // (instChildId absent).
-    struct InternalPin {
-      std::optional<unsigned> instChildId;
-      std::string             name;
-      Direction                direction = Direction::Inout;
-      std::optional<int>       bit;
-    };
-    struct InternalNet {
-      std::string               name;
-      std::optional<int>        bit;
-      std::vector<InternalPin>  pins;
-    };
-    struct InstanceInternals {
-      std::vector<InstanceChild> children;
-      std::vector<InternalNet>   nets;
-    };
-
     // One instance to draw on its own, with its full interface and no net
     // yet -- a starting point to extend pin by pin (see showInstance()).
     struct StartInstance {
@@ -147,9 +118,18 @@ class EquipotentialView {
     // unconnected and returns true.
     static bool noteUnconnectedReply(const json& reply, const Equipotential& eq);
 
-    // Called by AppLogic when an instance_internals_response arrives.
-    static void applyInstanceInternals(const InstancePath& path,
-                                       const InstanceInternals& data);
+    // Opening a hierarchical instance (its box's "+"): it's drawn as its
+    // contents -- its model's nets, through load_instance_view -- in its
+    // frame instead of as a box, the nets already reaching its pins going on
+    // inside; a pin with nothing outside it in view is a port flag in the
+    // frame. Closing it (its frame's "-") draws the box again, and closes
+    // the instances opened inside it.
+    static void openInstance(const InstancePath& path);
+    static void closeInstance(const InstancePath& path);
+    static bool isOpened(const InstancePath& path);
+    // Called by AppLogic when an instance_view_response arrives: opens the
+    // instance, or logs why not (not found, too many instances to draw).
+    static void applyInstanceView(const json& reply);
 
     // Test hooks (read-only): the geometry the last renderSchematic() drew,
     // and the screen position of its canvas's top-left corner -- enough for a

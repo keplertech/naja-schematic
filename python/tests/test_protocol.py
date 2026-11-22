@@ -76,10 +76,6 @@ def test_instance_requests_echo_the_instance_path(top):
                                "instance_path": path, "design_ref": sub_ref})
     assert terms["response"] == "expanded_instance_terms"
     assert terms["instance_path"] == path and terms["terms"]
-    (internals,) = handle_request({"request": "load_instance_internals",
-                                   "instance_path": path, "design_ref": sub_ref})
-    assert internals["response"] == "instance_internals_response"
-    assert internals["instance_path"] == path
 
 
 def test_unknown_design_ref_is_an_error_reply(top):

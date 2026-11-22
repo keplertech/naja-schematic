@@ -485,7 +485,7 @@ TEST_F(SchematicClicks, SameNetTwiceIsOneThinWire) {
 
 // Only the first press of a double-click acts: double-clicking the hierarchy
 // glyph used to toggle it open and straight back closed.
-TEST_F(SchematicClicks, DoubleClickOnHierarchyGlyphTogglesItOnce) {
+TEST_F(SchematicClicks, DoubleClickOnHierarchyGlyphOpensItOnce) {
   Equipotential e{true, {}, {}};
   e.occurrences.push_back(occ("u1", 1, "Q", 10, Direction::Output, 1));
   auto sub = occ("u2", 2, "A", 20, Direction::Input, 1);
@@ -501,8 +501,160 @@ TEST_F(SchematicClicks, DoubleClickOnHierarchyGlyphTogglesItOnce) {
   moveTo(toScreen(ImVec2((x0 + x1) * 0.5f, (y0 + y1) * 0.5f)));
   doubleClick();
 
-  EXPECT_TRUE(shape({{2, "u2"}})->hierExpanded);
-  EXPECT_EQ(sent("load_instance_internals").size(), 1u);
+  const auto reqs = sent("load_instance_view");
+  ASSERT_EQ(reqs.size(), 1u);
+  EXPECT_EQ(reqs[0]["id_path"], nlohmann::json::array({2}));
+  EXPECT_EQ(reqs[0]["path"], nlohmann::json::array({"u2"}));
+}
+
+// ---------------------------------------------------------------------------
+// Opening a hierarchical instance (its "+"): drawn as its contents
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// u2 (model "sub", pins A and Y) holds one buffer g0: A -> g0.I, g0.O -> Y.
+// As protocol.py / LocalSNLProvider answer load_instance_view.
+nlohmann::json u2View() {
+  return nlohmann::json::parse(R"({
+    "response": "instance_view_response", "found": true, "path": ["u2"], "id_path": [2],
+    "model": "sub", "instance_count": 1, "contents": true,
+    "nets": [
+      {"terms": [{"name": "A", "child_id": 20, "direction": 0}],
+       "occurrences": [{"path": [["u2", 2, "sub"], ["g0", 5, "BUF"]], "name": "I",
+                        "child_id": 0, "direction": 0, "primitive_type": "buf", "bit_term_count": 2}]},
+      {"terms": [{"name": "Y", "child_id": 21, "direction": 1}],
+       "occurrences": [{"path": [["u2", 2, "sub"], ["g0", 5, "BUF"]], "name": "O",
+                        "child_id": 1, "direction": 1, "primitive_type": "buf", "bit_term_count": 2}]}]
+  })");
+}
+
+} // namespace
+
+class OpenInstance : public SchematicClicks {
+ protected:
+  // u1.Q -> u2.A, u2 hierarchical with pins A and Y.
+  void showU2() {
+    Equipotential e{true, {}, {}};
+    e.occurrences.push_back(occ("u1", 1, "Q", 10, Direction::Output, 1));
+    auto sub = occ("u2", 2, "A", 20, Direction::Input, 2);
+    sub.has_instances = true;
+    sub.pathModels = {"sub"};
+    e.occurrences.push_back(sub);
+    add(e);
+    frame(3);
+  }
+  void open() {
+    EquipotentialView::openInstance({{2, "u2"}});
+    EquipotentialView::applyInstanceView(u2View());
+    frame(3);
+  }
+  const InstanceShape* frameOf(const InstancePath& path) const {
+    for (const auto& s : sv().instances)
+      if (s.isHierGroup && s.path == path) return &s;
+    return nullptr;
+  }
+  const InstanceShape* flagNamed(const std::string& name) const {
+    for (const auto& s : sv().instances)
+      if (s.modelName == "port" && !s.ports.empty() && s.ports[0].name == name) return &s;
+    return nullptr;
+  }
+};
+
+TEST_F(OpenInstance, TheBoxIsReplacedByItsContentsInItsFrame) {
+  showU2();
+  ASSERT_NE(shape({{2, "u2"}}), nullptr);
+  open();
+  EXPECT_TRUE(EquipotentialView::isOpened({{2, "u2"}}));
+  EXPECT_EQ(shape({{2, "u2"}}), nullptr);
+  const InstanceShape* g0 = shape({{2, "u2"}, {5, "g0"}});
+  ASSERT_NE(g0, nullptr);
+  const InstanceShape* fr = frameOf({{2, "u2"}});
+  ASSERT_NE(fr, nullptr);
+  EXPECT_TRUE(fr->hierExpanded);  // its "-" closes it
+  EXPECT_TRUE(canShowHierToggle(*fr));
+  // Laid out like a trace: the buffer right of its driver, in the frame.
+  const InstanceShape* u1 = shape({{1, "u1"}});
+  ASSERT_NE(u1, nullptr);
+  EXPECT_GT(g0->x, u1->x + u1->w);
+  EXPECT_GE(g0->x, fr->x);
+  EXPECT_LE(g0->x + g0->w, fr->x + fr->w);
+}
+
+TEST_F(OpenInstance, TheNetGoesOnThroughThePinAndTheOtherPinIsAFlag) {
+  showU2();
+  open();
+  // u1.Q is wired to g0.I (through u2.A, which has no box now).
+  const InstanceShape* u1 = shape({{1, "u1"}});
+  const InstanceShape* g0 = shape({{2, "u2"}, {5, "g0"}});
+  ASSERT_TRUE(u1 && g0);
+  bool wired = false;
+  for (const auto& n : sv().nets) wired = wired || (n.srcInstance == u1->id && n.dstInstance == g0->id);
+  EXPECT_TRUE(wired);
+  // A goes on outside: no flag. Y has nothing outside: a flag inside the
+  // frame, after the buffer, its wire from g0.O.
+  EXPECT_EQ(flagNamed("A"), nullptr);
+  const InstanceShape* y = flagNamed("Y");
+  ASSERT_NE(y, nullptr);
+  EXPECT_FALSE(y->ports[0].isInput);
+  EXPECT_GT(y->x, g0->x + g0->w);
+  bool toFlag = false;
+  for (const auto& n : sv().nets) toFlag = toFlag || (n.srcInstance == g0->id && n.dstInstance == y->id);
+  EXPECT_TRUE(toFlag);
+  const InstanceShape* fr = frameOf({{2, "u2"}});
+  ASSERT_NE(fr, nullptr);
+  EXPECT_LE(y->x, fr->x + fr->w);
+}
+
+TEST_F(OpenInstance, TheFramesGlyphClosesIt) {
+  showU2();
+  open();
+  const InstanceShape* fr = frameOf({{2, "u2"}});
+  ASSERT_NE(fr, nullptr);
+  float x0, y0, x1, y1;
+  hierToggleGlyphRect(*fr, x0, y0, x1, y1);
+  moveTo(toScreen(ImVec2((x0 + x1) * 0.5f, (y0 + y1) * 0.5f)));
+  click();
+  frame(2);
+  EXPECT_FALSE(EquipotentialView::isOpened({{2, "u2"}}));
+  EXPECT_NE(shape({{2, "u2"}}), nullptr);
+  EXPECT_EQ(shape({{2, "u2"}, {5, "g0"}}), nullptr);
+  EXPECT_EQ(flagNamed("Y"), nullptr);
+}
+
+TEST_F(OpenInstance, AnInstanceShownAloneOpensAsASheetOfItsPins) {
+  EquipotentialView::StartInstance start;
+  start.path         = {{2, "u2"}};
+  start.pathIds      = {2};
+  start.pathModels   = {"sub"};
+  start.hasInstances = true;
+  start.ports        = { {"A", Direction::Input, 20}, {"Y", Direction::Output, 21} };
+  EquipotentialView::showInstance(start);
+  frame(3);
+  ASSERT_NE(shape({{2, "u2"}}), nullptr);
+  open();
+  EXPECT_EQ(shape({{2, "u2"}}), nullptr);
+  const InstanceShape* a = flagNamed("A");
+  const InstanceShape* y = flagNamed("Y");
+  const InstanceShape* g0 = shape({{2, "u2"}, {5, "g0"}});
+  ASSERT_TRUE(a && y && g0);
+  EXPECT_TRUE(a->ports[0].isInput);
+  // Input flag, then the buffer, then the output flag.
+  EXPECT_LT(a->x, g0->x);
+  EXPECT_GT(y->x, g0->x + g0->w);
+}
+
+TEST_F(OpenInstance, TooManyInstancesLeavesTheBox) {
+  showU2();
+  EquipotentialView::openInstance({{2, "u2"}});
+  auto reply = u2View();
+  reply["contents"] = false;
+  reply["instance_count"] = 900;
+  reply["nets"] = nlohmann::json::array();
+  EquipotentialView::applyInstanceView(reply);
+  frame(2);
+  EXPECT_FALSE(EquipotentialView::isOpened({{2, "u2"}}));
+  EXPECT_NE(shape({{2, "u2"}}), nullptr);
 }
 
 // ---------------------------------------------------------------------------

@@ -805,7 +805,10 @@ def _bit_key(bit_net):
     return (bit_net.getID(), None)
 
 
-def top_view_nets(top):
+def top_view_nets(top, parent_path=()):
+    # `parent_path`: the levels down to `top` ([name, child_id, model_name]
+    # each), empty for the top design itself -- prefixed to every
+    # occurrence's path.
     bit_nets = []
     index_of = {}
     for net in top.getNets():
@@ -854,7 +857,7 @@ def top_view_nets(top):
             for comp in bit_nets[i].getComponents():
                 if isinstance(comp, naja.SNLInstTerm):
                     if not _is_assign_instance(comp.getInstance()):
-                        occurrences.append(inst_term_json([], comp))
+                        occurrences.append(inst_term_json(parent_path, comp))
                 elif isinstance(comp, naja.SNLBitTerm):
                     terms.append(bit_term_json(comp))
         if len(terms) + len(occurrences) < 2:
@@ -900,69 +903,42 @@ def _handle_instance_selected(u, request):
     return []
 
 
-def _handle_load_instance_internals(u, request):
-    instance_path = request.get("instance_path", [])
-    instance_id_path = request.get("instance_id_path", [])
-    design_ref = get_design_ref(request.get("design_ref"))
-    model = u.getSNLDesign(design_ref) if design_ref else None
-    children = []
-    nets = []
-
-    if model:
-        for instance in model.getNonPrimitiveInstances():
-            sub = instance.getModel()
-            children.append(serialize_model(
-                sub, instance.getID(), instance.getName(), instance))
-        for instance in model.getPrimitiveInstances():
-            sub = instance.getModel()
-            if sub.isAssign():
-                continue
-            children.append(serialize_model(
-                sub, instance.getID(), instance.getName(), instance))
-
-        def emit_bit_net(bit_net, name, bit):
-            pins = []
-            for comp in bit_net.getComponents():
-                if isinstance(comp, naja.SNLInstTerm):
-                    bt = comp.getBitTerm()
-                    pins.append({
-                        "name": bt.getName(),
-                        "child_id": bt.getID(),
-                        "direction": direction_to_int(bt.getDirection()),
-                        "bit": bt.getBit() if isinstance(bt, naja.SNLBusTermBit) else None,
-                        "inst_id": comp.getInstance().getID(),
-                    })
-                elif isinstance(comp, naja.SNLBitTerm):
-                    pins.append({
-                        "name": comp.getName(),
-                        "child_id": comp.getID(),
-                        "direction": direction_to_int(comp.getDirection()),
-                        "bit": comp.getBit() if isinstance(comp, naja.SNLBusTermBit) else None,
-                    })
-            if len(pins) < 2:
-                return
-            entry = {"name": name, "pins": pins}
-            if bit is not None:
-                entry["bit"] = bit
-            nets.append(entry)
-
-        for net in model.getNets():
-            if isinstance(net, naja.SNLBusNet):
-                lo, hi = sorted((net.getLSB(), net.getMSB()))
-                for b in range(lo, hi + 1):
-                    bit_net = net.getBit(b)
-                    if bit_net:
-                        emit_bit_net(bit_net, net.getName(), b)
-            else:
-                emit_bit_net(net, net.getName(), None)
-
-    return [{
-        "response": "instance_internals_response",
-        "instance_path": instance_path,
-        "instance_id_path": instance_id_path,
-        "children": children,
-        "nets": nets
-    }]
+# load_instance_view: one hierarchical instance opened in the schematic --
+# its contents as nets, the same way load_top_view gives the top's: every
+# net of the instance's model as an equipotential-shaped body, the pins of
+# its own instances (one level down) in "occurrences", under the instance's
+# full path, and the model's ports the net reaches in "terms" (the
+# instance's pins, seen from inside). The viewer joins those to the nets
+# already drawn at the instance's pins. Contents only up to
+# "max_instances", like the top view. Mirrors LocalSNLProvider.cpp's
+# buildInstanceViewResponse().
+def _handle_load_instance_view(u, request):
+    reply = {"response": "instance_view_response",
+             "path": list(request.get("path") or []), "found": False}
+    if isinstance(request.get("id_path"), list):
+        reply["id_path"] = list(request["id_path"])
+    top = u.getTopDesign()
+    if top is None:
+        return [reply]
+    design, chain = resolve_request_path(top, request)
+    if design is None or not chain:
+        return [reply]
+    count = sum(1 for instance in design.getInstances() if not _is_assign_instance(instance))
+    max_instances = request.get("max_instances")
+    if not isinstance(max_instances, int) or isinstance(max_instances, bool):
+        max_instances = MAX_TOP_VIEW_INSTANCES
+    contents = count <= max(0, max_instances)
+    levels = [[inst.getName(), inst.getID(), inst.getModel().getName()] for inst in chain]
+    reply.update({
+        "path": [inst.getName() for inst in chain],
+        "id_path": [inst.getID() for inst in chain],
+        "found": True,
+        "model": design.getName(),
+        "instance_count": count,
+        "contents": contents,
+        "nets": top_view_nets(design, levels) if contents else [],
+    })
+    return [reply]
 
 
 def request_sources(top, request):
@@ -1221,11 +1197,11 @@ _HANDLERS = {
     "load_equipotential": _handle_load_equipotential,
     "trace_driver": _handle_trace_driver,
     "expand_instance_terms": _handle_expand_instance_terms,
-    "load_instance_internals": _handle_load_instance_internals,
     "get_sources": _handle_get_sources,
     "get_properties": _handle_get_properties,
     "resolve_instance": _handle_resolve_instance,
     "load_top_view": _handle_load_top_view,
+    "load_instance_view": _handle_load_instance_view,
     "instance_selected": _handle_instance_selected,
 }
 

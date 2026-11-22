@@ -392,6 +392,15 @@ float instanceNameWidth(const std::string& name) {
     return ImGui::GetFont()->CalcTextSizeA(kInstanceLabelBaseSize, FLT_MAX, 0.0f, name.c_str()).x;
 }
 
+float boundaryFlagWidth(const std::string& name) {
+    const float textW = name.empty() ? 0.0f
+                      : ImGui::GetFont()->CalcTextSizeA(kPortLabelBaseSize, FLT_MAX, 0.0f, name.c_str()).x;
+    return (kBoundaryPortBodyHalfHs + 1.0f) * kBoundaryPortHalfHBase +
+           (textW > 0.0f ? kBoundaryPortLabelGap + textW : 0.0f);
+}
+
+float boundaryFlagHeight() { return 2.0f * kBoundaryPortHalfHBase; }
+
 float netLabelWidth(const std::string& label) {
     return ImGui::GetFont()->CalcTextSizeA(SchematicLayout::kNetLabelFontSize, FLT_MAX, 0.0f, label.c_str()).x;
 }
@@ -502,6 +511,26 @@ static void drawInstanceName(SchematicPainter* dl, const InstanceShape& inst,
                     pal().instanceModel, model.c_str());
 }
 
+// Hierarchy open/close glyph: a small "+" (a box: open it) or "-" (an
+// opened instance's frame: close it) square straddling the top border. Its
+// world-space rect is shared with EquipotentialView's click hit-test via
+// hierToggleGlyphRect().
+static void drawHierToggle(SchematicPainter* dl, const InstanceShape& inst, const SchematicView& sv,
+                           const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    if (!canShowHierToggle(inst) || sv.exporting) return;
+    float gx0, gy0, gx1, gy1;
+    hierToggleGlyphRect(inst, gx0, gy0, gx1, gy1);
+    ImVec2 gmin, gmax;
+    sv.worldRectToScreen(gx0, gy0, gx1 - gx0, gy1 - gy0, canvasPos, canvasSize, gmin, gmax);
+    dl->AddRectFilled(gmin, gmax, IM_COL32(40, 40, 40, 230), 3.0f);
+    dl->AddRect(gmin, gmax, IM_COL32(200, 200, 200, 200), 3.0f, 0, 1.5f);
+    const char* glyph = inst.hierExpanded ? "-" : "+";
+    ImVec2 ts = ImGui::CalcTextSize(glyph);
+    ImVec2 c((gmin.x + gmax.x) * 0.5f, (gmin.y + gmax.y) * 0.5f);
+    dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f),
+                IM_COL32(255, 255, 255, 255), glyph);
+}
+
 // ---------------------------------------------------------------------------
 // Generic box renderer (fallback for unknown gate types)
 // ---------------------------------------------------------------------------
@@ -558,22 +587,7 @@ static void drawGenericInstance(SchematicPainter* dl, const InstanceShape& inst,
             }
         }
 
-        // Hierarchy expand/collapse glyph: a small "+"/"-" square straddling
-        // the top border. Its world-space rect is shared with
-        // EquipotentialView's click hit-test via hierToggleGlyphRect().
-        if (canShowHierToggle(inst) && !sv.exporting) {
-            float gx0, gy0, gx1, gy1;
-            hierToggleGlyphRect(inst, gx0, gy0, gx1, gy1);
-            ImVec2 gmin, gmax;
-            sv.worldRectToScreen(gx0, gy0, gx1 - gx0, gy1 - gy0, canvasPos, canvasSize, gmin, gmax);
-            dl->AddRectFilled(gmin, gmax, IM_COL32(40, 40, 40, 230), 3.0f);
-            dl->AddRect(gmin, gmax, IM_COL32(200, 200, 200, 200), 3.0f, 0, 1.5f);
-            const char* glyph = inst.hierExpanded ? "-" : "+";
-            ImVec2 ts = ImGui::CalcTextSize(glyph);
-            ImVec2 c((gmin.x + gmax.x) * 0.5f, (gmin.y + gmax.y) * 0.5f);
-            dl->AddText(ImGui::GetFont(), ImGui::GetFontSize(), ImVec2(c.x - ts.x * 0.5f, c.y - ts.y * 0.5f),
-                        IM_COL32(255, 255, 255, 255), glyph);
-        }
+        drawHierToggle(dl, inst, sv, canvasPos, canvasSize);
     }
 
     drawPorts(dl, inst, sv, canvasPos, canvasSize, /*namesInside=*/true);
@@ -947,6 +961,7 @@ static void drawHierGroupInstance(SchematicPainter* dl, const InstanceShape& ins
             dl->AddText(font, fontSize, ImVec2(rmin.x + padding, rmin.y + padding),
                         pal().frameLabel, label.c_str());
     }
+    drawHierToggle(dl, inst, sv, canvasPos, canvasSize);
 }
 
 // ---------------------------------------------------------------------------
@@ -1236,11 +1251,7 @@ void shapeWorldExtent(const InstanceShape& inst, ImVec2& outMin, ImVec2& outMax)
     float flag = 0.0f;
     if (port && !inst.ports.empty()) {
         const Port& p = inst.ports[0];
-        const std::string& shownName = p.label.empty() ? p.name : p.label;
-        const float textW = ImGui::GetFont()->CalcTextSizeA(kPortLabelBaseSize, FLT_MAX, 0.0f,
-                                                            shownName.c_str()).x;
-        flag = (kBoundaryPortBodyHalfHs + 1.0f) * kBoundaryPortHalfHBase +
-               (textW > 0.0f ? kBoundaryPortLabelGap + textW : 0.0f);
+        flag = boundaryFlagWidth(p.label.empty() ? p.name : p.label);
     }
     const bool named = !SchematicLayout::shownName(inst, instanceNameWidth).empty();
     const float stack = inst.isSummary ? 2.0f * kSummaryStackStep : 0.0f;
@@ -1516,7 +1527,7 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
                 if (src && srcPort) {
                     dl->BeginGroup(netGroup(net.netName,
                                             src->modelName == "port"
-                                                ? SchematicNetRef{ {}, srcPort->name, true }
+                                                ? SchematicNetRef{ src->path, srcPort->name, true }
                                                 : SchematicNetRef{ src->path, srcPort->name, false },
                                             net.label));
                     open = key;

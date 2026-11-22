@@ -56,7 +56,7 @@ Both backends implement it: `python/naja_schematic/protocol.py` and
 ### `has_sources` flags
 
 Instance entries (`instances_response`, `primitives_response`, `root`,
-`instance_internals_response` children, equipotential occurrences,
+equipotential occurrences,
 `instance_resolved`'s `instance`), term entries (`terms_response`) and net
 entries (`nets_response`) carry `"has_sources": true` when there is
 something to show. Like `clock`, the flag is only sent when it is true:

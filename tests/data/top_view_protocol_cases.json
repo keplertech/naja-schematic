@@ -1,11 +1,13 @@
 {
   "comment": [
-    "load_top_view cases both backends must answer the same way: run by",
+    "load_top_view and load_instance_view cases both backends must answer",
+    "the same way: run by",
     "python/tests/test_top_view.py against protocol.py and by",
     "tests/provider/LocalSNLProviderProtocolTest.cpp against LocalSNLProvider,",
     "same format as source_protocol_cases.json. top_view/top.v: a top with a",
     "bus port, an assign joining y to w2, a hierarchical instance (u2) and",
-    "unconnected ports (b[1], nc), which have no net to draw."
+    "unconnected ports (b[1], nc), which have no net to draw. load_instance_view",
+    "opens u2: its model's nets, its pins seen from inside as terms."
   ],
   "source_root": "top_view",
   "design": {"verilog": "top.v", "top": "top"},
@@ -44,6 +46,36 @@
     {"name": "the ports only, and the auto flag echoed",
      "request": {"request": "load_top_view", "auto": true},
      "expect": [{"response": "top_view_response", "found": true, "auto": true,
-       "instance_count": 3, "contents": false, "nets": []}]}
+       "instance_count": 3, "contents": false, "nets": []}]},
+
+    {"name": "an instance opened: its nets, its own pins as terms, its instances' pins under its path",
+     "request": {"request": "load_instance_view", "id_path": [1], "max_instances": 250},
+     "expect": [{"response": "instance_view_response", "found": true,
+       "path": ["u2"], "id_path": [1], "model": "sub", "instance_count": 1, "contents": true,
+       "nets": [
+         {"terms": [{"name": "i", "child_id": 0, "direction": 0, "net": "i"}],
+          "occurrences": [{"path": [["u2", 1, "sub"], ["u0", 0, "LEAF"]], "name": "A",
+                           "direction": 0, "net": "i"}]},
+         {"terms": [{"name": "o", "child_id": 1, "direction": 1, "net": "o"}],
+          "occurrences": [{"path": [["u2", 1, "sub"], ["u0", 0, "LEAF"]], "name": "Y",
+                           "direction": 1, "net": "o"}]}]}]},
+
+    {"name": "an instance named by its names",
+     "request": {"request": "load_instance_view", "path": ["u2"]},
+     "expect": [{"response": "instance_view_response", "found": true,
+       "path": ["u2"], "id_path": [1], "contents": true}]},
+
+    {"name": "an instance over max_instances: no contents",
+     "request": {"request": "load_instance_view", "id_path": [1], "max_instances": 0},
+     "expect": [{"response": "instance_view_response", "found": true, "instance_count": 1,
+       "contents": false, "nets": []}]},
+
+    {"name": "an unknown instance, or the top: not found",
+     "request": {"request": "load_instance_view", "id_path": [9]},
+     "expect": [{"response": "instance_view_response", "found": false, "id_path": [9]}]},
+
+    {"name": "the top is no instance to open",
+     "request": {"request": "load_instance_view", "id_path": []},
+     "expect": [{"response": "instance_view_response", "found": false}]}
   ]
 }

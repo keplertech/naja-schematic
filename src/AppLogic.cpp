@@ -134,9 +134,10 @@ static void renderShortcutsWindow(bool& open) {
     {"Click a box",                  "Select the instance (also in the tree, its pins and nets below it)"},
     {"Click a stacked (summary) box","Show the sinks it gathers (View > Fanout)"},
     {"Click a wire",                 "Select (highlight) its net"},
-    {"Click a box's hierarchy glyph","Show / hide what is inside it"},
+    {"Click a box's + glyph",        "Open the instance: its contents, laid out, in its frame"},
+    {"Click a frame's - glyph",      "Close the opened instance: its box again"},
     {"Click a review badge",         "Open its thread in the Review tab"},
-    {"Right-click",                  "Context menu: trace, sources, properties, comment, fit, clear"},
+    {"Right-click",                  "Context menu: trace, sources, properties, comment, open/close, fit, clear"},
     {"Right-click a tree, pin or net row", "Its menu; Add Comment... starts a review thread (with --review)"},
   };
   auto table = [](const char* id, const Row* rows, size_t n) {
