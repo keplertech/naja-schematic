@@ -456,7 +456,7 @@ when changing how either resolves or answers.
 for SystemVerilog operators (`and_N`, `or_N`, `not_1`, ...) have unnamed
 terms (output id 0, input bus id 1), and elaboration leaves many nets
 unnamed. Both backends send their name as `""` (never a made-up one), and
-the viewer shows `<term #id>` (`displayTermName()`, `displayPinLabel()`
+the viewer shows `<pin #id>` (`displayTermName()`, `displayPinLabel()`
 for a label already ending in `[bit]`) and `<net #id>` (`displayNetName()`)
 -- distinct from an instance's `<#id>`. Display only, never parsed: terms
 and nets are addressed by id. A gate symbol's bus pin draws only its range
@@ -1053,7 +1053,7 @@ either). The raw Python API is read-only for sources, so Python tests get
 source data by loading files, never by setting it.
 The tree (flagged rows) and schematic boxes (and module frames, always)
 offer "Show Sources"; the reply fills the "Source" tab, opens the first
-entry's file, and grows the bottom panel to 45% of the height once
+entry's file, and grows the tab panel (under the schematic) to 45% of the height once
 (`AppState::growSourcePanel`; never shrinks it). A found `source_response`
 also says `"stale"`: the file was modified after the design was loaded
 (`LocalSNLProvider::loadedAt_`, stamped in `freshDB()`/`setDB()`;
@@ -1064,6 +1064,19 @@ check. A found `source_response` also carries `path`, the absolute
 path the host read, used by the native "Open in Editor".
 
 ### Core modules (`src/`)
+
+The main window (`appFrame()`) is two columns, each with its own
+horizontal splitter: on the left the hierarchy tree over the selection
+panel, on the right the schematic over the tabs (Equipotential, Traces,
+Review, Source, Properties). The selection panel
+(`NetlistTree::renderSelectionPanel()`) has a Pins and a Nets tab for
+the selected instance (Ports and Nets for the top, when none is): the
+tree's own term/net nodes for it, drawn by the same `NetlistTreeNode::render()`, so their
+menus, badges and colors are the tree's. The tree and the panel each keep
+their own reveal state (`RevealView`: rows to open, row to scroll to),
+and a leaf reveal (review Go To) also selects the panel's tab
+(`selectionPanelFocus()`). Tests: `SelectionPanel` in
+`tests/SelectionTest.cpp`.
 
 - **`NetlistTree`** — the design hierarchy tree (instances, terms, nets, bus
   bits), lazily populated by provider requests as nodes are expanded.

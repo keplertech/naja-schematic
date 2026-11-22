@@ -1215,7 +1215,7 @@ TEST_F(SchematicClicks, AnUnnamedGatesPinsAreLabeledByIdAndNotDuplicated) {
   e.occurrences.push_back(occ("g", 2, "", 1, Direction::Input, 3, 0));  // and_2's input bus, bit 0
   add(e);
   frame(3);
-  ASSERT_NE(pin({{2, "g"}}, "<term #1>[0]"), nullptr);
+  ASSERT_NE(pin({{2, "g"}}, "<pin #1>[0]"), nullptr);
 
   auto start = EquipotentialView::startInstanceFromResolved(nlohmann::json::parse(R"({
     "found": true, "instance": {"path": [["g", 2, "and_2"]], "primitive_type": "and",
@@ -1223,16 +1223,16 @@ TEST_F(SchematicClicks, AnUnnamedGatesPinsAreLabeledByIdAndNotDuplicated) {
                 {"name": "[0]", "child_id": 1, "bit": 0, "direction": 0},
                 {"name": "[1]", "child_id": 1, "bit": 1, "direction": 0}]}})"));
   ASSERT_TRUE(start);
-  EXPECT_EQ(start->ports[0].name, "<term #0>");
-  EXPECT_EQ(start->ports[1].name, "<term #1>[0]");
+  EXPECT_EQ(start->ports[0].name, "<pin #0>");
+  EXPECT_EQ(start->ports[1].name, "<pin #1>[0]");
   EquipotentialView::applyInstanceExpansion({{2, "g"}}, start->ports);
   frame(2);
   const InstanceShape* g = shape({{2, "g"}});
   ASSERT_NE(g, nullptr);
   // The output, and the input bus shown merged: two pins, none twice.
   ASSERT_EQ(g->ports.size(), 2u);
-  EXPECT_NE(pin({{2, "g"}}, "<term #0>"), nullptr);
-  const Port* bus = pin({{2, "g"}}, "<term #1>[1:0]");
+  EXPECT_NE(pin({{2, "g"}}, "<pin #0>"), nullptr);
+  const Port* bus = pin({{2, "g"}}, "<pin #1>[1:0]");
   ASSERT_NE(bus, nullptr);
   EXPECT_TRUE(bus->isBus);
 }

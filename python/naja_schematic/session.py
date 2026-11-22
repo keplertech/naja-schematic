@@ -135,8 +135,8 @@ def _same_design(a, b):
 
 
 def _term_display_name(term):
-    # Same as displayTermName() in the viewer: "<term #id>" when unnamed.
-    return term.getName() or f"<term #{term.getID()}>"
+    # Same as displayTermName() in the viewer: "<pin #id>" when unnamed.
+    return term.getName() or f"<pin #{term.getID()}>"
 
 
 def _display_prefix(ids, names):

@@ -311,7 +311,7 @@ void SourceView::render(INetlistProvider* provider) {
   if (!SourceStore::hasReferences() && !SourceStore::hasSource() && !SourceStore::missing()) {
     ImGui::TextDisabled("No source shown.");
     ImGui::TextWrapped(
-      "Right-click an instance, term or net in the tree, or an instance box "
+      "Right-click an instance, pin or net in the tree, or an instance box "
       "in the schematic, and choose \"Show Sources\" (offered when the "
       "netlist records where the object comes from: its declaration, and "
       "for synthesized logic the RTL it came from).");

@@ -219,8 +219,6 @@ void from_json(const json& j, Equipotential& e) {
 
       readPinNet(occJson, term);
 
-      Console::Log("Parsed term in occurrence: " + term.getString());
-
       occurrence.term = std::move(term);
 
       if (occJson.contains("design_ref") && occJson["design_ref"].is_object())

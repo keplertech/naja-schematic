@@ -70,7 +70,9 @@ your own tool).
   click an open pin or port to add its net, double-click a box to show all
   of its pins.
 - **Design tree**, loaded lazily so large netlists open fast: instances,
-  ports, nets and bus bits.
+  ports, nets and bus bits. The panel below it lists the selected
+  instance's pins and nets (the top's ports and nets when nothing is
+  selected).
 - **Show Sources**: where an instance, pin or net is declared and, for
   synthesized logic, the RTL it came from (e.g. Yosys `src` attributes),
   opened at the highlighted line.
@@ -289,22 +291,24 @@ Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 | Click an open (hollow) pin or port | Add its net to the schematic |
 | Click a bus pin or bus port (`d[7:0]`) | Show its bits |
 | Double-click a dashed box | Show all of its pins |
-| Click a box | Select the instance (also in the design tree) |
+| Click a box | Select the instance (also in the design tree; its pins and nets in the panel below the tree) |
 | Click a stacked (summary) box | Show the sinks it gathers (a net's sinks past *View > Fanout*'s limit) |
 | Click a wire | Select (highlight) its net |
 | Click a box's hierarchy glyph | Show / hide what is inside it |
 | Click a review badge (numbered disc) | Open its thread in the Review tab |
 | Right-click | Menu: trace to driver, sources, properties, comment, fit, clear |
 
-In the design tree, right-click a row (an instance, a pin or a net) for its
-menu. With a review loaded (`--review DIR`), **Add Comment...** in these
-menus starts a review thread on that object; the **Review** tab lists the
-threads, to reply to them and resolve them. Clicking a thread there goes
-to its object: the design tree opens down to it (an instance, or a pin or
-net row inside it) and the schematic pans to it, adding it to the view if
-it isn't shown yet. A tree row shows `[n]` for its open threads; on the
-schematic, a box, a pin or a top-level port shows a numbered disc, which
-lists them when hovered and opens them in the Review tab when clicked.
+In the design tree, or in the Pins (Ports for the top) and Nets tabs below
+it, right-click a row (an instance, a pin or a net) for its menu. With a
+review loaded (`--review DIR`), **Add Comment...** in these menus starts a
+review thread on that object; the **Review** tab lists the threads, to
+reply to them and resolve them. Clicking a thread there goes to its
+object: the design tree opens down to it (an instance, or a pin or net row
+inside it, also shown in the Pins or Nets tab below) and the schematic
+pans to it, adding it to the view if it isn't shown yet. A tree row shows
+`[n]` for its open threads; on the schematic, a box, a pin or a top-level
+port shows a numbered disc, which lists them when hovered and opens them
+in the Review tab when clicked.
 
 | Keys (mouse over the schematic) | Action |
 |---|---|

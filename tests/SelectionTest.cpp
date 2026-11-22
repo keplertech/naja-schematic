@@ -439,3 +439,99 @@ TEST_F(TreeReveal, ContextMenuClickDoesNotSelectTheRowUnderIt) {
   SelectionStore::clear();
   ImGui::DestroyContext();
 }
+
+namespace {
+
+// A headless ImGui context drawing the tree's selection panel, as the
+// bottom-left panel of the app does.
+class SelectionPanel : public TreeReveal {
+ protected:
+  void SetUp() override {
+    TreeReveal::SetUp();
+    SelectionStore::clear();
+    ImGui::CreateContext();
+    ImGuiIO& io = ImGui::GetIO();
+    io.DisplaySize = ImVec2(800.f, 600.f);
+    io.DeltaTime   = 1.f / 60.f;
+    io.IniFilename = nullptr;
+    unsigned char* px; int w, h;
+    io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+  }
+  void TearDown() override {
+    SelectionStore::clear();
+    ImGui::DestroyContext();
+  }
+  void frame() {
+    ImGui::NewFrame();
+    ImGui::Begin("Panel");
+    tree.renderSelectionPanel();
+    ImGui::End();
+    ImGui::Render();
+  }
+};
+
+}  // namespace
+
+// Nothing selected: the panel shows the top design, and asks for its terms
+// once (the Terms tab is the first one, so the one shown).
+TEST_F(SelectionPanel, ShowsTheTopsTermsWhenNothingIsSelected) {
+  EXPECT_EQ(tree.selectionPanelInstance(), tree.getRoot());
+  frame();
+  auto terms = take("load_terms");
+  ASSERT_EQ(terms.size(), 1u);
+  EXPECT_EQ(terms[0]["design_ref"]["design_id"], 0);
+  frame();  // waiting: not sent again
+  EXPECT_TRUE(take("load_terms").empty());
+}
+
+// A selected instance whose tree level isn't loaded yet: nothing to show
+// (and nothing requested) until the tree's reveal has loaded it; then its
+// own terms.
+TEST_F(SelectionPanel, FollowsTheSelectedInstance) {
+  SelectionStore::select(InstancePath{{11, "u1"}}, SelectionStore::Origin::Schematic);
+  EXPECT_EQ(tree.selectionPanelInstance(), nullptr);
+  frame();
+  EXPECT_TRUE(take("load_terms").empty());
+
+  tree.reveal(InstancePath{{11, "u1"}});
+  tree.advanceReveal();
+  answer(take("load_instances")[0]["gui_id"], {{"u1", 11, true}});
+  answer(take("load_primitives")[0]["gui_id"], {});
+  tree.advanceReveal();
+  NetlistTreeNode* u1 = tree.selectionPanelInstance();
+  ASSERT_NE(u1, nullptr);
+  EXPECT_EQ(u1->getInstancePath(), (InstancePath{{11, "u1"}}));
+  frame();
+  auto terms = take("load_terms");
+  ASSERT_EQ(terms.size(), 1u);
+  EXPECT_EQ(terms[0]["design_ref"]["design_id"], 11);
+}
+
+// A review "go to" a net: the panel switches to its Nets tab (for one
+// frame), and the row is the highlighted one.
+TEST_F(SelectionPanel, ALeafRevealSelectsItsTab) {
+  FakeNetlistProvider netProvider;
+  NetlistTree netTree{&netProvider};
+  netTree.createRootNode("top", design(0), /*hasTerms=*/true, /*hasPrimitives=*/false,
+                         /*hasInstances=*/false, /*hasNets=*/true);
+  netTree.reveal(InstancePath{},
+                 NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Net, 7, std::nullopt});
+  netTree.advanceReveal();
+  auto req = nlohmann::json::parse(netProvider.sent.back());
+  ASSERT_EQ(req["request"], "load_nets");
+  NetlistTreeNode* group = netTree.getNode(req["gui_id"].get<unsigned>());
+  group->createChildren();
+  group->createNetNode("n", std::nullopt, std::nullopt, false, 7u);
+  EXPECT_FALSE(netTree.selectionPanelFocus().has_value());
+  netTree.advanceReveal();
+  EXPECT_EQ(netTree.selectionPanelFocus(), NetlistTree::RevealLeaf::Kind::Net);
+  ASSERT_NE(netTree.highlightedNode(), nullptr);
+  EXPECT_EQ(netTree.highlightedNode()->getNetID(), 7u);
+
+  ImGui::NewFrame();
+  ImGui::Begin("Panel");
+  netTree.renderSelectionPanel();
+  ImGui::End();
+  ImGui::Render();
+  EXPECT_FALSE(netTree.selectionPanelFocus().has_value());
+}

@@ -68,6 +68,10 @@ constexpr float kMinJunctionDotR  = 1.25f;
 // a minimum screen size, so the design boundary stays readable at any zoom.
 constexpr float kBoundaryPortHalfHBase = 8.0f;
 constexpr float kMinBoundaryPortHalfH  = 3.0f;
+// A flag's body length, in half-heights (its tip adds one more), and the
+// gap between the flag and its name, outside it.
+constexpr float kBoundaryPortBodyHalfHs = 2.0f;
+constexpr float kBoundaryPortLabelGap   = 4.0f;
 
 // Near-monochrome palette: every instance shares the same flat
 // neutral "paper" fill rather than an arbitrary per-category color, so color
@@ -827,8 +831,11 @@ static void drawOperatorInstance(SchematicPainter* dl, const InstanceShape& inst
 }
 
 // ---------------------------------------------------------------------------
-// Top-level design port — a "flag": a small pentagon sized to its
-// name, pointing the way the signal flows. The wire attaches at the
+// Top-level design port — a "flag": a small pentagon, the same size for
+// every port, pointing the way the signal flows, its name written next to
+// it on the side away from the sheet (right-aligned on the left edge,
+// left-aligned on the right one), so a column of ports lines up whatever
+// their names. The wire attaches at the
 // pseudo-instance's own x/y (the zero-size term box built in
 // EquipotentialView.cpp). Inputs sit on the sheet's left edge: the flag lies
 // left of that point with its tip on it, pointing into the design. Outputs
@@ -870,7 +877,7 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
         ? font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, shownName.c_str())
         : ImVec2(0.0f, 0.0f);
 
-    float bodyLen = std::max(halfH * 2.0f, textSize.x + 10.0f);
+    float bodyLen = halfH * kBoundaryPortBodyHalfHs;
     float tipLen  = halfH;
 
     // Input: [base .. body] tip on the anchor. Output: base on the anchor.
@@ -908,8 +915,11 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
                         ImDrawFlags_Closed);
 
     if (fontSize > 0.0f && !shownName.empty()) {
-        ImVec2 textPos((baseX + bodyX) * 0.5f - textSize.x * 0.5f, anchor.y - textSize.y * 0.5f);
-        dl->AddText(font, fontSize, textPos, contrastingTextColor(flagFill), shownName.c_str());
+        // Outside the flag: left of an input's base, right of an output's tip.
+        const float gap = std::max(2.0f, kBoundaryPortLabelGap * sv.transform.scale);
+        const float textX = p.isInput ? baseX - gap - textSize.x : tipX + gap;
+        dl->AddText(font, fontSize, ImVec2(textX, anchor.y - textSize.y * 0.5f), kPinLabelColor,
+                    shownName.c_str());
     }
 }
 
@@ -1226,16 +1236,19 @@ void SchematicView::drawRoute(SchematicPainter* dl, const NetRoute& route,
 }
 
 // Main render entry
-// What a shape covers when drawn: the shape itself, plus a port's flag (as
-// long as drawBoundaryPortInstance makes it at 1x) or an instance's name
-// above it.
+// What a shape covers when drawn: the shape itself, plus a port's flag and
+// its name (as drawBoundaryPortInstance draws them at 1x) or an instance's
+// name above it.
 void shapeWorldExtent(const InstanceShape& inst, ImVec2& outMin, ImVec2& outMax) {
     const bool port = inst.modelName == "port";
     float flag = 0.0f;
     if (port && !inst.ports.empty()) {
+        const Port& p = inst.ports[0];
+        const std::string& shownName = p.label.empty() ? p.name : p.label;
         const float textW = ImGui::GetFont()->CalcTextSizeA(kPortLabelBaseSize, FLT_MAX, 0.0f,
-                                                            inst.ports[0].name.c_str()).x;
-        flag = std::max(2.0f * kBoundaryPortHalfHBase, textW + 10.0f) + kBoundaryPortHalfHBase;
+                                                            shownName.c_str()).x;
+        flag = (kBoundaryPortBodyHalfHs + 1.0f) * kBoundaryPortHalfHBase +
+               (textW > 0.0f ? kBoundaryPortLabelGap + textW : 0.0f);
     }
     const bool named = !SchematicLayout::shownName(inst, instanceNameWidth).empty();
     const float stack = inst.isSummary ? 2.0f * kSummaryStackStep : 0.0f;
