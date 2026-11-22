@@ -16,6 +16,7 @@
 #include <backends/imgui_impl_opengl3.h>
 
 #include "AppLogic.h"
+#include "Theme.h"
 #include "UiScale.h"
 #include "GUIData.h"
 #include "GenerationProvider.h"
@@ -109,7 +110,8 @@ int main() {
   ImGui::CreateContext();
   ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
   setupFonts();
-  setUiScale(initialUiScale());
+  setTheme(initialTheme());
+  setUiScale(initialUiScale());  // applies the theme's colors
   ImGui_ImplSDL2_InitForOpenGL(g_state.window, g_state.glContext);
   ImGui_ImplOpenGL3_Init("#version 300 es");
 

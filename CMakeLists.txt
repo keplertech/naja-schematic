@@ -103,6 +103,7 @@ set(CORE_SOURCES
   src/AppMessages.cpp
   src/AppFont.cpp
   src/UiScale.cpp
+  src/Theme.cpp
   src/AppLogic.cpp
   ${IMGUI_SOURCES}
   # Read-only code view of the Source tab (SourceView).
@@ -137,6 +138,7 @@ set(HEADLESS_SOURCES
   src/ReviewView.cpp
   src/AppMessages.cpp
   src/AppFont.cpp
+  src/Theme.cpp
   src/HeadlessView.cpp
   ${IMGUI_DIR}/imgui.cpp
   ${IMGUI_DIR}/imgui_draw.cpp
@@ -340,6 +342,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/Console.cpp
       src/AppFont.cpp
       src/UiScale.cpp
+      src/Theme.cpp
       src/Types.cpp
       src/GUIData.cpp
       src/NetlistTree.cpp

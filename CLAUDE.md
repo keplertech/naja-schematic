@@ -103,7 +103,8 @@ diagnosis JSON to pre-load (`--diagnosis <path>` — see
 `loadDiagnosisFile()` in `AppLogic.cpp`), a style JSON to pre-load
 (`--style <path>`, `loadStyleFile()`; see `style_response`), a UI scale
 (`--ui-scale S`, default `$NAJA_SCHEMATIC_UI_SCALE`; see `UiScale` under
-Core modules), and/or directories to look up
+Core modules), a color theme (`--theme classic|light|dark`, default
+`$NAJA_SCHEMATIC_THEME`; see `Theme` under Core modules), and/or directories to look up
 relative source file references in (`--source-root <dir>`, repeatable; see
 "Source references" under Wire protocol), path prefixes to rewrite for
 files recorded on another machine (`--source-map FROM=TO`, repeatable),
@@ -1255,6 +1256,24 @@ and a leaf reveal (review Go To) also selects the panel's tab
   units (`ImGui::GetFontSize()`), never pixels, so they grow with it;
   `sameLineIfFits()` in `AppLogic.cpp` wraps a dialog's Browse buttons
   rather than pushing them out of reach. `tests/UiScaleTest.cpp`.
+- **`Theme`** — the color themes (`Classic`, the default: ImGui's dark
+  panels and a white sheet; `Light`; `Dark`), panels and schematic
+  together: View > Theme, native `--theme`, `$NAJA_SCHEMATIC_THEME`.
+  `setTheme()` applies ImGui's light or dark style (`setUiScale()`
+  re-applies it, since it resets the style); the Source tab's editor
+  palette, the scroll sliders and the pin-direction text colors follow
+  `theme()`. The schematic's colors are a `SchematicPalette`, held by
+  each `SchematicView` (`colors`, paper by default) and installed by
+  `render()` for the drawing helpers (`pal()` in `SchematicView.cpp`);
+  `EquipotentialView` sets the theme's on the view it shows, and
+  `exportSheet()` puts paper back, so SVG/PNG exports and the headless
+  renderers never depend on the theme. Shapes are built with the paper
+  wire and convergence colors (`kPaperWireColor`,
+  `kPaperConvergenceColor`), mapped when painted
+  (`SchematicPalette::ink()`); `TraceStore` refusing near-black and
+  near-white trace colors keeps traces distinct from both in either
+  palette. New schematic colors go in `SchematicPalette`, never as a
+  constant in the drawing code. `tests/ThemeTest.cpp`.
 - **`ViewOptions`** — global (static) drawing options: instance label
   (name / model under the box / both), `sinkRows`, `maxSinks`,
   `groupBy`. Read by `EquipotentialView` while building shapes, so they

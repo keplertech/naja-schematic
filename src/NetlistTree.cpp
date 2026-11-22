@@ -9,6 +9,7 @@
 #include "ReviewStore.h"
 #include "ReviewView.h"
 #include "SelectionStore.h"
+#include "Theme.h"
 #include "TraceStore.h"
 
 namespace {
@@ -706,19 +707,11 @@ std::string NetlistTreeTermNode::getLabel() const {
 ImU32 NetlistTreeTermNode::getColor() const {
   switch (direction_) {
     case Direction::Input:
-      if (isTopTerm()) {
-        return IM_COL32(255, 0, 0, 255); // Red
-      } else {
-        return IM_COL32(0, 255, 0, 255); // Green
-      }
+      return isTopTerm() ? theme().driverText : theme().receiverText;
     case Direction::Output:
-      if (isTopTerm()) {
-        return IM_COL32(0, 255, 0, 255); // Green
-      } else {
-        return IM_COL32(255, 0, 0, 255); // Red
-      }
+      return isTopTerm() ? theme().receiverText : theme().driverText;
     case Direction::Inout:
-      return IM_COL32(255, 255, 0, 255); // Yellow
+      return theme().inoutText;
     default:
       return 0;
   }

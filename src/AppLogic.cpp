@@ -1,4 +1,5 @@
 #include "AppLogic.h"
+#include "Theme.h"
 #include "UiScale.h"
 
 #include <algorithm>
@@ -181,6 +182,9 @@ bool appFrame(AppState& state) {
   // View > Text Size, last frame: the style changes between frames.
   static float requestedUiScale = 0.0f;
   if (requestedUiScale > 0.0f) { setUiScale(requestedUiScale); requestedUiScale = 0.0f; }
+  // View > Theme, likewise.
+  static std::optional<ThemeId> requestedTheme;
+  if (requestedTheme) { setTheme(*requestedTheme); requestedTheme.reset(); }
 
   ImGuiIO& io = ImGui::GetIO();
   ImGui_ImplOpenGL3_NewFrame();
@@ -267,6 +271,15 @@ bool appFrame(AppState& state) {
         ImGui::SliderFloat("##uiscale", &percent, kMinUiScale * 100.0f, kMaxUiScale * 100.0f, "%.0f%%",
                            ImGuiSliderFlags_AlwaysClamp);
         if (ImGui::IsItemDeactivatedAfterEdit()) requestedUiScale = percent / 100.0f;
+        ImGui::EndMenu();
+      }
+      // The app's colors, panels and schematic together: setTheme(), also
+      // --theme and $NAJA_SCHEMATIC_THEME. Exports stay on paper.
+      if (ImGui::BeginMenu("Theme")) {
+        for (int i = 0; i < kThemeCount; ++i) {
+          const Theme& t = themeAt(i);
+          if (ImGui::MenuItem(t.label, "", theme().id == t.id)) requestedTheme = t.id;
+        }
         ImGui::EndMenu();
       }
       // How the schematic is drawn (ViewOptions; also the host's
@@ -691,7 +704,7 @@ bool appFrame(AppState& state) {
   if (ImGui::BeginPopupModal("About naja-schematic", nullptr,
       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove)) {
 
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.9f, 0.9f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, theme().titleText);
     ImGui::SetWindowFontScale(1.2f);
     ImGui::Text("naja-schematic");
     ImGui::SetWindowFontScale(1.0f);

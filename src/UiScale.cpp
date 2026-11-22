@@ -6,6 +6,8 @@
 
 #include <imgui.h>
 
+#include "Theme.h"
+
 namespace {
 float g_uiScale = 1.0f;
 }
@@ -15,12 +17,13 @@ void setUiScale(float scale) {
   scale = std::clamp(scale, kMinUiScale, kMaxUiScale);
   ImGuiStyle& style = ImGui::GetStyle();
   // ScaleAllSizes() compounds (and truncates), so always start over from
-  // ImGui's default style (the app doesn't customize it), keeping what
-  // ImGui itself set.
+  // ImGui's default style, keeping what ImGui itself set and the theme's
+  // colors.
   const float fontSizeBase = style.FontSizeBase, fontScaleDpi = style.FontScaleDpi;
   style = ImGuiStyle();
   style.FontSizeBase = fontSizeBase;
   style.FontScaleDpi = fontScaleDpi;
+  applyThemeColors(style);
   if (scale != 1.0f) style.ScaleAllSizes(scale);
   // Fonts are dynamic (ImGui >= 1.92): text is rasterized at the scaled
   // size, so it stays crisp.

@@ -436,6 +436,7 @@ struct PropertiesResponseJson {
 //
 
 #include <imgui.h>
+#include "Theme.h"
 
 struct Port {
     int id = 0;
@@ -589,7 +590,7 @@ struct NetWire {
     // highlighting (diagnosis severity, selection, driver traces) via an explicit override
     // further down the pipeline -- see EquipotentialView.cpp's srcPort/
     // dstPort->color checks -- rather than being a per-net decoration.
-    ImU32 color = IM_COL32(150,150,150,255);
+    ImU32 color = kPaperWireColor;  // a view draws it in its palette (Theme.h)
     // Host styling of its net (StyleStore::netStyle): a color used over
     // trace colors but under a diagnosis `color` (0 = none), a wire width
     // (world units, 0 = default) and a label drawn on the wire.

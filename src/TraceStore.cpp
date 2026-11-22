@@ -1,4 +1,5 @@
 #include "TraceStore.h"
+#include "Theme.h"
 
 #include <algorithm>
 
@@ -14,9 +15,9 @@ constexpr ImU32 kPalette[TraceStore::kStyleCount] = {
   IM_COL32(175, 215,  60, 255),
   IM_COL32( 60, 215, 235, 255),
 };
-// Near-black: stands out on the white "paper" canvas (and its SVG export)
-// next to the gray of untraced wires.
-constexpr ImU32 kConvergence = IM_COL32(30, 30, 30, 255);
+// Near-black on paper (and in exports), next to the gray of untraced wires;
+// a dark palette draws it near-white (SchematicPalette::ink()).
+constexpr ImU32 kConvergence = kPaperConvergenceColor;
 
 Trace* findMutable(int id) {
   for (auto& t : g_traces)
@@ -88,7 +89,8 @@ bool TraceStore::tooCloseToConvergence(ImU32 color) {
          (color >> IM_COL32_B_SHIFT & 0xFF) <= kMax;
 }
 
-// Near-white: every channel bright, unreadable on the white canvas. A pale
+// Near-white: every channel bright, unreadable on the white canvas (and
+// the convergence color on a dark one: see Theme.h). A pale
 // but clearly tinted color (e.g. a light yellow, with a low blue) is fine.
 bool TraceStore::tooCloseToCanvas(ImU32 color) {
   constexpr unsigned kMin = 190;
