@@ -137,8 +137,5 @@ class EquipotentialView {
     // position (see tests/EquipotentialViewTest.cpp).
     static const SchematicView& schematicForTesting();
     static ImVec2 canvasOriginForTesting();
-    // What the last frame drew: the schematic, or while a re-layout is
-    // animated, the in-between copy (shapes on their way, wires fading in).
-    static const SchematicView& drawnForTesting();
     static ImVec2 canvasSizeForTesting();
 };

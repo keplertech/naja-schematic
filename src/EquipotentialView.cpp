@@ -57,21 +57,6 @@ static ImVec2             g_keepInPlaceWorld{};
 static ImVec2             g_keepInPlaceBoxWorld{};  // the box's corner, for a pin gone
 // Screen pixels kept clear around what focusObject() brings into view.
 static constexpr float    kRevealMargin = 40.0f;
-// Every shape's world rect when the pin was clicked: once the net arrives,
-// the shapes the re-layout moved are drawn sliding from there (g_transition).
-static SchematicInteraction::ShapeRects g_shapesBeforePinNet;
-// A re-layout being animated: where each shape was (in the current view's
-// world coordinates) and since when. Only the drawing is animated --
-// g_schematic, hit-testing and exports hold the new layout throughout.
-struct LayoutTransition {
-    SchematicInteraction::ShapeRects from;
-    double                           start = 0.0;
-};
-static std::optional<LayoutTransition> g_transition;
-// What the last frame drew: g_schematic, or its in-between copy during a
-// transition (drawnForTesting()).
-static SchematicView      g_drawn;
-static bool               g_drewTransition = false;
 // Layout stability (SchematicLayout's hints): where the last frame's
 // placement put each box, and the hints in force. When a pin click's net
 // changes what's placed (the boxes, or the nets between them), the layout
@@ -532,9 +517,6 @@ static void requestPinNet(const InstanceShape& inst, const Port& port) {
     g_keepInPlacePin   = port.name;
     g_keepInPlaceWorld = portAnchor(inst, port);
     g_keepInPlaceBoxWorld = ImVec2(inst.x, inst.y);
-    // As drawn: mid-transition, from where the shapes are on screen now.
-    g_shapesBeforePinNet = SchematicInteraction::shapeRects(
-        (g_drewTransition ? g_drawn : g_schematic).instances);
 }
 
 // Runs the click action of the pin under `wp`, if any. Returns true when a
@@ -600,9 +582,6 @@ void EquipotentialView::resetLayout() {
     g_skipNextAutoFit = false;
     g_keepInPlacePath.clear();
     g_keepInPlacePin.clear();
-    g_shapesBeforePinNet.clear();
-    g_transition.reset();
-    g_drewTransition = false;
     g_lastLayout.clear();
     g_layoutHints.clear();
     g_layoutSignature = {};
@@ -628,9 +607,6 @@ bool EquipotentialView::showHierarchy() { return g_showHierarchy; }
 
 const SchematicView& EquipotentialView::schematicForTesting() { return g_schematic; }
 ImVec2 EquipotentialView::canvasOriginForTesting() { return g_canvasOrigin; }
-const SchematicView& EquipotentialView::drawnForTesting() {
-    return g_drewTransition ? g_drawn : g_schematic;
-}
 ImVec2 EquipotentialView::canvasSizeForTesting()   { return g_canvasSize; }
 
 void EquipotentialView::setShowHierarchy(bool on) {
@@ -2043,7 +2019,6 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     if (totalItems != lastTotal) {
         if (g_skipNextAutoFit) {
             g_skipNextAutoFit = false;
-            const SchematicInteraction::View before{ g_schematic.transform.offset, g_schematic.transform.scale };
             // Pan so the clicked pin stays under the cursor, wherever the
             // re-layout moved its box (screen = (world - offset) * scale, so
             // shifting offset by the world delta cancels it out). A pin no
@@ -2057,17 +2032,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                 g_schematic.transform.offset.y += now.y - was.y;
                 break;
             }
-            // Then let what moved slide there from where it was on screen.
-            const SchematicInteraction::View after{ g_schematic.transform.offset, g_schematic.transform.scale };
-            LayoutTransition t;
-            t.start = ImGui::GetTime();
-            for (const auto& [key, rect] : g_shapesBeforePinNet)
-                t.from[key] = SchematicInteraction::rebase(rect, before, after);
-            g_transition = std::move(t);
             g_keepInPlacePath.clear();
             g_keepInPlacePort.clear();
             g_keepInPlacePin.clear();
-            g_shapesBeforePinNet.clear();
         } else if (!(g_focus && g_focus->requested)) {
             // (What a focusObject() request adds is panned to instead.)
             g_schematic.requestFit(true);
@@ -2212,23 +2179,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     }
 
     g_schematic.colors = theme().schematic;
-    // A re-layout in progress (see g_transition): a copy drawn in between.
-    g_drewTransition = false;
-    if (g_transition) {
-        const float t = SchematicInteraction::transitionProgress(ImGui::GetTime() - g_transition->start);
-        if (t >= 1.0f) {
-            g_transition.reset();
-            g_drawn = SchematicView();  // don't hold a copy of the view
-        } else {
-            g_drawn = g_schematic;
-            SchematicInteraction::interpolateShapes(g_drawn.instances, g_transition->from, t);
-            // Routes hold the new layout's geometry: they come in once the
-            // boxes have mostly arrived.
-            g_drawn.wireAlpha = std::clamp((t - 0.5f) * 2.0f, 0.0f, 1.0f);
-            g_drewTransition = true;
-        }
-    }
-    (g_drewTransition ? g_drawn : g_schematic).render(dl, cpos, inner);
+    g_schematic.render(dl, cpos, inner);
     if (equipotentials.empty() && !hasStartShapes()) {
         // Nothing drawn yet: say how to fill it, which a first-time user
         // has no way to guess.
