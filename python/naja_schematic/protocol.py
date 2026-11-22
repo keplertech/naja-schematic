@@ -394,6 +394,57 @@ def net_fields(net):
     return {"net": net_display_name(net), "net_id": net_id}
 
 
+def inst_term_json(parent_path, inst_term):
+    # One instance pin of a net, as an equipotential "occurrences" entry:
+    # `parent_path` holds the levels above the pin's instance ([name,
+    # child_id, model_name] each), the instance itself is appended. Same as
+    # LocalSNLProvider.cpp's instTermOccurrenceJson().
+    instance = inst_term.getInstance()
+    # Each path entry is [name, child_id, model_name]: the model name lets
+    # the schematic label the hierarchical module boxes it draws around a
+    # driver trace (see EquipotentialView's hierarchy grouping).
+    path = list(parent_path)
+    path.append([instance.getName(), instance.getID(), instance.getModel().getName()])
+    term = inst_term.getBitTerm()
+    inst_model = instance.getModel()
+    has_instances = (inst_model.hasNonPrimitiveInstances() or
+                     has_visible_primitive_instances(inst_model))
+    return with_sources(with_clock({
+        "path": path,
+        # "child_id", like every other term entry and LocalSNLProvider:
+        # the viewer sends it back to name this pin (pin clicks, traces,
+        # review anchors).
+        "child_id": term.getID(),
+        "name": term.getName(),
+        "direction": direction_to_int(term.getDirection()),
+        "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
+        "design_ref": {
+            "db_id": inst_model.getDB().getID(),
+            "library_id": inst_model.getLibrary().getID(),
+            "design_id": inst_model.getID(),
+        },
+        "primitive_type": get_primitive_type(inst_model),
+        "has_instances": has_instances,
+        # Lets the view tell whether every pin of this instance is already
+        # on screen (solid box) or only a subset (dashed, expandable).
+        "bit_term_count": sum(1 for _ in inst_model.getBitTerms()),
+        # Net on this inst term inside the instance's parent design: the
+        # schematic names a wire tree by its driver's net.
+        **net_fields(inst_term.getNet()),
+    }, term, inst_term), has_sources(instance, inst_model))
+
+
+def bit_term_json(term):
+    # A top-level port as an equipotential "terms" entry.
+    return {
+        "name": term.getName(),
+        "child_id": term.getID(),
+        "direction": direction_to_int(term.getDirection()),
+        "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
+        **net_fields(term.getNet()),
+    }
+
+
 def equipotential_to_json(equipotential, sinks=None):
     # Wire-format body of an equipotential (no "response" key): its top-level
     # terms plus every leaf inst-term occurrence on the net.
@@ -408,53 +459,17 @@ def equipotential_to_json(equipotential, sinks=None):
                 and instTerm.getDirection() == naja.SNLTerm.Direction.Input
                 and occurrence_key(occ) not in sinks):
             continue
-        # Each path entry is [name, child_id, model_name]: the model name lets
-        # the schematic label the hierarchical module boxes it draws around a
-        # driver trace (see EquipotentialView's hierarchy grouping).
-        path = [[inst.getName(), inst.getID(), inst.getModel().getName()]
-                for inst in occ.getPath().getInstances()]
-        path.append([instTerm.getInstance().getName(), instTerm.getInstance().getID(),
-                     instTerm.getInstance().getModel().getName()])
-        term = instTerm.getBitTerm()
-        inst_model = instTerm.getInstance().getModel()
-        has_instances = (inst_model.hasNonPrimitiveInstances() or
-                         has_visible_primitive_instances(inst_model))
-        occurrences.append(with_sources(with_clock({
-            "path": path,
-            # "child_id", like every other term entry and LocalSNLProvider:
-            # the viewer sends it back to name this pin (pin clicks, traces,
-            # review anchors).
-            "child_id": term.getID(),
-            "name": term.getName(),
-            "direction": direction_to_int(term.getDirection()),
-            "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
-            "design_ref": {
-                "db_id": inst_model.getDB().getID(),
-                "library_id": inst_model.getLibrary().getID(),
-                "design_id": inst_model.getID(),
-            },
-            "primitive_type": get_primitive_type(inst_model),
-            "has_instances": has_instances,
-            # Lets the view tell whether every pin of this instance is already
-            # on screen (solid box) or only a subset (dashed, expandable).
-            "bit_term_count": sum(1 for _ in inst_model.getBitTerms()),
-            # Net on this inst term inside the instance's parent design:
-            # the schematic names a wire tree by its driver's net.
-            **net_fields(instTerm.getNet()),
-        }, term, instTerm), has_sources(instTerm.getInstance(), inst_model)))
+        # The occurrence path is to the parent design.
+        parent_path = [[inst.getName(), inst.getID(), inst.getModel().getName()]
+                       for inst in occ.getPath().getInstances()]
+        occurrences.append(inst_term_json(parent_path, instTerm))
     for term in equipotential.getTerms():
         # A top-level output is a receiver of the net; an input/inout drives it.
         if (sinks is not None
                 and term.getDirection() == naja.SNLTerm.Direction.Output
                 and term_key(term) not in sinks):
             continue
-        terms.append({
-            "name": term.getName(),
-            "child_id": term.getID(),
-            "direction": direction_to_int(term.getDirection()),
-            "bit": term.getBit() if isinstance(term, naja.SNLBusTermBit) else None,
-            **net_fields(term.getNet()),
-        })
+        terms.append(bit_term_json(term))
     return {"occurrences": occurrences, "terms": terms}
 
 
@@ -764,6 +779,111 @@ def _handle_resolve_instance(u, request):
         "terms": bit_terms_json(design),
     }
     with_sources(reply["instance"], has_sources(chain[-1], design))
+    return [reply]
+
+
+# load_top_view: the top design as a sheet -- its ports, and, when it's
+# small enough to read, its contents: every top-level net as an
+# equipotential-shaped body (top-level ports in "terms", the pins of the
+# top's own instances, one level deep, in "occurrences"), so the viewer lays
+# it out like any other set of nets, with no frame around it. Nets joined by
+# an assign are one body (the viewer hides assigns, as the tree does);
+# anonymous constant tie-off nets are left out, as in nets_response. Mirrors
+# LocalSNLProvider.cpp's buildTopViewResponse().
+MAX_TOP_VIEW_INSTANCES = 250
+
+
+def _is_assign_instance(instance):
+    return instance.getModel().isAssign()
+
+
+def _bit_key(bit_net):
+    # A bit net by identity: the raw API hands out a new wrapper per call.
+    if isinstance(bit_net, naja.SNLBusNetBit):
+        return (bit_net.getBus().getID(), bit_net.getBit())
+    return (bit_net.getID(), None)
+
+
+def top_view_nets(top):
+    bit_nets = []
+    index_of = {}
+    for net in top.getNets():
+        if isinstance(net, naja.SNLBusNet):
+            lo, hi = sorted((net.getLSB(), net.getMSB()))
+            for b in range(lo, hi + 1):
+                bit = net.getBit(b)
+                if bit:
+                    index_of[_bit_key(bit)] = len(bit_nets)
+                    bit_nets.append(bit)
+        else:
+            index_of[_bit_key(net)] = len(bit_nets)
+            bit_nets.append(net)
+    # Union-find over the nets an assign joins.
+    parent = list(range(len(bit_nets)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for instance in top.getInstances():
+        if not _is_assign_instance(instance):
+            continue
+        first = None
+        for inst_term in instance.getInstTerms():
+            net = inst_term.getNet()
+            index = index_of.get(_bit_key(net)) if net is not None else None
+            if index is None:
+                continue
+            if first is None:
+                first = find(index)
+            else:
+                parent[find(index)] = first
+    # Groups in the order of their first net.
+    groups = {}
+    for i in range(len(bit_nets)):
+        groups.setdefault(find(i), []).append(i)
+    bodies = []
+    for members in groups.values():
+        if all(is_anonymous_constant_net(bit_nets[i]) for i in members):
+            continue
+        terms, occurrences = [], []
+        for i in members:
+            for comp in bit_nets[i].getComponents():
+                if isinstance(comp, naja.SNLInstTerm):
+                    if not _is_assign_instance(comp.getInstance()):
+                        occurrences.append(inst_term_json([], comp))
+                elif isinstance(comp, naja.SNLBitTerm):
+                    terms.append(bit_term_json(comp))
+        if len(terms) + len(occurrences) < 2:
+            continue  # nothing to wire
+        bodies.append({"terms": terms, "occurrences": occurrences})
+    return bodies
+
+
+def _handle_load_top_view(u, request):
+    reply = {"response": "top_view_response", "found": False}
+    # Echoed: the viewer's automatic request on load only draws into an
+    # empty view.
+    if "auto" in request:
+        reply["auto"] = request["auto"]
+    top = u.getTopDesign()
+    if top is None:
+        return [reply]
+    count = sum(1 for instance in top.getInstances() if not _is_assign_instance(instance))
+    max_instances = request.get("max_instances")
+    if not isinstance(max_instances, int) or isinstance(max_instances, bool):
+        max_instances = MAX_TOP_VIEW_INSTANCES
+    contents = bool(request.get("contents", False)) and count <= max(0, max_instances)
+    reply.update({
+        "found": True,
+        "name": top.getName(),
+        "ports": bit_terms_json(top),
+        "instance_count": count,
+        "contents": contents,
+        "nets": top_view_nets(top) if contents else [],
+    })
     return [reply]
 
 
@@ -1104,6 +1224,7 @@ _HANDLERS = {
     "get_sources": _handle_get_sources,
     "get_properties": _handle_get_properties,
     "resolve_instance": _handle_resolve_instance,
+    "load_top_view": _handle_load_top_view,
     "instance_selected": _handle_instance_selected,
 }
 

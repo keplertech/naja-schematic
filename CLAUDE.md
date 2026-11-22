@@ -131,7 +131,9 @@ one of these:
 - `--focus <json>`: one instance drawn alone with every pin open. Takes a
   list of ids (`[3,7]`, an `id_path`), a list of names (`["u1","u2"]`), or
   an object with `id_path`/`path`. It clears the view, so it's applied
-  first.
+  first. `[]` (the top) draws the top sheet (`load_top_view`, as the GUI
+  does on load), its ports only past `kMaxTopViewInstances`, with a
+  warning.
 - `--trace <json>` (repeatable): a fan-in cone (`trace_driver`).
 - `--equipotential <json>` (repeatable): one net (`load_equipotential`),
   colored as a one-net trace like the tree's "Show Equipotential".
@@ -651,6 +653,38 @@ boxes with a circled operator glyph (`isOperatorSymbol()`,
 `kOperatorGlyphW`). `protocol.py` uses najaeda's bindings of the same
 checks (`SNLDesign.isAddSub()`, `isSubtract()`, `isMultiply()`,
 `isShift()`, `isShiftRight()`, `isShiftArithmetic()`, `isDivMod()`).
+
+`load_top_view`/`top_view_response` draws the **top design as a sheet**,
+the way schematic tools present it: no box or frame for the top, its
+ports as flags on the sheet's edges (`stackPorts()`), its contents inside.
+Request: `{"request":"load_top_view","contents":true,"max_instances":250,
+"auto":true}`. Reply: `found`, `name`, `ports` (every bit term, the
+`expanded_instance_terms` shape), `instance_count` (the top's instances,
+assigns excluded), `contents` (true only when asked and `instance_count <=
+max_instances`; default `kMaxTopViewInstances`/`MAX_TOP_VIEW_INSTANCES`,
+250) and `nets`: when `contents`, every top-level net as an
+`equipotential_response` body -- top ports in `terms`, the pins of the
+top's own instances (one level, hierarchical ones too, as boxes with the
+hierarchy toggle) in `occurrences` -- so the whole equipotential pipeline
+(placement, routing, fanout summaries, traces, styles) draws it unchanged.
+Nets an assign joins are one body (assign pins left out); anonymous
+constant nets and nets with under two pins are skipped.
+`buildTopViewResponse()`/`_handle_load_top_view()`, shared cases in
+`tests/data/top_view_protocol_cases.json`. The cap exists because the
+layout is recomputed every frame and grows superlinearly (release build,
+2-input gates: ~8 ms/frame at 250, ~33 ms at 500, ~130 ms at 1000), and
+because a page of thousands of gates reads as nothing: a large flat
+netlist gets its ports, explored by clicking them (`showTopPorts()`, open
+`Port`s on port flags with `PortStub::ei == kNoEqui`, replaced by the
+flag of a net that reaches the port; a bus's open bits are one flag,
+`d[7:0]`, expanded by a click like a box's bus pin, key
+`BusGroupKey{{}, base, isInput}` in `g_expandedBuses`) or tracing from them. Sent on every
+first `root_response` with `"auto": true` when `AppState::showTopOnLoad`
+(set by `main_native.cpp`/`main_wasm.cpp`, never by the headless
+renderers, whose drawings hold only what they're asked for); an `auto`
+reply only draws into an empty view, so a host's focus or nets pushed
+meanwhile win. The tree's root offers Show Contents / Show Ports (replace
+view). Older hosts don't answer it: nothing is drawn.
 
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*
@@ -1311,6 +1345,17 @@ canvas clicks in `EquipotentialView::renderSchematic()`.
 `.vscode/settings.json` locks `cmake-tools` to preset mode
 (`native-debug`), pointing IntelliSense at
 `../naja-schematic-build/native-debug/compile_commands.json`.
+
+### No third-party names
+
+Never name another EDA tool, vendor, product or customer library -- in
+code, comments, tests, test data, docs, commit messages, PR titles and
+bodies, or issue comments. Describe a convention generically ("as
+schematic tools usually draw it", "primitives defined in Python"), not by
+whom else does it. A reply to the user in chat may name tools; anything
+written to the repo or to GitHub may not. Interface names that already
+exist and are real APIs (najaeda's `primitives.xilinx`, the `--xilinx`
+flag) stay as they are, but don't add prose around them.
 
 ### Licensing (REUSE)
 

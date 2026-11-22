@@ -97,6 +97,24 @@ class EquipotentialView {
     // when it has none (not found, or the top design).
     static std::optional<StartInstance> startInstanceFromResolved(const json& reply);
 
+    // The top design as a sheet (load_top_view): its ports on the sheet's
+    // edges, each open until its net is loaded, and -- when the top has no
+    // more than kMaxTopViewInstances instances -- its contents, every
+    // top-level net, which the reply's handler adds as equipotentials.
+    // `contents` false asks for the ports only; `automatic` marks the
+    // request made on load, whose reply only draws into an empty view.
+    static constexpr unsigned kMaxTopViewInstances = 250;
+    static void requestTopView(bool contents, bool automatic);
+    // Adds the top's ports as flags, each open until a net reaches it.
+    // Call resetLayout() first to start a fresh view from them.
+    static void showTopPorts(const std::vector<ExpandedPort>& ports);
+    // True when the view shows nothing on its own: no instance shown alone
+    // (showInstance()), no top port flag (showTopPorts()).
+    static bool hasStartShapes();
+    // A terms list (instance_resolved's, top_view_response's "ports") as
+    // pins: bus bits expanded, labels displayable.
+    static std::vector<ExpandedPort> portsFromJson(const json& terms);
+
     // An object to bring into view (a review thread's): an instance, or one
     // of its pins (a term, and a bus bit if `bit` is set; `path` {} = a
     // top-level port).

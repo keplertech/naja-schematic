@@ -118,6 +118,7 @@ class LocalSNLProvider : public INetlistProvider {
     std::string resolveSourceFile(const std::string& file) const;
     std::string buildPropertiesResponse(const nlohmann::json& req) const;
     std::string buildResolveInstanceResponse(const nlohmann::json& req) const;
+    std::string buildTopViewResponse(const nlohmann::json& req) const;
 };
 
 #endif // __EMSCRIPTEN__

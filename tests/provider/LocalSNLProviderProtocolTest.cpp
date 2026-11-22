@@ -286,6 +286,14 @@ class RoleProtocol : public ::testing::Test {
 
 CaseSuite* RoleProtocol::suite_ = nullptr;
 
+class TopViewProtocol : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() { suite_ = new CaseSuite("top_view_protocol_cases.json"); }
+  static CaseSuite* suite_;
+};
+
+CaseSuite* TopViewProtocol::suite_ = nullptr;
+
 } // namespace
 
 TEST_F(ProviderProtocol, AnswersEverySharedCaseLikeProtocolPy) {
@@ -293,6 +301,11 @@ TEST_F(ProviderProtocol, AnswersEverySharedCaseLikeProtocolPy) {
 }
 
 TEST_F(SourceProtocol, AnswersEverySharedCaseLikeProtocolPy) {
+  suite_->runCases();
+}
+
+// The top design as a sheet (load_top_view): top_view_protocol_cases.json.
+TEST_F(TopViewProtocol, AnswersEverySharedCaseLikeProtocolPy) {
   suite_->runCases();
 }
 

@@ -45,6 +45,11 @@ struct AppState {
   // (base64 PNG bytes), drawn `pngScale` pixels per SVG pixel.
   bool              pngExportRequested {false};
   float             pngScale {1.0f};
+  // Draw the top design as soon as it's loaded (load_top_view, automatic):
+  // its contents when small enough, else its ports. Set by the interactive
+  // entry points; off in the headless renderers, whose drawings hold only
+  // what they're asked for.
+  bool              showTopOnLoad {false};
   // The root_response's "server": what answers the viewer (name, version,
   // naja, naja_git), shown in Help > About.
   nlohmann::json    serverInfo;

@@ -247,6 +247,7 @@ int main(int argc, char* argv[]) {
   state.guiData  = new GUIData();
 
   state.provider = provider;
+  state.showTopOnLoad = true;
   setupProvider(state);
 
   // Load any requested diagnosis only after setupProvider() has completed
