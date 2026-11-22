@@ -1,5 +1,6 @@
 // EquipotentialView.cpp — merged instances, horizontal expansion
 #include "EquipotentialView.h"
+#include "Console.h"
 
 #include <algorithm>
 #include <cmath>
@@ -30,12 +31,6 @@ using namespace SchematicLayout;
 // ---------------------------------------------------------------------------
 // Layout geometry constants (see SchematicLayout.h for the placement ones)
 // ---------------------------------------------------------------------------
-// Hierarchy embedding (nested boxes) geometry.
-static constexpr float kHierChildW    = 110.0f;
-static constexpr float kHierChildH    = 44.0f;
-static constexpr float kHierGap       = 14.0f;
-static constexpr float kHierMargin    = 16.0f;
-static constexpr float kHierHeaderGap = 26.0f; // room below the box's own label/ports
 
 // ---------------------------------------------------------------------------
 // Static view state
@@ -118,6 +113,29 @@ static int                g_ctxPortId        = -1;
 static int                g_ctxSummaryId     = -1;
 
 // The review badge of an instance box or module frame (ReviewStore).
+// --- Opened instances (see openInstance()) ---
+// Instances drawn as their contents, by path, and those whose
+// load_instance_view is in flight.
+static std::map<InstancePath, OpenedInstance> g_opened;
+static std::set<InstancePath>                 g_openPending;
+// This frame's port flags for opened instances' pins, by the flag's
+// made-up path (SchematicLayout::openInstances()).
+static std::map<InstancePath, BoundaryPin>    g_boundaryPins;
+
+// The instance a pin belongs to: a box's, the instance an opened
+// instance's port flag stands for a pin of, {} for a top-level port.
+static InstancePath pinOwnerPath(const InstanceShape& inst) {
+    if (inst.modelName != "port") return inst.path;
+    auto it = g_boundaryPins.find(inst.path);
+    return it != g_boundaryPins.end() ? it->second.owner : InstancePath{};
+}
+
+// What a pin is called in a trace's or a comment's label.
+static std::string pinLabel(const InstanceShape& inst, const std::string& pin) {
+    const InstancePath owner = pinOwnerPath(inst);
+    return owner.empty() ? pin : traceLabel(owner, pin);
+}
+
 static void setReviewBadge(InstanceShape& shape) {
     const auto threads = ReviewStore::instanceThreads(shape.path);
     shape.reviewOpen  = int(ReviewStore::openCount(threads));
@@ -184,7 +202,7 @@ static void applyPinStyle(const InstanceShape& inst, Port& p) {
     } else {
         bit = bitOfLabel(p.name);
     }
-    const InstancePath path = inst.modelName == "port" ? InstancePath{} : inst.path;
+    const InstancePath path = pinOwnerPath(inst);
     const StyleAttrs style = StyleStore::termStyle(path, p.name, termId, bit);
     p.styleColor = style.color;
     p.styleWidth = style.width;
@@ -377,15 +395,6 @@ static std::set<InstancePath> g_pendingExpansions;
 // merged into one pin/wire.
 static std::set<BusGroupKey> g_expandedBuses;
 
-// --- Hierarchy embedding (nested boxes) ---
-// Instances (== InstanceShape::path) currently toggled open to show their
-// internal sub-instances nested inside their box.
-static std::set<InstancePath> g_hierExpanded;
-// Instances with an in-flight load_instance_internals request.
-static std::set<InstancePath> g_hierPending;
-// Instances whose internals have been loaded (children + internal nets).
-static std::map<InstancePath, EquipotentialView::InstanceInternals> g_instanceInternals;
-
 // Hierarchy grouping: when on, the leaf instances shown are laid out inside
 // nested frames standing for the hierarchical modules that contain them
 // (see SchematicLayout::layoutHierarchyGroups) instead of the flat column layout.
@@ -554,156 +563,6 @@ static bool clickPin(const ImVec2& wp) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Hierarchy embedding: lay out and wire one expanded instance's internals
-// (its direct sub-instances plus the nets connecting them) nested inside its
-// box, recursing into any of those children that are themselves expanded and
-// already loaded. Positions/sizes are written directly as world coordinates
-// (nested inside `parent`'s current box) rather than a local frame, so
-// SchematicView's existing flat draw/hit-test code needs no changes.
-// ---------------------------------------------------------------------------
-struct HierEmitResult {
-    std::vector<InstanceShape> shapes;
-    std::vector<NetWire>       nets;
-};
-
-static Port makeHierPort(int& nextPortId, const std::string& name, Direction dir) {
-    Port p;
-    p.id        = nextPortId++;
-    p.name      = name;
-    p.direction = dir;
-    bool isIn   = (dir == Direction::Input);
-    p.lx        = isIn ? -0.5f : 0.5f;
-    p.isInput   = !isIn;
-    return p;
-}
-
-static HierEmitResult emitInstanceInternals(InstanceShape& parent, int& nextInstId, int& nextPortId) {
-    HierEmitResult result;
-    auto dataIt = g_instanceInternals.find(parent.path);
-    if (dataIt == g_instanceInternals.end()) return result;
-    const auto& data = dataIt->second;
-
-    // Sub-pass 1: create each child shape (id + identity) up front so the
-    // wiring pass below has a complete child_id -> shape id map, regardless
-    // of vertical order.
-    std::vector<InstanceShape> children;
-    children.reserve(data.children.size());
-    std::map<unsigned, int> childIdToShapeId;
-    for (const auto& c : data.children) {
-        InstanceShape cs;
-        cs.id            = nextInstId++;
-        cs.path          = parent.path;
-        cs.path.push_back({c.childId, c.name});
-        cs.name          = displayPath(cs.path);
-        cs.primitiveType = c.primitiveType;
-        cs.w             = kHierChildW;
-        cs.h             = kHierChildH;
-        cs.parentShapeId = parent.id;
-        cs.hasChildren   = c.hasInstances;
-        cs.hierExpanded  = c.hasInstances && g_hierExpanded.count(cs.path) > 0;
-        cs.diagOutline   = DiagnosisStore::instanceColor(cs.path);
-        applyInstanceStyle(cs);
-        setReviewBadge(cs);
-        childIdToShapeId[c.childId] = cs.id;
-        g_occInfoByShapeId[cs.id] = { cs.path, c.designRef, c.hasSources };
-        children.push_back(std::move(cs));
-    }
-
-    // Sub-pass 2: wire internal nets. Each pin resolves to either a child's
-    // port (allocated lazily here) or one of the parent's own already-built
-    // boundary ports (matched by stripped name + direction).
-    std::map<int, std::vector<Port>> portsByShapeId;
-    auto findOrAddChildPort = [&](unsigned instChildId, const std::string& name,
-                                  Direction dir) -> std::pair<int, int> {
-        auto sIt = childIdToShapeId.find(instChildId);
-        if (sIt == childIdToShapeId.end()) return {-1, -1};
-        int shapeId = sIt->second;
-        auto& ports = portsByShapeId[shapeId];
-        for (const auto& p : ports)
-            if (p.name == name && p.direction == dir) return {shapeId, p.id};
-        ports.push_back(makeHierPort(nextPortId, name, dir));
-        return {shapeId, ports.back().id};
-    };
-
-    for (const auto& net : data.nets) {
-        std::vector<std::pair<int, int>> ends;
-        for (const auto& pin : net.pins) {
-            if (pin.instChildId.has_value()) {
-                auto e = findOrAddChildPort(*pin.instChildId, pin.name, pin.direction);
-                if (e.first >= 0) ends.push_back(e);
-            } else {
-                for (auto& pp : parent.ports) {
-                    if (stripBusIndex(pp.name) == stripBusIndex(pin.name) && pp.direction == pin.direction) {
-                        ends.push_back({parent.id, pp.id});
-                        break;
-                    }
-                }
-            }
-        }
-        if (ends.size() < 2) continue;
-        std::string netLabel = net.name;
-        if (net.bit.has_value()) netLabel += "[" + std::to_string(*net.bit) + "]";
-        for (size_t i = 1; i < ends.size(); ++i) {
-            NetWire nw;
-            nw.id               = int(result.nets.size()) + 1;
-            nw.srcInstance      = ends[0].first;
-            nw.srcPortId        = ends[0].second;
-            nw.dstInstance      = ends[i].first;
-            nw.dstPortId        = ends[i].second;
-            nw.containerShapeId = parent.id;
-            nw.netName          = netLabel;
-            result.nets.push_back(nw);
-        }
-    }
-
-    // Sub-pass 3: assign each child's port rows (left = inputs, right =
-    // outputs, same convention as every other InstanceShape).
-    for (auto& cs : children) {
-        auto pit = portsByShapeId.find(cs.id);
-        if (pit == portsByShapeId.end()) continue;
-        auto& ports = pit->second;
-        int nL = 0, nR = 0;
-        for (const auto& p : ports) (p.lx < 0.f ? nL : nR)++;
-        int li = 0, ri = 0;
-        for (auto& p : ports) {
-            p.ly    = (p.lx < 0.f) ? portLy(li++, nL) : portLy(ri++, nR);
-            p.color = DiagnosisStore::netColor(cs.path, stripBusIndex(p.name));
-        }
-        cs.ports = std::move(ports);
-    }
-
-    // Sub-pass 4: position children top-to-bottom in a single column,
-    // recursing into an already-expanded child *before* moving on to the
-    // next sibling so a grown height pushes later siblings down correctly.
-    // Below the parent's own pin rows (applySymbolGeometry reserved the room).
-    float header = kHierHeaderGap;
-    for (const auto& p : parent.ports)
-        header = std::max(header, (p.ly + 0.5f) * parent.h + kPinPitch);
-    std::vector<InstanceShape> descendants;
-    float x = parent.x + kHierMargin;
-    float y = parent.y + header;
-    for (auto& cs : children) {
-        cs.x = x;
-        cs.y = y;
-        if (cs.hierExpanded && g_instanceInternals.count(cs.path)) {
-            auto sub = emitInstanceInternals(cs, nextInstId, nextPortId);
-            descendants.insert(descendants.end(), sub.shapes.begin(), sub.shapes.end());
-            result.nets.insert(result.nets.end(), sub.nets.begin(), sub.nets.end());
-        }
-        y += cs.h + kHierGap;
-    }
-
-    float bottom = children.empty() ? (parent.y + header) : (y - kHierGap);
-    parent.h = std::max(parent.h, (bottom - parent.y) + kHierMargin);
-    parent.w = std::max(parent.w, kHierChildW + 2.0f * kHierMargin);
-
-    result.shapes = std::move(children);
-    result.shapes.insert(result.shapes.end(), descendants.begin(), descendants.end());
-    return result;
-}
-
-
 // Sends expand_instance_terms for an instance, unless one is in flight.
 static void requestExpansion(const InstancePath& path, const DesignRef& designRef) {
     if (!g_provider || g_pendingExpansions.count(path)) return;
@@ -735,9 +594,9 @@ void EquipotentialView::resetLayout() {
     g_expandedInstances.clear();
     g_pendingExpansions.clear();
     g_expandedBuses.clear();
-    g_hierExpanded.clear();
-    g_hierPending.clear();
-    g_instanceInternals.clear();
+    g_opened.clear();
+    g_openPending.clear();
+    g_boundaryPins.clear();
     g_skipNextAutoFit = false;
     g_keepInPlacePath.clear();
     g_keepInPlacePin.clear();
@@ -791,7 +650,7 @@ void EquipotentialView::showTopPorts(const std::vector<ExpandedPort>& ports) {
 }
 
 bool EquipotentialView::hasStartShapes() {
-    return !g_startInstances.empty() || !g_startPorts.empty();
+    return !g_startInstances.empty() || !g_startPorts.empty() || !g_opened.empty();
 }
 
 void EquipotentialView::requestTopView(bool contents, bool automatic) {
@@ -849,11 +708,63 @@ void EquipotentialView::applyInstanceExpansion(
     g_pendingExpansions.erase(path);
 }
 
-void EquipotentialView::applyInstanceInternals(
-        const InstancePath& path,
-        const InstanceInternals& data) {
-    g_instanceInternals[path] = data;
-    g_hierPending.erase(path);
+void EquipotentialView::openInstance(const InstancePath& path) {
+    if (!g_provider || path.empty() || g_opened.count(path) || !g_openPending.insert(path).second) return;
+    json req;
+    req["request"]       = "load_instance_view";
+    writePath(req, path);
+    req["max_instances"] = kMaxTopViewInstances;
+    g_provider->send(req.dump());
+}
+
+void EquipotentialView::closeInstance(const InstancePath& path) {
+    // With every instance opened inside it: their contents are drawn in
+    // its frame, which is a box again.
+    for (auto it = g_opened.begin(); it != g_opened.end();) {
+        const InstancePath& p = it->first;
+        const bool inside = p.size() >= path.size() && std::equal(path.begin(), path.end(), p.begin());
+        it = inside ? g_opened.erase(it) : std::next(it);
+    }
+    g_pendingFit = true;
+}
+
+bool EquipotentialView::isOpened(const InstancePath& path) { return g_opened.count(path) > 0; }
+
+void EquipotentialView::applyInstanceView(const json& reply) {
+    auto path = readPath(reply);
+    if (!path) {
+        Console::Error("instance_view_response without a valid id_path");
+        return;
+    }
+    // Not asked for, or closed meanwhile (a reset): nothing to open.
+    if (!g_openPending.erase(*path)) return;
+    const std::string name = displayPath(*path);
+    if (!reply.value("found", false)) {
+        Console::Error("No instance '" + name + "' in the design");
+        return;
+    }
+    const size_t count = reply.value("instance_count", size_t(0));
+    if (!reply.value("contents", false)) {
+        Console::Log(name + " has " + std::to_string(count) + " instances, more than " +
+                     std::to_string(kMaxTopViewInstances) + " can be drawn at once: not opened. "
+                     "Click its pins to add their nets, or right-click them to trace their fan-in.");
+        return;
+    }
+    OpenedInstance oi;
+    oi.path = *path;
+    if (reply.contains("nets") && reply["nets"].is_array())
+        for (const auto& n : reply["nets"]) oi.nets.push_back(n.get<Equipotential>());
+    // Its model names, from any pin inside it (each path ends with the
+    // child's level).
+    for (const auto& net : oi.nets)
+        for (const auto& occ : net.occurrences)
+            if (oi.pathModels.empty() && occ.pathModels.size() == path->size() + 1)
+                oi.pathModels.assign(occ.pathModels.begin(), occ.pathModels.end() - 1);
+    if (oi.pathModels.empty()) oi.pathModels.assign(path->size(), "");
+    Console::Log("Opened " + name + ": " + std::to_string(count) + " instance(s), " +
+                 std::to_string(oi.nets.size()) + " net(s)");
+    g_opened[*path] = std::move(oi);
+    g_pendingFit = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -906,7 +817,21 @@ ImU32 styledWireColor(ImU32 color, ImU32 styleColor, const std::vector<int>& tra
 // ---------------------------------------------------------------------------
 // renderSchematic
 // ---------------------------------------------------------------------------
-void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equipotentials) {
+void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shownNets) {
+    // With instances opened, what's drawn is the shown nets joined to their
+    // contents (SchematicLayout::openInstances()), rebuilt every frame like
+    // the layout.
+    static OpenedView s_openedView;
+    std::vector<Equipotential*> equipotentials;
+    if (g_opened.empty()) {
+        equipotentials = shownNets;
+        g_boundaryPins.clear();
+    } else {
+        s_openedView = openInstances(std::vector<const Equipotential*>(shownNets.begin(), shownNets.end()),
+                                     g_opened);
+        for (auto& net : s_openedView.nets) equipotentials.push_back(&net);
+        g_boundaryPins = s_openedView.boundary;
+    }
     const float scrollSz = ImGui::GetFrameHeight();
     ImVec2 avail = ImGui::GetContentRegionAvail();
     ImVec2 csz   = ImVec2(std::max(10.f, avail.x - scrollSz),
@@ -960,6 +885,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         if (ImGui::MenuItem("Clear all nets")) g_pendingClear = true;
         if (ImGui::MenuItem("Fit view"))       g_schematic.requestFit(true);
         if (!g_expandedFanouts.empty() && ImGui::MenuItem("Collapse Fanout Groups")) g_expandedFanouts.clear();
+        if (!g_opened.empty() && ImGui::MenuItem("Close Opened Instances")) {
+            g_opened.clear();
+            g_pendingFit = true;
+        }
         ImGui::Separator();
         if (ImGui::MenuItem("Show Hierarchy", nullptr, g_showHierarchy)) setShowHierarchy(!g_showHierarchy);
     };
@@ -976,7 +905,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 for (auto& inst : g_schematic.instances) {
                     const Port* p = g_schematic.findPortById(inst, g_ctxPortId);
                     if (!p) continue;
-                    label = inst.modelName == "port" ? p->name : traceLabel(inst.path, p->name);
+                    label = pinLabel(inst, p->name);
                     break;
                 }
                 json req;
@@ -991,11 +920,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             for (auto& inst : g_schematic.instances) {
                 const Port* p = g_schematic.findPortById(inst, g_ctxPortId);
                 if (!p) continue;
-                const std::string label = inst.modelName == "port" ? p->name
-                                                                   : traceLabel(inst.path, p->name);
                 ReviewView::commentMenuItem(
-                    ReviewStore::termAnchor(inst.path, portIt->second.termId, p->name,
-                                            portIt->second.bit), label);
+                    ReviewStore::termAnchor(pinOwnerPath(inst), portIt->second.termId, p->name,
+                                            portIt->second.bit), pinLabel(inst, p->name));
                 break;
             }
             auto busIt = g_expandedBusGroupByPortId.find(g_ctxPortId);
@@ -1024,9 +951,15 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             }
             ReviewView::commentMenuItem(ReviewStore::instanceAnchor(occIt->second.path),
                                         displayPath(occIt->second.path));
+            auto* shape = g_schematic.findInstanceById(g_ctxInstanceId);
+            if (shape && !shape->isHierGroup && shape->hasChildren &&
+                ImGui::MenuItem("Open Instance"))
+                openInstance(occIt->second.path);
+            if (shape && shape->isHierGroup && g_opened.count(occIt->second.path) &&
+                ImGui::MenuItem("Close Instance"))
+                closeInstance(occIt->second.path);
             // A module frame covers a lot of canvas, so right-clicking its
             // empty area also offers the canvas-level entries.
-            auto* shape = g_schematic.findInstanceById(g_ctxInstanceId);
             if (shape && shape->isHierGroup) {
                 if (ImGui::MenuItem("Zoom to Module")) g_pendingZoomGroup = occIt->second.path;
                 ImGui::Separator();
@@ -1064,22 +997,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             hierToggleGlyphRect(inst, gx0, gy0, gx1, gy1);
             if (wp.x < gx0 || wp.x > gx1 || wp.y < gy0 || wp.y > gy1) continue;
             glyphHit = true;
-            if (!g_hierExpanded.erase(inst.path)) {
-                g_hierExpanded.insert(inst.path);
-                if (!g_instanceInternals.count(inst.path) && !g_hierPending.count(inst.path) && g_provider) {
-                    auto occIt = g_occInfoByShapeId.find(inst.id);
-                    if (occIt != g_occInfoByShapeId.end()) {
-                        g_hierPending.insert(inst.path);
-                        json req;
-                        req["request"]                  = "load_instance_internals";
-                        writePath(req, inst.path, "instance_path", "instance_id_path");
-                        req["design_ref"]["db_id"]      = occIt->second.designRef.db_id;
-                        req["design_ref"]["library_id"] = occIt->second.designRef.library_id;
-                        req["design_ref"]["design_id"]  = occIt->second.designRef.design_id;
-                        g_provider->send(req.dump());
-                    }
-                }
-            }
+            if (inst.isHierGroup) closeInstance(inst.path);
+            else                  openInstance(inst.path);
             break;
         }
         if (badgeHit || glyphHit || clickPin(wp)) {
@@ -1201,6 +1120,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     std::vector<FanoutNet> fanNets(equipotentials.size());
     std::set<InstancePath> pinned;
     for (const auto& [path, start] : g_startInstances) pinned.insert(path);
+    for (const auto& [path, pin] : g_boundaryPins) pinned.insert(path);
     if (SelectionStore::hasSelection()) pinned.insert(SelectionStore::selected());
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
@@ -1300,6 +1220,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     // until a net reaches them.
     totalItems += int(g_startPorts.size());
     for (const auto& [path, start] : g_startInstances) {
+        if (g_opened.count(path)) continue;  // drawn as its contents
         ++totalItems;
         auto& mi = minsts[path];
         if (mi.initialized) continue;
@@ -1349,6 +1270,32 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
     std::map<int, int> logicalToRenderedPortId;
 
     for (auto& [key, mi] : minsts) {
+        // An opened instance's pin, alone on its net in view: a port flag in
+        // its frame, placed like a box (the size of the flag and its name)
+        // and turned into a flag once laid out (see below).
+        if (auto bp = g_boundaryPins.find(key); bp != g_boundaryPins.end() && !mi.ports.empty()) {
+            const BoundaryPin& pin = bp->second;
+            InstanceShape inst;
+            inst.id        = nextInstId++;
+            inst.path      = key;
+            inst.name      = mi.ports[0].name;
+            inst.modelName = "port";
+            inst.partialInterface = false;
+            Port p;
+            p.id        = mi.ports[0].portId;
+            p.name      = mi.ports[0].name;
+            p.direction = pin.term.direction;
+            p.isInput   = pin.term.direction == Direction::Input;  // drawn as an input port
+            p.lx        = p.isInput ? 0.5f : -0.5f;                 // its wire goes in
+            p.ly        = 0.f;
+            p.color     = DiagnosisStore::netColor(pin.owner, stripBusIndex(p.name));
+            inst.w      = boundaryFlagWidth(p.name);
+            inst.h      = boundaryFlagHeight();
+            inst.ports.push_back(p);
+            pathToInstId[key] = inst.id;
+            g_schematic.instances.push_back(std::move(inst));
+            continue;
+        }
         auto expIt = g_expandedInstances.find(key);
         bool isExp = expIt != g_expandedInstances.end() && !expIt->second.empty();
 
@@ -1385,30 +1332,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             inst.hideName  = viewOptions.instanceLabel == InstanceLabel::Model && !inst.model.empty();
         }
 
-        // Hierarchy embedding: this box's model has sub-instances, so it can
-        // be expanded in place. If it's toggled open, either grow it now to
-        // reserve room for its already-loaded internals (added after layout
-        // finalizes positions, below) or kick off the request for them.
+        // A box whose model has sub-instances can be opened (its "+").
         inst.hasChildren  = mi.hasInstances;
-        inst.hierExpanded = inst.hasChildren && g_hierExpanded.count(key) > 0;
-        float internalsH = 0.f;
-        if (inst.hierExpanded) {
-            auto internalsIt = g_instanceInternals.find(key);
-            if (internalsIt != g_instanceInternals.end()) {
-                size_t n = internalsIt->second.children.size();
-                float blockH = n ? float(n) * kHierChildH + float(n - 1) * kHierGap : 0.f;
-                internalsH = blockH + kHierMargin;
-            } else if (!g_hierPending.count(key) && g_provider) {
-                g_hierPending.insert(key);
-                json req;
-                req["request"]                  = "load_instance_internals";
-                writePath(req, key, "instance_path", "instance_id_path");
-                req["design_ref"]["db_id"]      = mi.designRef.db_id;
-                req["design_ref"]["library_id"] = mi.designRef.library_id;
-                req["design_ref"]["design_id"]  = mi.designRef.design_id;
-                g_provider->send(req.dump());
-            }
-        }
 
         if (isExp) {
             inst.partialInterface = false;
@@ -1556,8 +1481,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 inst.ports.push_back(p);
             }
         }
-        applySymbolGeometry(inst, internalsH);
-        if (internalsH > 0.f) inst.w = std::max(inst.w, kHierChildW + 2.0f * kHierMargin);
+        applySymbolGeometry(inst, 0.f);
         g_schematic.instances.push_back(std::move(inst));
     }
 
@@ -1682,6 +1606,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             f.shape.diagOutline = DiagnosisStore::instanceColor(f.shape.path);
             applyInstanceStyle(f.shape);
             f.shape.selected    = SelectionStore::isSelected(f.shape.path);
+            // An opened instance's frame: its "-" closes it.
+            f.shape.hasChildren  = g_opened.count(f.shape.path) > 0;
+            f.shape.hierExpanded = f.shape.hasChildren;
             setReviewBadge(f.shape);
             g_occInfoByShapeId[f.shape.id] = { f.shape.path, DesignRef{}, true };
             frameShapes.push_back(std::move(f.shape));
@@ -1693,24 +1620,17 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                                      std::make_move_iterator(frameShapes.end()));
     }
 
-    // Hierarchy embedding: now that top-level positions are final, lay out
-    // and append the nested children/internal-nets of every expanded, loaded
-    // instance. Collected as ids first (not pointers) since emission appends
-    // to the very vectors we're about to iterate, which would invalidate
-    // iterators held across a push_back.
-    {
-        std::vector<int> hierExpandIds;
-        for (const auto& inst : g_schematic.instances)
-            if (inst.hierExpanded && g_instanceInternals.count(inst.path))
-                hierExpandIds.push_back(inst.id);
-
-        for (int id : hierExpandIds) {
-            auto* parent = g_schematic.findInstanceById(id);
-            if (!parent) continue;
-            auto result = emitInstanceInternals(*parent, nextInstId, nextPortId);
-            for (auto& s : result.shapes) g_schematic.instances.push_back(std::move(s));
-            for (auto& n : result.nets)   g_schematic.nets.push_back(std::move(n));
-        }
+    // Opened instances' port flags, now in place: drawn from the pin end
+    // (the right end of an input's, the left of an output's), like a
+    // top-level port's.
+    for (auto& inst : g_schematic.instances) {
+        if (inst.modelName != "port" || inst.ports.empty() || !g_boundaryPins.count(inst.path)) continue;
+        Port& p = inst.ports[0];
+        const ImVec2 at = portAnchor(inst, p);
+        inst.x = at.x;
+        inst.y = at.y;
+        inst.w = inst.h = 0.f;
+        p.lx = p.isInput ? 1.0f : -1.0f;
     }
 
     // Pass 3: top-level ports, on the sheet's edges -- inputs
@@ -1979,6 +1899,15 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             // an input port's sit in the stretch of wire before its channel.
             for (const auto& l : netLabelPlaces(inst, instanceNameWidth))
                 (inst.modelName == "port" ? keepOut : obstacles).push_back(l.rect);
+            // An opened instance's port flag is inside its frame, among
+            // the contents: routed around.
+            if (inst.modelName == "port" && !inst.path.empty() && !inst.ports.empty()) {
+                const Port& p = inst.ports[0];
+                const float fw = boundaryFlagWidth(p.name), fh = 0.5f * boundaryFlagHeight();
+                obstacles.push_back(p.isInput ? RouteRect{ inst.x - fw, inst.y - fh, inst.x, inst.y + fh }
+                                              : RouteRect{ inst.x, inst.y - fh, inst.x + fw, inst.y + fh });
+                continue;
+            }
             if (inst.w <= 0.f || inst.h <= 0.f) continue;
             if (inst.isHierGroup) {  // its label row
                 keepOut.push_back({ inst.x, inst.y, inst.x + inst.w, inst.y + kGroupHeader - kPinPitch });
@@ -1996,7 +1925,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
         // An input port's wire is routed from `leftPortRoom` past its flag
         // (where its channel starts), joined to the flag after routing.
         auto isLeftPort = [](const InstanceShape& inst, const Port& p) {
-            return inst.modelName == "port" && p.lx >= 0.f;
+            return inst.modelName == "port" && p.lx >= 0.f && inst.path.empty();
         };
         auto pinOf = [&](const InstanceShape& inst, const Port& p) {
             ImVec2 at = portAnchor(inst, p);
@@ -2020,7 +1949,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
                 r.color   = n.color;
                 r.netName = n.netName;
                 r.ref     = srcInst->modelName == "port"
-                    ? SchematicNetRef{ {}, srcPort->name, true }
+                    ? SchematicNetRef{ srcInst->path, srcPort->name, true }
                     : SchematicNetRef{ srcInst->path, srcPort->name, false };
                 r.selected = SelectionStore::isNetSelected(r.ref);
                 for (const auto& l : netLabelPlaces(*srcInst, instanceNameWidth))
@@ -2200,7 +2129,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& equip
             if (action == PinAction::ExpandBus || action == PinAction::LoadNet)
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             ImGui::BeginTooltip();
-            if (inst->modelName == "port") ImGui::Text("%s  (top-level port)", port->name.c_str());
+            if (inst->modelName == "port" && inst->path.empty())
+                ImGui::Text("%s  (top-level port)", port->name.c_str());
+            else if (inst->modelName == "port")
+                ImGui::Text("%s  (pin of %s)", port->name.c_str(), displayPath(pinOwnerPath(*inst)).c_str());
             else                           ImGui::Text("%s / %s", inst->name.c_str(), port->name.c_str());
             switch (action) {
                 case PinAction::ExpandBus: ImGui::TextDisabled("Click: show the individual bits"); break;

@@ -163,13 +163,16 @@
                  "terms": [{"name": "A", "child_id": 0, "direction": 0},
                            {"name": "Y", "child_id": 1, "direction": 1}]}]},
 
-    {"name": "load_instance_internals echoes the id path and lists anonymous children",
-     "request": {"request": "load_instance_internals", "instance_path": [""],
-                 "instance_id_path": [1], "design_ref": "$design:mid"},
-     "expect": [{"response": "instance_internals_response", "instance_path": [""],
-                 "instance_id_path": [1],
-                 "children": [{"name": "", "child_id": 0}, {"name": "", "child_id": 1},
-                              {"name": "u_leaf", "child_id": 2}]}]},
+    {"name": "load_instance_view opens an anonymous instance by id, its anonymous instances by id",
+     "request": {"request": "load_instance_view", "id_path": [1]},
+     "expect": [{"response": "instance_view_response", "found": true,
+                 "path": [""], "id_path": [1], "model": "mid", "instance_count": 3,
+                 "nets": [
+                   {"terms": [{"name": "i", "child_id": 0}],
+                    "occurrences": [{"path": [["", 1, "mid"], ["", 0, "LEAF"]], "name": "A"},
+                                    {"path": [["", 1, "mid"], ["", 1, "LEAF"]], "name": "A"}]},
+                   {"terms": [{"name": "o", "child_id": 1}],
+                    "occurrences": [{"path": [["", 1, "mid"], ["", 1, "LEAF"]], "name": "Y"}]}]}]},
 
     {"name": "equipotential occurrences tell anonymous instances apart by id",
      "request": {"request": "load_equipotential", "path": [], "term_id": 0},

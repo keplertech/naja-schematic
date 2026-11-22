@@ -301,9 +301,10 @@ Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 | Click a box | Select the instance (also in the design tree; its pins and nets in the panel below the tree) |
 | Click a stacked (summary) box | Show the sinks it gathers (a net's sinks past *View > Fanout*'s limit) |
 | Click a wire | Select (highlight) its net |
-| Click a box's hierarchy glyph | Show / hide what is inside it |
+| Click a box's `+` glyph | Open the instance: its contents, laid out like a trace, in its frame; wires reaching its pins go on inside, and its pins with nothing outside are port flags in the frame |
+| Click an opened instance's frame `-` glyph | Close it: its box again |
 | Click a review badge (numbered disc) | Open its thread in the Review tab |
-| Right-click | Menu: trace to driver, sources, properties, comment, fit, clear |
+| Right-click | Menu: trace to driver, sources, properties, comment, open / close instance, fit, clear |
 
 In the design tree, or in the Pins (Ports for the top) and Nets tabs below
 it, right-click a row (an instance, a pin or a net) for its menu. With a

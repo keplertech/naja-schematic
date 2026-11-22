@@ -14,6 +14,11 @@ float instanceNameWidth(const std::string& name);
 // World width of a net label (Port::netLabel) at
 // SchematicLayout::kNetLabelFontSize.
 float netLabelWidth(const std::string& label);
+// World size of a port flag (modelName "port") and its name, as
+// drawBoundaryPortInstance draws them at 1x: the flag's body and tip, then
+// the name past its base.
+float boundaryFlagWidth(const std::string& name);
+float boundaryFlagHeight();
 
 // The world rect a shape covers when drawn: the shape, plus its name row or
 // its port flag.

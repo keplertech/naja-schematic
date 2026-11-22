@@ -320,50 +320,9 @@ void setupProvider(AppState& state) {
         }
       }
       EquipotentialView::applyInstanceExpansion(*path, ports);
-    } else if (resp == "instance_internals_response") {
-      auto path = readPath(j, "instance_path", "instance_id_path");
-      if (!path) {
-        Console::Error("instance_internals_response without a valid instance_id_path");
-        return;
-      }
-      EquipotentialView::InstanceInternals data;
-      if (j.contains("children") && j["children"].is_array()) {
-        for (const auto& c : j["children"]) {
-          EquipotentialView::InstanceChild ic;
-          ic.name    = c.value("name", std::string(""));
-          ic.childId = c.value("child_id", 0u);
-          if (c.contains("design_ref"))
-            ic.designRef = c["design_ref"].get<DesignRef>();
-          ic.primitiveType = primitiveTypeFromString(c.value("primitive_type", std::string("unknown")));
-          ic.hasInstances = c.value("has_instances", false) || c.value("has_primitives", false);
-          ic.hasSources   = c.value("has_sources", false);
-          data.children.push_back(std::move(ic));
-        }
-      }
-      if (j.contains("nets") && j["nets"].is_array()) {
-        for (const auto& n : j["nets"]) {
-          EquipotentialView::InternalNet in;
-          in.name = n.value("name", std::string(""));
-          if (n.contains("bit") && !n["bit"].is_null()) in.bit = n["bit"].get<int>();
-          if (n.contains("pins") && n["pins"].is_array()) {
-            for (const auto& p : n["pins"]) {
-              EquipotentialView::InternalPin ip;
-              ip.name    = displayTermName(p.value("name", std::string("")),
-                                           p.value("child_id", 0u));
-              int dirInt = p.value("direction", 0);
-              ip.direction = dirInt == 1 ? Direction::Output
-                           : dirInt == 2 ? Direction::Inout
-                                         : Direction::Input;
-              if (p.contains("bit") && !p["bit"].is_null()) ip.bit = p["bit"].get<int>();
-              if (p.contains("inst_id") && !p["inst_id"].is_null())
-                ip.instChildId = p["inst_id"].get<unsigned>();
-              in.pins.push_back(std::move(ip));
-            }
-          }
-          data.nets.push_back(std::move(in));
-        }
-      }
-      EquipotentialView::applyInstanceInternals(*path, data);
+    } else if (resp == "instance_view_response") {
+      // A hierarchical instance's contents, to draw it opened (its "+").
+      EquipotentialView::applyInstanceView(j);
     } else if (resp == "sources_response") {
       // The source references of the object a "Show Sources" asked about;
       // the first one's file is opened right away.

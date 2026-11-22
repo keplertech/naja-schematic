@@ -112,7 +112,7 @@ class LocalSNLProvider : public INetlistProvider {
     std::string buildEquipotentialResponse(const nlohmann::json& req) const;
     std::string buildTraceDriverResponse(const nlohmann::json& req) const;
     std::string buildExpandInstanceTermsResponse(const nlohmann::json& req) const;
-    std::string buildInstanceInternalsResponse(const nlohmann::json& req) const;
+    std::string buildInstanceViewResponse(const nlohmann::json& req) const;
     std::string buildSourcesResponse(const nlohmann::json& req) const;
     std::string buildSourceResponse(const nlohmann::json& req) const;
     std::string resolveSourceFile(const std::string& file) const;

@@ -992,3 +992,171 @@ TEST(HierarchyGroups, ANestedFrameKeepsItsLeafLevelWithAShallowerOne) {
   fx.run();
   EXPECT_EQ(byPath(fx.shapes, {"m", "sub", "g"}).y, byPath(fx.shapes, {"m", "h"}).y);
 }
+
+// ---------------------------------------------------------------------------
+// Opened instances
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// A pin of `path`'s instance, with a term id (what pins are matched by).
+InstTermOccurrence pinOf(std::vector<std::string> path, const std::string& term, unsigned termId,
+                         Direction dir) {
+  InstTermOccurrence o = occ(std::move(path), term, dir);
+  o.term.child_id = termId;
+  o.pathIds       = pathIds(o.path);
+  return o;
+}
+
+Equipotential net(std::vector<BitTerm> terms, std::vector<InstTermOccurrence> occs) {
+  Equipotential e;
+  e.found       = true;
+  e.terms       = std::move(terms);
+  e.occurrences = std::move(occs);
+  return e;
+}
+
+OpenedInstance opened(const std::vector<std::string>& path, std::vector<Equipotential> nets) {
+  OpenedInstance oi;
+  oi.path       = P(path);
+  oi.pathModels = std::vector<std::string>(path.size(), "M");
+  oi.nets       = std::move(nets);
+  return oi;
+}
+
+bool hasPin(const Equipotential& e, const InstancePath& path, const std::string& term) {
+  return std::any_of(e.occurrences.begin(), e.occurrences.end(), [&](const InstTermOccurrence& o) {
+    return o.path == path && o.term.name == term;
+  });
+}
+
+// The flags of `view` for `owner`'s pins, by pin name.
+std::map<std::string, const BoundaryPin*> flagsOf(const OpenedView& view, const std::vector<std::string>& owner) {
+  std::map<std::string, const BoundaryPin*> flags;
+  for (const auto& [path, pin] : view.boundary)
+    if (pin.owner == P(owner)) flags[pin.term.name] = &pin;
+  return flags;
+}
+
+// u1.Q drives u2.A; u2 (opened) has g0: A -> g0.I, g0.O -> Y.
+struct OpenedFixture {
+  Equipotential shown = net({}, { pinOf({"u1"}, "Q", 1, Direction::Output),
+                                  pinOf({"u2"}, "A", 20, Direction::Input) });
+  std::map<InstancePath, OpenedInstance> open;
+  OpenedFixture() {
+    open[P({"u2"})] = opened({"u2"}, {
+        net({ BitTerm{"A", 20, Direction::Input} }, { pinOf({"u2", "g0"}, "I", 0, Direction::Input) }),
+        net({ BitTerm{"Y", 21, Direction::Output} }, { pinOf({"u2", "g0"}, "O", 1, Direction::Output) }) });
+  }
+};
+
+} // namespace
+
+TEST(OpenedInstances, AShownNetGoesOnInsideThroughTheOpenedPin) {
+  OpenedFixture fx;
+  const OpenedView view = openInstances({ &fx.shown }, fx.open);
+  ASSERT_EQ(view.nets.size(), 2u);
+  const Equipotential& joined = view.nets[0];
+  EXPECT_TRUE(hasPin(joined, P({"u1"}), "Q"));
+  EXPECT_TRUE(hasPin(joined, P({"u2", "g0"}), "I"));
+  // The opened instance has no box: its own pin is gone.
+  EXPECT_FALSE(hasPin(joined, P({"u2"}), "A"));
+  EXPECT_EQ(joined.occurrences.size(), 2u);
+  // Connected outside: no flag for A.
+  EXPECT_EQ(flagsOf(view, {"u2"}).count("A"), 0u);
+}
+
+TEST(OpenedInstances, APinWithNothingOutsideInViewIsAFlag) {
+  OpenedFixture fx;
+  const OpenedView view = openInstances({ &fx.shown }, fx.open);
+  const auto flags = flagsOf(view, {"u2"});
+  ASSERT_EQ(flags.count("Y"), 1u);
+  EXPECT_EQ(flags.at("Y")->term.direction, Direction::Output);
+  // On the inside net, as an occurrence of a made-up path in u2 that
+  // receives it (an output pin, seen from inside), addressed by u2's ids.
+  const Equipotential& inside = view.nets[1];
+  ASSERT_EQ(inside.occurrences.size(), 2u);
+  const InstTermOccurrence& flag = inside.occurrences[1];
+  ASSERT_EQ(flag.path.size(), 2u);
+  EXPECT_EQ(InstancePath(flag.path.begin(), flag.path.end() - 1), P({"u2"}));
+  EXPECT_GE(flag.path.back().id, kBoundaryIdBase);
+  EXPECT_EQ(flag.pathIds, pathIds(P({"u2"})));
+  EXPECT_EQ(flag.term.direction, Direction::Input);
+  EXPECT_EQ(flag.term.child_id, 21u);
+  EXPECT_TRUE(view.boundary.count(flag.path));
+  EXPECT_TRUE(inside.direct);  // drawn plainly: nothing else shows it
+}
+
+TEST(OpenedInstances, AnOpenedInstanceAloneHasAFlagPerConnectedPin) {
+  OpenedFixture fx;
+  const OpenedView view = openInstances({}, fx.open);
+  const auto flags = flagsOf(view, {"u2"});
+  EXPECT_EQ(flags.size(), 2u);
+  // An input pin drives the inside net.
+  for (const auto& n : view.nets)
+    for (const auto& o : n.occurrences)
+      if (o.term.name == "A" && view.boundary.count(o.path))
+        EXPECT_EQ(o.term.direction, Direction::Output);
+}
+
+TEST(OpenedInstances, ANetThroughAnInstanceKeepsBothFlags) {
+  std::map<InstancePath, OpenedInstance> open;
+  open[P({"ft"})] = opened({"ft"}, { net({ BitTerm{"a", 0, Direction::Input},
+                                           BitTerm{"b", 1, Direction::Output} }, {}) });
+  const OpenedView view = openInstances({}, open);
+  ASSERT_EQ(view.nets.size(), 1u);
+  EXPECT_EQ(view.nets[0].occurrences.size(), 2u);
+  EXPECT_EQ(flagsOf(view, {"ft"}).size(), 2u);
+}
+
+TEST(OpenedInstances, AnInstanceOpenedInsideAnotherJoinsItsNets) {
+  std::map<InstancePath, OpenedInstance> open;
+  // x.a -> x/y.p; inside y: p -> x/y/z.A.
+  open[P({"x"})] = opened({"x"}, { net({ BitTerm{"a", 0, Direction::Input} },
+                                        { pinOf({"x", "y"}, "p", 5, Direction::Input) }) });
+  open[P({"x", "y"})] = opened({"x", "y"}, { net({ BitTerm{"p", 5, Direction::Input} },
+                                                  { pinOf({"x", "y", "z"}, "A", 0, Direction::Input) }) });
+  const OpenedView view = openInstances({}, open);
+  ASSERT_EQ(view.nets.size(), 1u);
+  EXPECT_TRUE(hasPin(view.nets[0], P({"x", "y", "z"}), "A"));
+  EXPECT_FALSE(hasPin(view.nets[0], P({"x", "y"}), "p"));
+  // x's pin is where the net comes from; y's goes on outside it, in x.
+  EXPECT_EQ(flagsOf(view, {"x"}).size(), 1u);
+  EXPECT_TRUE(flagsOf(view, {"x", "y"}).empty());
+}
+
+TEST(OpenedInstances, ShownNetsStayApartAndKeepTheirTraces) {
+  // Two traces' partial nets sharing a driver: drawn as they are.
+  Equipotential a = net({}, { pinOf({"d"}, "Y", 1, Direction::Output), pinOf({"r1"}, "A", 0, Direction::Input) });
+  Equipotential b = net({}, { pinOf({"d"}, "Y", 1, Direction::Output), pinOf({"r2"}, "A", 0, Direction::Input) });
+  a.traceIds = {3};
+  b.traceIds = {4};
+  OpenedFixture fx;
+  fx.shown.traceIds = {7};
+  fx.shown.direct   = false;
+  const OpenedView view = openInstances({ &a, &b, &fx.shown }, fx.open);
+  ASSERT_EQ(view.nets.size(), 4u);
+  EXPECT_EQ(view.nets[0].traceIds, std::vector<int>{3});
+  EXPECT_EQ(view.nets[1].traceIds, std::vector<int>{4});
+  // The trace through u2.A goes on inside u2, in its color.
+  EXPECT_EQ(view.nets[2].traceIds, std::vector<int>{7});
+  EXPECT_FALSE(view.nets[2].direct);
+  EXPECT_TRUE(hasPin(view.nets[2], P({"u2", "g0"}), "I"));
+}
+
+TEST(OpenedInstances, ANetReachingManyPinsGetsAFlagForEach) {
+  // A buffer driving 16 output pins: as many flags on one net, after its
+  // pins (the list grows while flags are added).
+  std::vector<BitTerm> outs;
+  for (int b = 0; b < 16; ++b) outs.push_back(BitTerm{"GCLK", 2, Direction::Output, b});
+  std::map<InstancePath, OpenedInstance> open;
+  open[P({"cg"})] = opened({"cg"}, { net(outs, { pinOf({"cg", "buf"}, "O", 1, Direction::Output) }) });
+  const OpenedView view = openInstances({}, open);
+  ASSERT_EQ(view.nets.size(), 1u);
+  ASSERT_EQ(view.nets[0].occurrences.size(), 17u);
+  EXPECT_TRUE(hasPin(view.nets[0], P({"cg", "buf"}), "O"));
+  EXPECT_EQ(view.boundary.size(), 16u);
+  std::set<unsigned> ids;
+  for (const auto& [path, pin] : view.boundary) ids.insert(path.back().id);
+  EXPECT_EQ(ids.size(), 16u);  // one made-up id per bit
+}

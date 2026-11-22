@@ -675,8 +675,8 @@ void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
     msgCb_(buildTraceDriverResponse(req));
   } else if (request == "expand_instance_terms") {
     msgCb_(buildExpandInstanceTermsResponse(req));
-  } else if (request == "load_instance_internals") {
-    msgCb_(buildInstanceInternalsResponse(req));
+  } else if (request == "load_instance_view") {
+    msgCb_(buildInstanceViewResponse(req));
   } else if (request == "get_sources") {
     msgCb_(buildSourcesResponse(req));
   } else if (request == "load_source") {
@@ -1228,7 +1228,9 @@ static bool isAssignInstance(const SNLInstance* inst) {
   return inst->getModel() && NLDB0::isAssign(inst->getModel());
 }
 
-static json topViewNets(const SNLDesign* top) {
+// `pathArr`: the levels down to `top` ([name, child_id, model_name] each),
+// empty for the top design itself -- prefixed to every occurrence's path.
+static json topViewNets(const SNLDesign* top, const json& pathArr = json::array()) {
   std::vector<SNLBitNet*> bitNets;
   std::map<const SNLBitNet*, size_t> indexOf;
   auto add = [&](SNLBitNet* bn) {
@@ -1281,7 +1283,7 @@ static json topViewNets(const SNLDesign* top) {
       for (auto* comp : bitNets[i]->getComponents()) {
         if (auto* it = dynamic_cast<SNLInstTerm*>(comp)) {
           if (!isAssignInstance(it->getInstance()))
-            occs.push_back(instTermOccurrenceJson(json::array(), it));
+            occs.push_back(instTermOccurrenceJson(pathArr, it));
         } else if (auto* bt = dynamic_cast<SNLBitTerm*>(comp)) {
           terms.push_back(bitTermWithNetJson(bt));
         }
@@ -1316,110 +1318,47 @@ std::string LocalSNLProvider::buildTopViewResponse(const json& req) const {
   return reply.dump();
 }
 
-// Resolve an instance's own model (the request's design_ref, exactly as the
-// client already has it from InstTermOccurrence::designRef / the merged
-// instance's occurrence data) and report what's inside it for a nested
-// hierarchical schematic box: one level of sub-instances, plus the nets
-// wiring them together (and, for a net that also reaches one of the model's
-// own boundary ports, that pass-through connection too).
-std::string LocalSNLProvider::buildInstanceInternalsResponse(const json& req) const {
-  // The requesting box's instance path (names and ids), echoed back as is.
-  json instancePath   = req.value("instance_path", json::array());
-  json instanceIdPath = req.value("instance_id_path", json::array());
-  unsigned dbId = 0, libId = 0, designId = 0;
-  if (req.contains("design_ref")) {
-    dbId     = req["design_ref"].value("db_id",      0u);
-    libId    = req["design_ref"].value("library_id", 0u);
-    designId = req["design_ref"].value("design_id",  0u);
+// load_instance_view: one hierarchical instance opened in the schematic --
+// its contents as nets, the same way load_top_view gives the top's: every
+// net of the instance's model as an equipotential-shaped body, the pins of
+// its own instances (one level down) in "occurrences", under the instance's
+// full path, and the model's ports the net reaches in "terms" (the
+// instance's pins, seen from inside). The viewer joins those to the nets
+// already drawn at the instance's pins. Contents only up to
+// "max_instances", like the top view. Mirrors protocol.py's
+// _handle_load_instance_view().
+std::string LocalSNLProvider::buildInstanceViewResponse(const json& req) const {
+  json reply = {{"response", "instance_view_response"}, {"found", false}};
+  reply["path"] = req.value("path", json::array());
+  if (req.contains("id_path")) reply["id_path"] = req["id_path"];
+  auto* top = db_ ? db_->getTopDesign() : nullptr;
+  if (!top) return reply.dump();
+  auto resolved = resolveRequestPath(top, req);
+  if (!resolved.ok || !resolved.instance() || !resolved.design) return reply.dump();
+  json names = json::array(), ids = json::array(), levels = json::array();
+  for (auto* inst : resolved.chain) {
+    names.push_back(instanceName(inst));
+    ids.push_back(static_cast<unsigned>(inst->getID()));
+    levels.push_back(json::array({instanceName(inst),
+                                  static_cast<unsigned>(inst->getID()),
+                                  designName(inst->getModel())}));
   }
-
-  json children = json::array();
-  json nets     = json::array();
-
-  auto* model = findDesign(dbId, libId, designId);
-  if (model) {
-    // Children: everything one level down, primitive or not — the nested
-    // box shows the model's actual contents, not split by tree group.
-    for (auto* inst : model->getNonPrimitiveInstances()) {
-      auto* sub = inst->getModel();
-      children.push_back({
-        {"name",           instanceName(inst)},
-        {"model_name",     sub ? designName(sub) : ""},
-        {"primitive_type", toString(getPrimitiveType(sub))},
-        {"child_id",       static_cast<unsigned>(inst->getID())},
-        {"design_ref", {
-          {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
-          {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
-          {"design_id",  sub ? static_cast<unsigned>(sub->getID()) : 0u}
-        }},
-        {"has_terms",      sub && !sub->getTerms().empty()},
-        {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
-        {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()}
-      });
-      withSources(children.back(), instanceHasSources(inst));
-    }
-    for (auto* inst : model->getPrimitiveInstances()) {
-      auto* sub = inst->getModel();
-      if (sub && NLDB0::isAssign(sub)) continue;
-      children.push_back({
-        {"name",           instanceName(inst)},
-        {"model_name",     sub ? designName(sub) : ""},
-        {"primitive_type", toString(getPrimitiveType(sub))},
-        {"child_id",       static_cast<unsigned>(inst->getID())},
-        {"design_ref", {
-          {"db_id",      sub ? static_cast<unsigned>(sub->getDB()->getID()) : 0u},
-          {"library_id", sub ? static_cast<unsigned>(sub->getLibrary()->getID()) : 0u},
-          {"design_id",  sub ? static_cast<unsigned>(sub->getID()) : 0u}
-        }},
-        {"has_terms",      sub && !sub->getTerms().empty()},
-        {"has_primitives", sub && hasVisiblePrimitiveInstances(sub)},
-        {"has_instances",  sub && !sub->getNonPrimitiveInstances().empty()}
-      });
-      withSources(children.back(), instanceHasSources(inst));
-    }
-
-    // Internal nets: split each net's components into sub-instance pins
-    // (SNLInstTerm) vs the model's own boundary ports (SNLBitTerm) so the
-    // client can tell a child-to-child wire from a pass-through to this
-    // instance's own external port. Nets with fewer than two live
-    // endpoints don't need drawing.
-    auto emitBitNet = [&](SNLBitNet* bn, const std::string& name, std::optional<int> bit) {
-      json pins = json::array();
-      for (auto* comp : bn->getComponents()) {
-        if (auto* it = dynamic_cast<SNLInstTerm*>(comp)) {
-          auto pin = bitTermJson(it->getBitTerm());
-          pin["inst_id"] = static_cast<unsigned>(it->getInstance()->getID());
-          pins.push_back(std::move(pin));
-        } else if (auto* bt = dynamic_cast<SNLBitTerm*>(comp)) {
-          pins.push_back(bitTermJson(bt));
-        }
-      }
-      if (pins.size() < 2) return;
-      json n = {{"name", name}, {"pins", std::move(pins)}};
-      if (bit.has_value()) n["bit"] = *bit;
-      nets.push_back(std::move(n));
-    };
-
-    for (auto* net : model->getNets()) {
-      if (auto* bus = dynamic_cast<SNLBusNet*>(net)) {
-        int lo = std::min(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
-        int hi = std::max(static_cast<int>(bus->getLSB()), static_cast<int>(bus->getMSB()));
-        for (int b = lo; b <= hi; ++b) {
-          if (auto* bit = bus->getBit(b)) emitBitNet(bit, bus->getString(), b);
-        }
-      } else if (auto* bn = dynamic_cast<SNLBitNet*>(net)) {
-        emitBitNet(bn, bn->getString(), std::nullopt);
-      }
-    }
-  }
-
-  return json{
-    {"response",  "instance_internals_response"},
-    {"instance_path", instancePath},
-    {"instance_id_path", instanceIdPath},
-    {"children",  children},
-    {"nets",      nets}
-  }.dump();
+  const SNLDesign* model = resolved.design;
+  size_t count = 0;
+  for (auto* inst : model->getInstances())
+    if (!isAssignInstance(inst)) ++count;
+  size_t maxInstances = kMaxTopViewInstances;
+  if (req.contains("max_instances") && req["max_instances"].is_number_integer())
+    maxInstances = static_cast<size_t>(std::max<long long>(0, req["max_instances"].get<long long>()));
+  const bool contents = count <= maxInstances;
+  reply["path"]           = std::move(names);
+  reply["id_path"]        = std::move(ids);
+  reply["found"]          = true;
+  reply["model"]          = designName(model);
+  reply["instance_count"] = count;
+  reply["contents"]       = contents;
+  reply["nets"]           = contents ? topViewNets(model, levels) : json::array();
+  return reply.dump();
 }
 
 // The source entries of the object a get_sources/load_source request names

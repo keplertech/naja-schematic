@@ -698,6 +698,36 @@ reply only draws into an empty view, so a host's focus or nets pushed
 meanwhile win. The tree's root offers Show Contents / Show Ports (replace
 view). Older hosts don't answer it: nothing is drawn.
 
+`load_instance_view`/`instance_view_response` **opens a hierarchical
+instance**: the "+" on its box (or its menu's Open Instance) draws it as
+its contents, laid out like any other nets, inside its frame, instead of
+as a box. Request: `{"request":"load_instance_view","path":[...],
+"id_path":[...],"max_instances":250}`. Reply: `found` (false for the top
+or an unknown path), the resolved `path`/`id_path`, `model`,
+`instance_count`, `contents` (`instance_count <= max_instances`) and
+`nets`, built like the top view's (`topViewNets()`/`top_view_nets()`, the
+same grouping by assigns, the same skipped nets) on the instance's model:
+its instances' pins as `occurrences` under the instance's full path, and
+the model's own ports the net reaches as `terms` -- the instance's pins,
+seen from inside. `buildInstanceViewResponse()`/
+`_handle_load_instance_view()`, shared cases in
+`tests/data/top_view_protocol_cases.json` (and the anonymous file). The
+viewer keeps the replies (`EquipotentialView::openInstance()`,
+`applyInstanceView()`, `closeInstance()`; cleared with the view) and
+draws, each frame, what `SchematicLayout::openInstances()` makes of the
+shown nets and the opened instances' nets: joined where they share a pin
+-- a shown net reaching an opened instance's pin goes on inside on the
+net on that pin, an instance opened inside another joins its parent's
+nets -- and the opened instance's own pins dropped (it has no box). A pin
+whose net reaches nothing outside the instance is a `BoundaryPin`: a port
+flag inside the frame (an occurrence under a made-up path, the
+instance's plus an id from `kBoundaryIdBase`, never sent; its pin
+requests use the instance's ids and term), placed like a box and turned
+into a flag (`modelName` "port", a non-empty path) once laid out. The
+frame of an opened instance shows "-", which closes it and every
+instance opened inside it. Over the cap nothing opens (the console says
+why).
+
 `diagnosis_response` is different: it's a **server push**, not a reply to a
 request (a diagnosis run finishes on its own schedule), and it *annotates*
 the already-loaded netlist rather than loading anything:
@@ -927,8 +957,7 @@ color in `NetWire::color`, else `styleColor`, else `traceWireColor()`).
 Hosts: `style()` on `ViewerSession`/`ViewerServer`/`Schematic`,
 `show(style=)`, `export_svg(style=)`, `--style FILE` on the
 `naja-schematic` server and `render` CLIs; natively `--style FILE`
-(`loadStyleFile()`), kept by `--export`. Not styled: wiring nested inside
-an expanded instance (its internal nets aren't equipotentials).
+(`loadStyleFile()`), kept by `--export`.
 
 `design_changed` is another server push, `{"response":"design_changed",
 "generation":N}`: the host replaced or edited the design, so every tree
@@ -1210,9 +1239,7 @@ and a leaf reveal (review Go To) also selects the panel's tab
   `focus_instance`, and drawn highlighted in both views. A net is set by
   clicking its wires in the schematic (`SchematicInteraction::pickWire`,
   tried after pins and before box bodies) and drawn with a halo
-  (`NetRoute::selected`); it's view-only, not reported to the host. Only
-  routed (top-level) wires are selectable, not wiring nested in an
-  expanded instance. Its listener (installed in `AppLogic.cpp`) reports
+  (`NetRoute::selected`); it's view-only, not reported to the host. Its listener (installed in `AppLogic.cpp`) reports
   each instance change to the host. `NetlistTree` reveals selections made outside it by comparing
   `revision()`. Cleared on every fresh `root_response`/`root_loaded`.
 - **`SchematicLayout`** — the schematic's pure geometry, split out of
@@ -1236,6 +1263,8 @@ and a leaf reveal (review Go To) also selects the panel's tab
     channel routing's vertical constraints, plus a spine that detours around
     boxes, labels and other spines. Junction dots mark real branch points.
   - `layoutHierarchyGroups()`: module frames.
+  - `openInstances()`: the nets drawn once instances are opened (see
+    `load_instance_view` under Wire protocol).
   - Fanout: `layeredPlacement(..., maxSinkRows)` deals a column's sinks
     (nodes driving nothing placed) into a grid of columns, each its own
     level, with a band of rows per driver (a sink's nearest one): every
@@ -1369,8 +1398,8 @@ and `InstanceShape::path` are the same `InstancePath` (ids + names,
 compared by id). A `DiagnosisItem` matches it by `idPath` when it has one,
 else by its name `path` (see `DiagnosisStore::findInstanceItems()`).
 `get_properties`, `instance_selected` and `resolve_instance` send the path
-as `path` + `id_path`, and `expand_instance_terms`/`load_instance_internals`
-tag their request with it as `instance_path` + `instance_id_path` (echoed
+as `path` + `id_path`, and `expand_instance_terms`
+tags its request with it as `instance_path` + `instance_id_path` (echoed
 back in the reply, so the view knows which box it's for -- two anonymous
 sibling boxes differ only by id).
 

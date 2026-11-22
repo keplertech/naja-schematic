@@ -301,6 +301,47 @@ struct Item {
 void buildItems(const Equipotential* eq, std::vector<Item>& drivers, std::vector<Item>& receivers);
 
 // ---------------------------------------------------------------------------
+// Opened instances. A hierarchical instance opened in the schematic
+// (load_instance_view) is drawn as its contents rather than as a box: the
+// nets of its model, each an equipotential whose occurrences are the pins of
+// the instance's own children (under its full path) and whose `terms` are
+// the instance's pins the net reaches, seen from inside.
+// ---------------------------------------------------------------------------
+struct OpenedInstance {
+    InstancePath               path;
+    std::vector<std::string>   pathModels;  // matching model names
+    std::vector<Equipotential> nets;
+};
+
+// A pin of an opened instance with nothing outside it in view, drawn as a
+// port flag inside the instance's frame. Its shape has a made-up path: the
+// instance's, plus a segment with an id from kBoundaryIdBase up, never sent
+// to the host (the pin is addressed by `owner` and `term`).
+inline constexpr unsigned kBoundaryIdBase = 0xE0000000u;
+struct BoundaryPin {
+    InstancePath             owner;
+    std::vector<std::string> ownerModels;
+    BitTerm                  term;        // the owner's pin, its own direction
+};
+
+struct OpenedView {
+    std::vector<Equipotential>          nets;
+    std::map<InstancePath, BoundaryPin> boundary;  // by the flag's made-up path
+};
+
+// The nets to draw once the instances in `opened` are open: `shown` (the
+// nets in view) and every opened instance's nets, joined where they meet --
+// a shown net reaching an opened instance's pin continues, through it, on
+// the instance's inside net on that pin; an opened instance inside another
+// joins its parent's nets the same way. An opened instance's own pins are
+// dropped (it has no box). Its pin whose net reaches nothing outside the
+// instance becomes a BoundaryPin, an occurrence of the flag's made-up path
+// driving the inside net (an input) or receiving it (an output). Shown nets
+// keep their traces and stay separate from each other.
+OpenedView openInstances(const std::vector<const Equipotential*>& shown,
+                         const std::map<InstancePath, OpenedInstance>& opened);
+
+// ---------------------------------------------------------------------------
 // Fanout summaries (ViewOptions max_sinks/group_by). A net with more
 // instance sinks than `maxSinks` draws the first ones, and the rest are
 // gathered into groups, one summary box each ("DFF x812"), wired from the
