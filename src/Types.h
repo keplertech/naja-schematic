@@ -167,17 +167,17 @@ inline const char* toString(Direction dir) {
   }
 }
 
-// A term's name for a human to read: its name, or "<term #id>" for an
+// A term's name for a human to read: its name, or "<pin #id>" for an
 // unnamed one -- naja's gates for SystemVerilog operators (and_N, or_N,
 // ...) have unnamed terms. Not "<#id>", which is an anonymous instance's
 // (displayName()), so a pin never reads like an instance. Display only:
 // never sent back or parsed; the host addresses terms by id.
 inline std::string displayTermName(const std::string& name, unsigned id) {
-  return name.empty() ? "<term #" + std::to_string(id) + ">" : name;
+  return name.empty() ? "<pin #" + std::to_string(id) + ">" : name;
 }
 // The same for a pin label that already ends in "[bit]" (an
 // expanded_instance_terms/instance_resolved term entry): "[3]" of an
-// unnamed bus is shown "<term #id>[3]".
+// unnamed bus is shown "<pin #id>[3]".
 inline std::string displayPinLabel(const std::string& label, unsigned id) {
   return label.empty() || label.front() == '[' ? displayTermName("", id) + label : label;
 }

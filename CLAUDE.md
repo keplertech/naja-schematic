@@ -456,7 +456,7 @@ when changing how either resolves or answers.
 for SystemVerilog operators (`and_N`, `or_N`, `not_1`, ...) have unnamed
 terms (output id 0, input bus id 1), and elaboration leaves many nets
 unnamed. Both backends send their name as `""` (never a made-up one), and
-the viewer shows `<term #id>` (`displayTermName()`, `displayPinLabel()`
+the viewer shows `<pin #id>` (`displayTermName()`, `displayPinLabel()`
 for a label already ending in `[bit]`) and `<net #id>` (`displayNetName()`)
 -- distinct from an instance's `<#id>`. Display only, never parsed: terms
 and nets are addressed by id. A gate symbol's bus pin draws only its range
