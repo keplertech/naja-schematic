@@ -1346,6 +1346,17 @@ canvas clicks in `EquipotentialView::renderSchematic()`.
 (`native-debug`), pointing IntelliSense at
 `../naja-schematic-build/native-debug/compile_commands.json`.
 
+### No third-party names
+
+Never name another EDA tool, vendor, product or customer library -- in
+code, comments, tests, test data, docs, commit messages, PR titles and
+bodies, or issue comments. Describe a convention generically ("as
+schematic tools usually draw it", "primitives defined in Python"), not by
+whom else does it. A reply to the user in chat may name tools; anything
+written to the repo or to GitHub may not. Interface names that already
+exist and are real APIs (najaeda's `primitives.xilinx`, the `--xilinx`
+flag) stay as they are, but don't add prose around them.
+
 ### Licensing (REUSE)
 
 Files carry no license headers: `REUSE.toml` lists every file by path
