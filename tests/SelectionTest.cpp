@@ -2,6 +2,9 @@
 #include "SelectionStore.h"
 
 #include <imgui.h>
+#include <cfloat>
+#include <cmath>
+#include <optional>
 #include <nlohmann/json.hpp>
 #include <gtest/gtest.h>
 
@@ -435,6 +438,79 @@ TEST_F(TreeReveal, ContextMenuClickDoesNotSelectTheRowUnderIt) {
   EXPECT_EQ(resolve[0]["id_path"], nlohmann::json::array({0}));  // u0's
   EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{1, "u1"}}));
   EXPECT_FALSE(SelectionStore::isSelected(InstancePath{{2, "u2"}}));
+
+  SelectionStore::clear();
+  ImGui::DestroyContext();
+}
+
+// A level with thousands of rows (a memory built of flops) costs what its
+// visible rows do: the rest are only stepped over, at their own height, so
+// the scroll range and every row's place are as if all were drawn.
+TEST_F(TreeReveal, OffScreenRowsAreSkippedAtTheirHeight) {
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(800.f, 600.f);
+  io.DeltaTime   = 1.f / 60.f;
+  io.IniFilename = nullptr;
+  unsigned char* px; int w, h;
+  io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+  ImVec2 origin;
+  float pitch = 0.f, end = 0.f;
+  std::optional<float> scrollTo;
+  auto frame = [&] {
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos(ImVec2(0, 0));
+    ImGui::SetNextWindowSize(ImVec2(400, 500));
+    ImGui::Begin("Tree", nullptr, ImGuiWindowFlags_NoMove);
+    if (scrollTo) ImGui::SetScrollY(*scrollTo == FLT_MAX ? ImGui::GetScrollMaxY() : *scrollTo);
+    origin = ImGui::GetCursorScreenPos();
+    pitch  = ImGui::GetTextLineHeightWithSpacing();
+    tree.render();
+    end = ImGui::GetCursorScreenPos().y;
+    ImGui::End();
+    ImGui::Render();
+  };
+  constexpr int kRows = 5000;
+  SelectionStore::clear();
+  tree.reveal(InstancePath{{0, "u0"}});
+  frame();
+  auto inst = take("load_instances");
+  auto prim = take("load_primitives");
+  ASSERT_EQ(inst.size(), 1u);
+  ASSERT_EQ(prim.size(), 1u);
+  std::vector<Child> children;
+  for (int i = 0; i < kRows; ++i) children.push_back({"u" + std::to_string(i), i, false});
+  answer(inst[0]["gui_id"].get<unsigned>(), children);
+  answer(prim[0]["gui_id"].get<unsigned>(), {});
+  frame();
+  frame();
+  EXPECT_FALSE(tree.isRevealPending());
+
+  scrollTo = 0.f;
+  frame();
+  frame();
+  const float rows = (end - origin.y) / pitch;
+  EXPECT_NEAR(rows, std::round(rows), 1e-3f);
+  EXPECT_GE(rows, kRows + 1.f);  // the top, its groups and every child
+  EXPECT_LT(tree.rowsDrawnForTesting(), 60u);
+  // At the bottom: the last row is where it would be with every row drawn.
+  scrollTo = FLT_MAX;
+  frame();
+  frame();
+  EXPECT_LT(tree.rowsDrawnForTesting(), 60u);
+  const int last = static_cast<int>(std::round((end - origin.y) / pitch)) - 1;
+  // On the label, past the arrow (the children are two indents in).
+  const ImVec2 at(origin.x + 2 * ImGui::GetStyle().IndentSpacing + 2 * ImGui::GetFontSize(),
+                  origin.y + last * pitch + ImGui::GetFontSize() * 0.5f);
+  ASSERT_LT(at.y, 500.f);
+  scrollTo.reset();
+  io.AddMousePosEvent(at.x, at.y);
+  frame();
+  io.AddMouseButtonEvent(ImGuiMouseButton_Left, true);
+  frame();
+  io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
+  frame();
+  EXPECT_TRUE(SelectionStore::isSelected(InstancePath{{kRows - 1, "u" + std::to_string(kRows - 1)}}));
 
   SelectionStore::clear();
   ImGui::DestroyContext();

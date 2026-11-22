@@ -1,6 +1,7 @@
 #include "NetlistTree.h"
 
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include "Console.h"
 #include "DiagnosisStore.h"
@@ -113,6 +114,7 @@ void NetlistTree::render() {
       reveal(SelectionStore::selected());
   }
   advanceReveal();
+  rowsDrawn_ = 0;
   if (root_) {
     pushRowColors();
     root_->render(treeView_);
@@ -120,6 +122,37 @@ void NetlistTree::render() {
   } else {
     ImGui::Text("Loading Root Node...");
   }
+}
+
+void NetlistTree::renderRows(const std::vector<NetlistTreeNode*>& rows, RevealView& view) {
+  ImGuiWindow* window = ImGui::GetCurrentWindow();
+  // A closed row is one line of text (TreeNodeEx with no frame padding).
+  const float step = ImGui::GetTextLineHeightWithSpacing();
+  const float spacing = ImGui::GetStyle().ItemSpacing.y;
+  const float clipTop = window->ClipRect.Min.y, clipBottom = window->ClipRect.Max.y;
+  ImGuiStorage* storage = ImGui::GetStateStorage();
+  float y = ImGui::GetCursorScreenPos().y;
+  float skipped = 0.f;  // height of the skipped rows not yet stepped over
+  auto flush = [&] {
+    if (skipped > 0.f) ImGui::Dummy(ImVec2(0.f, skipped - spacing));
+    skipped = 0.f;
+  };
+  for (auto* row : rows) {
+    const unsigned guiID = row->guiID_;
+    const ImGuiID id = ImGui::GetID((void*)(intptr_t)guiID);  // as TreeNodeEx's
+    const bool offScreen = y + step <= clipTop || y >= clipBottom;
+    if (offScreen && (row->isLeaf() || storage->GetInt(id, 0) == 0) &&
+        !view.forceOpen.count(guiID) && view.scrollTo != guiID &&
+        !ImGui::IsPopupOpen(id, ImGuiPopupFlags_None)) {
+      skipped += step;
+      y += step;
+      continue;
+    }
+    flush();
+    row->render(view);
+    y = ImGui::GetCursorScreenPos().y;
+  }
+  flush();
 }
 
 void NetlistTree::reveal(const InstancePath& path, std::optional<RevealLeaf> leaf) {
@@ -289,6 +322,7 @@ NetlistTreeNode* NetlistTree::selectionPanelInstance() const {
 }
 
 void NetlistTree::renderSelectionPanel() {
+  rowsDrawn_ = 0;
   if (!root_) {
     ImGui::TextDisabled("Loading...");
     return;
@@ -357,12 +391,13 @@ void NetlistTree::renderPanelRows(NetlistTreeNode* instance, RevealLeaf::Kind ki
     ImGui::TextDisabled(!isTerm ? "No nets." : instance->isRoot() ? "No ports." : "No pins.");
     return;
   }
-  for (auto* row : *group->children_) row->render(panelView_);
+  renderRows(*group->children_, panelView_);
 }
 
 void NetlistTreeNode::render(NetlistTree::RevealView& view) {
   expand();
   NetlistTree* tree = getTree();
+  ++tree->rowsDrawn_;
   ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth;
   if (isLeaf()) {
     flags = flags | ImGuiTreeNodeFlags_Leaf;
@@ -504,9 +539,7 @@ void NetlistTreeNode::render(NetlistTree::RevealView& view) {
   }
   if (isOpen and not isLeaf()) {
     if (children_ != nullptr) {
-      for (auto child : *children_) {
-        child->render(view);
-      }
+      NetlistTree::renderRows(*children_, view);
     } else {
       auto flags = ImGuiTreeNodeFlags_Leaf;
       ImGui::TreeNodeEx("Loading...", flags);

@@ -1121,6 +1121,12 @@ and a leaf reveal (review Go To) also selects the panel's tab
 
 - **`NetlistTree`** — the design hierarchy tree (instances, terms, nets, bus
   bits), lazily populated by provider requests as nodes are expanded.
+  Sibling rows are drawn by `NetlistTree::renderRows()`, which steps over
+  a closed row outside the window's visible area at its height without
+  drawing it (unless a reveal opens or scrolls to it, or its menu is
+  open), so a level with thousands of instances costs per frame what its
+  visible rows do; the selection panel uses it too. Test:
+  `TreeReveal.OffScreenRowsAreSkippedAtTheirHeight`.
 - **`GUIData`** — top-level UI state container (the netlist tree plus the list
   of currently-displayed `Equipotential`s).
 - **`SchematicView`** / **`EquipotentialView`** — the two main render panels;

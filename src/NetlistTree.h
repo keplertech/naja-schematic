@@ -106,6 +106,9 @@ class NetlistTree {
     NetlistTreeNode* selectionPanelInstance() const;
     // The tab a leaf reveal asked the panel to select, until it renders.
     std::optional<RevealLeaf::Kind> selectionPanelFocus() const { return panelFocus_; }
+    // How many rows the last render()/renderSelectionPanel() drew in full,
+    // rather than skipped as off screen.
+    unsigned rowsDrawnForTesting() const { return rowsDrawn_; }
   private:
     friend class NetlistTreeNode;
     INetlistProvider*       ws_                    {nullptr};
@@ -130,6 +133,13 @@ class NetlistTree {
     std::optional<RevealLeaf::Kind> panelFocus_;
     // The selection panel's rows of `kind` for `instance`.
     void renderPanelRows(NetlistTreeNode* instance, RevealLeaf::Kind kind);
+    // Draws `rows` (siblings) one under the other. A closed row outside the
+    // window's visible area is only its height: a level with thousands of
+    // rows costs what its visible ones do. Not skipped: a row a reveal opens
+    // or scrolls to, or whose context menu is open.
+    static void renderRows(const std::vector<NetlistTreeNode*>& rows, RevealView& view);
+    // Rows render() and renderSelectionPanel() drew in full last time (tests).
+    unsigned                rowsDrawn_ {0};
     // Last SelectionStore revision render() reacted to.
     unsigned                seenSelectionRevision_ {0};
 };
