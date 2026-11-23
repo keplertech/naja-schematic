@@ -23,8 +23,10 @@ log = logging.getLogger("naja_schematic")
 # ...) and loadSystemVerilog's frontend_options; nets by id
 # (SNLDesign.getNetByID, SNLNet.getID), for review anchors.
 # 0.7.35: content hashes (NLUniverse.getContentHash), review snapshot ids.
-# 0.8.0: the release the C++ viewer is built against (thirdparty/naja).
-MIN_NAJAEDA_VERSION = (0, 8, 0)  # keep in step with pyproject.toml
+# 0.8.1: equipotential graphs (SNLEquipotential keep_graph/getGraph, from
+# 0.8.0) with bus-net bits keeping their type; the release the C++ viewer
+# is built against (thirdparty/naja).
+MIN_NAJAEDA_VERSION = (0, 8, 1)  # keep in step with pyproject.toml
 
 
 def check_najaeda_version():
@@ -133,12 +135,8 @@ _TERM_ROLE_NAMES = {
 
 @functools.lru_cache(maxsize=None)
 def _term_role_names():
-    names = {}
-    for attr, name in _TERM_ROLE_NAMES.items():
-        value = getattr(naja.SNLTermRole, attr, None)
-        if value is not None:
-            names[int(value)] = name
-    return names
+    return {int(getattr(naja.SNLTermRole, attr)): name
+            for attr, name in _TERM_ROLE_NAMES.items()}
 
 
 def term_role(term):
@@ -454,12 +452,15 @@ def equipotential_to_json(equipotential, sinks=None):
     # the path it followed, not every reader on the net.
     occurrences = []
     terms = []
+    occurrence_index = {}
+    term_index = {}
     for occ in equipotential.getInstTermOccurrences():
         instTerm = occ.getInstTerm()
         if (sinks is not None
                 and instTerm.getDirection() == naja.SNLTerm.Direction.Input
                 and occurrence_key(occ) not in sinks):
             continue
+        occurrence_index[occurrence_key(occ)] = len(occurrences)
         # The occurrence path is to the parent design.
         parent_path = [[inst.getName(), inst.getID(), inst.getModel().getName()]
                        for inst in occ.getPath().getInstances()]
@@ -470,10 +471,99 @@ def equipotential_to_json(equipotential, sinks=None):
                 and term.getDirection() == naja.SNLTerm.Direction.Output
                 and term_key(term) not in sinks):
             continue
+        term_index[term_key(term)] = len(terms)
         terms.append(bit_term_json(term))
-    return {"occurrences": occurrences, "terms": terms}
+    return {"occurrences": occurrences, "terms": terms,
+            "graph": graph_json(equipotential, occurrence_index, term_index)}
 
 
+def equipotential_with_graph(start):
+    # An equipotential computed with the graph the "graph" field needs.
+    return naja.SNLEquipotential(start, mode=naja.SNLEquipotential.Mode.TraverseAssigns,
+                                 keep_graph=True)
+
+
+def _path_entry(instance):
+    return [instance.getName(), instance.getID(), instance.getModel().getName()]
+
+
+def graph_json(equipotential, occurrence_index, term_index):
+    # The net's structure across the hierarchy, from naja's equipotential
+    # graph: one node per net segment (a net occurrence: the net in one
+    # design, at one path), the leaves and top terms on it as indices into
+    # the body's "occurrences"/"terms" (`occurrence_index`/`term_index`, by
+    # occurrence_key/term_key), and the edges joining segments -- "port"
+    # through the pin of a non-leaf instance (outer -> inner, the pin as an
+    # occurrence entry whose path ends with that instance), "assign" through
+    # an assign (input -> output). Every branch holding none of the listed
+    # pins is pruned: a module the net enters but reaches nothing in, or, in
+    # a trace's partial net, the way to a reader it doesn't list. Nodes keep
+    # naja's discovery order. Same as LocalSNLProvider.cpp's graphJson().
+    out = {"nodes": [], "edges": []}
+    graph = equipotential.getGraph()
+    if graph is None:
+        return out
+    nodes, edges = graph
+    is_listed = [any(occurrence_key(leaf) in occurrence_index for leaf in leaves) or
+                 any(term_key(term) in term_index for term in node_terms)
+                 for _, leaves, node_terms in nodes]
+    alive = [True] * len(nodes)
+    degree = [0] * len(nodes)
+    incident = [[] for _ in nodes]
+    for e, (_, _, a, b) in enumerate(edges):
+        if a == b:
+            continue
+        for end in (a, b):
+            degree[end] += 1
+            incident[end].append(e)
+    dangling = [i for i in range(len(nodes)) if not is_listed[i] and degree[i] <= 1]
+    while dangling:
+        i = dangling.pop()
+        if not alive[i]:
+            continue
+        alive[i] = False
+        for e in incident[i]:
+            _, _, a, b = edges[e]
+            other = b if a == i else a
+            if alive[other]:
+                degree[other] -= 1
+                if degree[other] <= 1 and not is_listed[other]:
+                    dangling.append(other)
+
+    new_index = {}
+    for i, (net_occurrence, leaves, node_terms) in enumerate(nodes):
+        if not alive[i]:
+            continue
+        new_index[i] = len(out["nodes"])
+        net = net_occurrence.getObject()
+        entry = {"path": [_path_entry(inst) for inst in net_occurrence.getPath().getInstances()],
+                 **net_fields(net)}
+        if isinstance(net, naja.SNLBusNetBit):
+            entry["bit"] = net.getBit()
+        entry["occurrences"] = [occurrence_index[k] for k in map(occurrence_key, leaves)
+                                if k in occurrence_index]
+        entry["terms"] = [term_index[k] for k in map(term_key, node_terms) if k in term_index]
+        out["nodes"].append(entry)
+    for kind, crossing, a, b in edges:
+        if a == b or not alive[a] or not alive[b]:
+            continue
+        port = kind == naja.SNLEquipotential.EdgeKind.Port
+        entry = {"kind": "port" if port else "assign", "from": new_index[a], "to": new_index[b]}
+        if port:
+            inst_term = crossing.getInstTerm()
+            term = inst_term.getBitTerm()
+            pin = {
+                "name": term.getName(),
+                "child_id": term.getID(),
+                "direction": direction_to_int(term.getDirection()),
+                "path": [_path_entry(inst) for inst in crossing.getPath().getInstances()]
+                        + [_path_entry(inst_term.getInstance())],
+            }
+            if isinstance(term, naja.SNLBusTermBit):
+                pin["bit"] = term.getBit()
+            entry["pin"] = pin
+        out["edges"].append(entry)
+    return out
 def equipotential_key(equipotential):
     # Identity of a net for de-duplicating the cone: the set of things on it.
     return (frozenset(occurrence_key(occ) for occ in equipotential.getInstTermOccurrences()),
@@ -501,7 +591,7 @@ def trace_driver_cone(starts):
     index_of = {}
 
     def enqueue(sink):
-        equipotential = naja.SNLEquipotential(sink, mode=mode)
+        equipotential = equipotential_with_graph(sink)
         key = equipotential_key(equipotential)
         if key not in index_of:
             index_of[key] = len(cone)
@@ -657,9 +747,7 @@ def _handle_load_equipotential(u, request):
     if start_point is None:
         response = _error("equipotential_response")[0]
     else:
-        equipotential = naja.SNLEquipotential(
-            start_point, mode=naja.SNLEquipotential.Mode.TraverseAssigns)
-        response = equipotential_to_json(equipotential)
+        response = equipotential_to_json(equipotential_with_graph(start_point))
         response["response"] = "equipotential_response"
     # Echoed so the viewer knows which of its traces the net is for (a tree
     # "Show Equipotential"); a schematic pin click sends none.

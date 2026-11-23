@@ -1,0 +1,299 @@
+{
+ "comment": [
+  "Net graphs across an assign and through bus pins, the same from both",
+  "backends (see crossing_protocol_cases.json, same runners). crossing/top.v:",
+  "net n enters u_thru, whose output is assigned from its input, and leaves",
+  "as net m; bus b enters u_bus bit by bit."
+ ],
+ "source_root": "crossing",
+ "design": {
+  "verilog": "top.v",
+  "top": "top"
+ },
+ "cases": [
+  {
+   "name": "an assign feed-through: two nets inside the module, joined by an assign edge",
+   "request": {
+    "request": "load_equipotential",
+    "path": [
+     0
+    ],
+    "term_id": 1
+   },
+   "expect": [
+    {
+     "response": "equipotential_response",
+     "found": true,
+     "occurrences": [
+      {
+       "path": [
+        [
+         "sink",
+         2,
+         "RCV"
+        ]
+       ],
+       "name": "A"
+      },
+      {
+       "path": [
+        [
+         "drv",
+         0,
+         "DRV"
+        ]
+       ],
+       "name": "Y"
+      }
+     ],
+     "graph": {
+      "nodes": [
+       {
+        "path": [],
+        "net": "n",
+        "bit": "$absent",
+        "occurrences": [
+         1
+        ],
+        "terms": []
+       },
+       {
+        "path": [
+         [
+          "u_thru",
+          1,
+          "thru"
+         ]
+        ],
+        "net": "i",
+        "bit": "$absent",
+        "occurrences": [],
+        "terms": []
+       },
+       {
+        "path": [
+         [
+          "u_thru",
+          1,
+          "thru"
+         ]
+        ],
+        "net": "o",
+        "bit": "$absent",
+        "occurrences": [],
+        "terms": []
+       },
+       {
+        "path": [],
+        "net": "m",
+        "bit": "$absent",
+        "occurrences": [
+         0
+        ],
+        "terms": []
+       }
+      ],
+      "edges": [
+       {
+        "kind": "port",
+        "from": 0,
+        "to": 1,
+        "pin": {
+         "path": [
+          [
+           "u_thru",
+           1,
+           "thru"
+          ]
+         ],
+         "name": "i",
+         "child_id": 0,
+         "direction": 0
+        }
+       },
+       {
+        "kind": "assign",
+        "from": 1,
+        "to": 2,
+        "pin": "$absent"
+       },
+       {
+        "kind": "port",
+        "from": 3,
+        "to": 2,
+        "pin": {
+         "path": [
+          [
+           "u_thru",
+           1,
+           "thru"
+          ]
+         ],
+         "name": "o",
+         "child_id": 1,
+         "direction": 1
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "a bus bit: nodes and pin carry the bit",
+   "request": {
+    "request": "load_equipotential",
+    "path": [
+     3
+    ],
+    "term_id": 1
+   },
+   "expect": [
+    {
+     "response": "equipotential_response",
+     "found": true,
+     "occurrences": [
+      {
+       "path": [
+        [
+         "u_bus",
+         5,
+         "busmod"
+        ],
+        [
+         "g0",
+         0,
+         "RCV"
+        ]
+       ],
+       "name": "A"
+      },
+      {
+       "path": [
+        [
+         "d0",
+         3,
+         "DRV"
+        ]
+       ],
+       "name": "Y"
+      }
+     ],
+     "graph": {
+      "nodes": [
+       {
+        "path": [],
+        "net": "b[0]",
+        "bit": 0,
+        "occurrences": [
+         1
+        ],
+        "terms": []
+       },
+       {
+        "path": [
+         [
+          "u_bus",
+          5,
+          "busmod"
+         ]
+        ],
+        "net": "d[0]",
+        "bit": 0,
+        "occurrences": [
+         0
+        ],
+        "terms": []
+       }
+      ],
+      "edges": [
+       {
+        "kind": "port",
+        "from": 0,
+        "to": 1,
+        "pin": {
+         "path": [
+          [
+           "u_bus",
+           5,
+           "busmod"
+          ]
+         ],
+         "name": "d",
+         "child_id": 0,
+         "direction": 0,
+         "bit": 0
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "another bit of the same buses: its own nodes, told apart by bit",
+   "request": {
+    "request": "load_equipotential",
+    "path": [
+     5,
+     1
+    ],
+    "term_id": 0
+   },
+   "expect": [
+    {
+     "response": "equipotential_response",
+     "found": true,
+     "graph": {
+      "nodes": [
+       {
+        "path": [
+         [
+          "u_bus",
+          5,
+          "busmod"
+         ]
+        ],
+        "net": "d[1]",
+        "bit": 1,
+        "occurrences": [
+         0
+        ],
+        "terms": []
+       },
+       {
+        "path": [],
+        "net": "b[1]",
+        "bit": 1,
+        "occurrences": [
+         1
+        ],
+        "terms": []
+       }
+      ],
+      "edges": [
+       {
+        "kind": "port",
+        "from": 1,
+        "to": 0,
+        "pin": {
+         "path": [
+          [
+           "u_bus",
+           5,
+           "busmod"
+          ]
+         ],
+         "name": "d",
+         "child_id": 0,
+         "direction": 0,
+         "bit": 1
+        }
+       }
+      ]
+     }
+    }
+   ]
+  }
+ ]
+}

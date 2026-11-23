@@ -926,13 +926,123 @@ static json bitTermWithNetJson(const SNLBitTerm* bt) {
   return t;
 }
 
+// An equipotential computed with the graph the "graph" field needs.
+static SNLEquipotential equipotentialWithGraph(const SNLOccurrence& start) {
+  return SNLEquipotential(start, SNLEquipotential::Options{
+    SNLEquipotential::Mode::TraverseAssigns, /*keepGraph=*/true});
+}
+
+// [name, child_id, model] for each instance of a path, as occurrence paths
+// carry them.
+static json pathLevelsJson(const SNLPath& path) {
+  json levels = json::array();
+  for (auto* inst : path.getInstances())
+    levels.push_back(json::array({instanceName(inst),
+                                  static_cast<unsigned>(inst->getID()),
+                                  designName(inst->getModel())}));
+  return levels;
+}
+
+// The net's structure across the hierarchy, from naja's equipotential
+// graph: one node per net segment (a net occurrence: the net in one
+// design, at one path), the leaves and top terms on it as indices into the
+// body's "occurrences"/"terms", and the edges joining segments -- "port"
+// through the pin of a non-leaf instance (outer -> inner, the pin as an
+// occurrence entry whose path ends with that instance), "assign" through
+// an assign (input -> output). Every branch holding none of the listed pins
+// is pruned: a module the net enters but reaches nothing in, or, in a
+// trace's partial net, the way to a reader it doesn't list. Nodes keep
+// naja's discovery order. Mirrors protocol.py's graph_json().
+static json graphJson(const SNLEquipotential& equi,
+                      const std::map<SNLOccurrence, size_t>& occIndex,
+                      const std::map<const SNLBitTerm*, size_t>& termIndex) {
+  json out = {{"nodes", json::array()}, {"edges", json::array()}};
+  const auto* graph = equi.getGraph();
+  if (!graph) return out;
+  const size_t n = graph->nodes.size();
+  std::vector<bool> listed(n, false), alive(n, true);
+  std::vector<size_t> degree(n, 0);
+  std::vector<std::vector<size_t>> incident(n);
+  for (size_t i = 0; i < n; ++i) {
+    const auto& node = graph->nodes[i];
+    for (const auto& leaf : node.leaves)
+      if (occIndex.count(leaf)) { listed[i] = true; break; }
+    for (auto* term : node.terms)
+      if (termIndex.count(term)) { listed[i] = true; break; }
+  }
+  const auto& edges = graph->edges;
+  for (size_t e = 0; e < edges.size(); ++e) {
+    if (edges[e].from == edges[e].to) continue;
+    for (size_t end : {edges[e].from, edges[e].to}) {
+      ++degree[end];
+      incident[end].push_back(e);
+    }
+  }
+  std::vector<size_t> dangling;
+  for (size_t i = 0; i < n; ++i)
+    if (!listed[i] && degree[i] <= 1) dangling.push_back(i);
+  while (!dangling.empty()) {
+    size_t i = dangling.back();
+    dangling.pop_back();
+    if (!alive[i]) continue;
+    alive[i] = false;
+    for (size_t e : incident[i]) {
+      size_t other = edges[e].from == i ? edges[e].to : edges[e].from;
+      if (alive[other] && --degree[other] <= 1 && !listed[other]) dangling.push_back(other);
+    }
+  }
+
+  std::vector<size_t> newIndex(n, 0);
+  for (size_t i = 0; i < n; ++i) {
+    if (!alive[i]) continue;
+    newIndex[i] = out["nodes"].size();
+    const auto& node = graph->nodes[i];
+    json entry = {{"path", pathLevelsJson(node.net.getPath())}};
+    auto* net = dynamic_cast<const SNLBitNet*>(node.net.getObject());
+    setNet(entry, net);
+    if (auto* bit = dynamic_cast<const SNLBusNetBit*>(net))
+      entry["bit"] = static_cast<int>(bit->getBit());
+    json occs = json::array(), terms = json::array();
+    for (const auto& leaf : node.leaves)
+      if (auto it = occIndex.find(leaf); it != occIndex.end()) occs.push_back(it->second);
+    for (auto* term : node.terms)
+      if (auto it = termIndex.find(term); it != termIndex.end()) terms.push_back(it->second);
+    entry["occurrences"] = std::move(occs);
+    entry["terms"]       = std::move(terms);
+    out["nodes"].push_back(std::move(entry));
+  }
+  for (const auto& edge : edges) {
+    if (edge.from == edge.to || !alive[edge.from] || !alive[edge.to]) continue;
+    const bool port = edge.kind == SNLEquipotential::Graph::EdgeKind::Port;
+    json entry = {{"kind", port ? "port" : "assign"},
+                  {"from", newIndex[edge.from]},
+                  {"to",   newIndex[edge.to]}};
+    if (port) {
+      auto* it = edge.crossing.getInstTerm();
+      json pin = bitTermJson(it->getBitTerm());
+      json levels = pathLevelsJson(edge.crossing.getPath());
+      auto* inst = it->getInstance();
+      levels.push_back(json::array({instanceName(inst),
+                                    static_cast<unsigned>(inst->getID()),
+                                    designName(inst->getModel())}));
+      pin["path"] = std::move(levels);
+      entry["pin"] = std::move(pin);
+    }
+    out["edges"].push_back(std::move(entry));
+  }
+  return out;
+}
+
 static json equipotentialJson(const SNLEquipotential& equi,
                               const std::set<SNLOccurrence>* sinks = nullptr) {
+  std::map<const SNLBitTerm*, size_t> termIndex;
+  std::map<SNLOccurrence, size_t> occIndex;
   json terms = json::array();
   for (auto* bt : equi.getTermsSet()) {
     // A top-level output is a receiver of the net; an input/inout drives it.
     if (sinks && bt->getDirection() == SNLTerm::Direction::Output &&
         !sinks->count(SNLOccurrence(bt))) continue;
+    termIndex.emplace(bt, terms.size());
     terms.push_back(bitTermWithNetJson(bt));
   }
 
@@ -941,6 +1051,7 @@ static json equipotentialJson(const SNLEquipotential& equi,
     auto* it = occ.getInstTerm();
     if (sinks && it->getDirection() == SNLTerm::Direction::Input &&
         !sinks->count(occ)) continue;
+    occIndex.emplace(occ, occs.size());
     // The occurrence path is to the parent design.
     json pathArr = json::array();
     for (auto* inst : occ.getPath().getInstances())
@@ -949,7 +1060,8 @@ static json equipotentialJson(const SNLEquipotential& equi,
                                      designName(inst->getModel())}));
     occs.push_back(instTermOccurrenceJson(std::move(pathArr), it));
   }
-  return json{{"terms", std::move(terms)}, {"occurrences", std::move(occs)}};
+  return json{{"terms", std::move(terms)}, {"occurrences", std::move(occs)},
+              {"graph", graphJson(equi, occIndex, termIndex)}};
 }
 
 // Resolves a load_equipotential-style request (path of instance child IDs,
@@ -1045,8 +1157,7 @@ std::string LocalSNLProvider::buildEquipotentialResponse(const json& req) const 
   try {
     auto start = resolveStartOccurrence(topDesign, req, std::nullopt);
     if (!start.isValid()) return reply(empty, false);
-    SNLEquipotential equi(start, SNLEquipotential::Mode::TraverseAssigns);
-    return reply(equipotentialJson(equi), true);
+    return reply(equipotentialJson(equipotentialWithGraph(start)), true);
   } catch (const std::exception& e) {
     Console::Error("buildEquipotentialResponse: " + std::string(e.what()));
     return reply(empty, false);
@@ -1096,7 +1207,7 @@ std::string LocalSNLProvider::buildTraceDriverResponse(const json& req) const {
     std::vector<ConeNet> cone;
     std::map<SNLEquipotential, size_t> indexOf;
     auto enqueue = [&](const SNLOccurrence& sink) {
-      SNLEquipotential equi(sink, SNLEquipotential::Mode::TraverseAssigns);
+      SNLEquipotential equi = equipotentialWithGraph(sink);
       auto [it, inserted] = indexOf.emplace(equi, cone.size());
       if (inserted) cone.push_back({std::move(equi), {sink}});
       else          cone[it->second].sinks.insert(sink);

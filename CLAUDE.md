@@ -226,7 +226,7 @@ VHDL via `--vhdl <path>...` (`NLDB.loadVHDL()`, files in any order).
 `load_design()` uses najaeda's raw `naja` API only, like `protocol.py`
 (`NLDB.loadGateLevelVerilog()`/`loadSystemVerilog()`/`loadVHDL()`/
 `loadLibertyPrimitives()`); `--top` reaches slang as
-`frontend_options={"slang": ["--top", name]}` (najaeda >= 0.7.34).
+`frontend_options={"slang": ["--top", name]}`.
 `--py-primitives <file.py|module>` (repeatable; `load_python_primitives()`)
 calls the module's `load(db)` on the top NLDB before the design is loaded,
 after `--xilinx` (najaeda's own `primitives.xilinx`) and before Liberty:
@@ -621,6 +621,35 @@ named by its driver's net (`Item::netName`, `displayNetLabel()` for an
 unnamed one): the SVG's `data-net`, and the bus label. Older hosts send
 no net: the driver pin's label is used.
 
+An equipotential body (`equipotential_response`, each `trace_driver_response`
+net) also carries the net's **structure across the hierarchy**, `"graph"`,
+from naja's equipotential graph (`SNLEquipotential` built with
+`keepGraph`/`keep_graph=True`):
+
+```json
+"graph": {
+  "nodes": [   // one per net segment: the net in one design, at one path
+    {"path": [["u_mid", 1, "mid"]],          // instance levels, [] = top
+     "net": "i", "net_id": 0, "bit": 3,      // bit: a bus-net bit only
+     "occurrences": [2], "terms": []} ],     // indices into the body's lists
+  "edges": [
+    {"kind": "port", "from": 0, "to": 1,     // outer -> inner
+     "pin": {"path": [..., ["u_mid", 1, "mid"]], "name": "i",
+             "child_id": 0, "direction": 0}},  // + "bit"; path ends with the instance
+    {"kind": "assign", "from": 1, "to": 2} ] }   // input -> output
+```
+A feed-through is explicit: a node with no pins and two port edges (ports
+on one inner net), or two nodes of one instance joined by an assign edge.
+Every branch holding none of the body's listed pins is pruned (a module
+the net enters but reaches nothing in; in a trace's partial net, the way
+to a reader it doesn't list); nodes and edges keep naja's discovery order,
+the same from both backends. `graphJson()` in `LocalSNLProvider.cpp`,
+`graph_json()` in `protocol.py`. Shared cases:
+`tests/data/crossing_protocol_cases.json` (built netlist; a net's `term`
+may list several terms there) and `crossing_assign_protocol_cases.json`
+(Verilog: assigns, buses). The viewer doesn't draw it yet (issue #54:
+port names where a wire enters a module frame).
+
 Occurrence `path` entries (in `equipotential_response` and each
 `trace_driver_response` net) are `[name, child_id, model_name]`; the third
 element is optional on parse (`InstTermOccurrence::pathModels`, `""` when
@@ -1012,8 +1041,8 @@ each `root_response` and every write; the viewer sends `review_add_thread`
 a refused write comes back as `{"response":"error","request":"review_..."}`.
 Objects are identified by naja ids only, never by names: a thread is pinned
 to the netlist it was written on, stored in the review as a naja-if
-snapshot named by naja's content hash (`NLUniverse.getContentHash()`,
-najaeda >= 0.7.35: a reloaded snapshot keeps it, a fresh load of the
+snapshot named by naja's content hash (`NLUniverse.getContentHash()`:
+a reloaded snapshot keeps it, a fresh load of the
 sources keeps it only if naja assigns the same ids), and only drawn when the
 host resolves it `exact` on the loaded design (`other_snapshot` threads are
 listed, not drawn). A thread can't be opened while the universe holds
@@ -1058,8 +1087,7 @@ so unlike a term's properties there's no "Direction" entry, and nets don't
 offer a schematic-side "Show Properties" entry point (only terms/instances
 appear as boxes/pins there).
 
-**Source references** (full design: `docs/source_information.md`; needs
-najaeda >= 0.7.29; VHDL fills declarations since 0.7.32). naja keeps, per object, an optional *declaration*
+**Source references** (full design: `docs/source_information.md`). naja keeps, per object, an optional *declaration*
 (where it's written in the loaded input: a gate's netlist line, an
 instance's instantiation, a design's definition) and ordered *origins*
 (upstream RTL, e.g. Yosys `src`), each qualified by provider/language/

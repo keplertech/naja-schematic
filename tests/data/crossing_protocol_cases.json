@@ -1,0 +1,882 @@
+{
+ "comment": [
+  "The structure of a net across the hierarchy (\"graph\" on an equipotential",
+  "body, from naja's equipotential graph), the same from both backends: run",
+  "by python/tests/test_net_graph.py against protocol.py and by",
+  "tests/provider/LocalSNLProviderProtocolTest.cpp against LocalSNLProvider.",
+  "Same format as anonymous_protocol_cases.json; a net's \"term\" may list",
+  "several terms (a feed-through). Net n at the top goes from drv.Y into",
+  "u_mid (pin i) and on into u_mid/u_in (pin i) to the leaf g; into u_thru,",
+  "whose ports i and o share one net w, and out again as net t to sink2; and",
+  "into u_empty, where it reaches no pin: that branch is pruned. Net m comes",
+  "out of u_mid/u_in and u_mid (pins o) to sink. Node and edge order is",
+  "naja's discovery order, the same for both backends.",
+  "crossing_assign_protocol_cases.json has the assign and bus cases."
+ ],
+ "design": {
+  "primitives": [
+   {
+    "name": "DRV",
+    "terms": [
+     [
+      "A",
+      "input"
+     ],
+     [
+      "Y",
+      "output"
+     ]
+    ]
+   },
+   {
+    "name": "RCV",
+    "terms": [
+     [
+      "A",
+      "input"
+     ],
+     [
+      "Y",
+      "output"
+     ]
+    ]
+   }
+  ],
+  "designs": [
+   {
+    "name": "inner",
+    "terms": [
+     [
+      "i",
+      "input"
+     ],
+     [
+      "o",
+      "output"
+     ]
+    ],
+    "instances": [
+     [
+      "g",
+      "RCV"
+     ]
+    ],
+    "nets": [
+     {
+      "name": "i",
+      "term": "i",
+      "pins": [
+       [
+        0,
+        "A"
+       ]
+      ]
+     },
+     {
+      "name": "o",
+      "term": "o",
+      "pins": [
+       [
+        0,
+        "Y"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "name": "mid",
+    "terms": [
+     [
+      "i",
+      "input"
+     ],
+     [
+      "o",
+      "output"
+     ]
+    ],
+    "instances": [
+     [
+      "u_in",
+      "inner"
+     ]
+    ],
+    "nets": [
+     {
+      "name": "i",
+      "term": "i",
+      "pins": [
+       [
+        0,
+        "i"
+       ]
+      ]
+     },
+     {
+      "name": "o",
+      "term": "o",
+      "pins": [
+       [
+        0,
+        "o"
+       ]
+      ]
+     }
+    ]
+   },
+   {
+    "name": "empty",
+    "terms": [
+     [
+      "i",
+      "input"
+     ]
+    ],
+    "instances": [],
+    "nets": [
+     {
+      "name": "i_in",
+      "term": "i"
+     }
+    ]
+   },
+   {
+    "name": "thru_wire",
+    "terms": [
+     [
+      "i",
+      "input"
+     ],
+     [
+      "o",
+      "output"
+     ]
+    ],
+    "instances": [],
+    "nets": [
+     {
+      "name": "w",
+      "term": [
+       "i",
+       "o"
+      ]
+     }
+    ]
+   },
+   {
+    "name": "top",
+    "terms": [
+     [
+      "a",
+      "input"
+     ],
+     [
+      "y",
+      "output"
+     ]
+    ],
+    "instances": [
+     [
+      "drv",
+      "DRV"
+     ],
+     [
+      "u_mid",
+      "mid"
+     ],
+     [
+      "r",
+      "RCV"
+     ],
+     [
+      "u_empty",
+      "empty"
+     ],
+     [
+      "sink",
+      "RCV"
+     ],
+     [
+      "u_thru",
+      "thru_wire"
+     ],
+     [
+      "sink2",
+      "RCV"
+     ]
+    ],
+    "nets": [
+     {
+      "name": "a",
+      "term": "a",
+      "pins": [
+       [
+        0,
+        "A"
+       ]
+      ]
+     },
+     {
+      "name": "n",
+      "pins": [
+       [
+        0,
+        "Y"
+       ],
+       [
+        1,
+        "i"
+       ],
+       [
+        2,
+        "A"
+       ],
+       [
+        3,
+        "i"
+       ],
+       [
+        5,
+        "i"
+       ]
+      ]
+     },
+     {
+      "name": "y",
+      "term": "y",
+      "pins": [
+       [
+        2,
+        "Y"
+       ]
+      ]
+     },
+     {
+      "name": "m",
+      "pins": [
+       [
+        1,
+        "o"
+       ],
+       [
+        4,
+        "A"
+       ]
+      ]
+     },
+     {
+      "name": "t",
+      "pins": [
+       [
+        5,
+        "o"
+       ],
+       [
+        6,
+        "A"
+       ]
+      ]
+     }
+    ]
+   }
+  ],
+  "top": "top"
+ },
+ "cases": [
+  {
+   "name": "a net into two levels of hierarchy and through a wire feed-through, not into a module it reaches nothing in",
+   "request": {
+    "request": "load_equipotential",
+    "path": [
+     0
+    ],
+    "term_id": 1
+   },
+   "expect": [
+    {
+     "response": "equipotential_response",
+     "found": true,
+     "occurrences": [
+      {
+       "path": [
+        [
+         "u_mid",
+         1,
+         "mid"
+        ],
+        [
+         "u_in",
+         0,
+         "inner"
+        ],
+        [
+         "g",
+         0,
+         "RCV"
+        ]
+       ],
+       "name": "A"
+      },
+      {
+       "path": [
+        [
+         "r",
+         2,
+         "RCV"
+        ]
+       ],
+       "name": "A"
+      },
+      {
+       "path": [
+        [
+         "sink2",
+         6,
+         "RCV"
+        ]
+       ],
+       "name": "A"
+      },
+      {
+       "path": [
+        [
+         "drv",
+         0,
+         "DRV"
+        ]
+       ],
+       "name": "Y"
+      }
+     ],
+     "graph": {
+      "nodes": [
+       {
+        "path": [],
+        "net": "n",
+        "bit": "$absent",
+        "occurrences": [
+         1,
+         3
+        ],
+        "terms": []
+       },
+       {
+        "path": [
+         [
+          "u_mid",
+          1,
+          "mid"
+         ]
+        ],
+        "net": "i",
+        "bit": "$absent",
+        "occurrences": [],
+        "terms": []
+       },
+       {
+        "path": [
+         [
+          "u_mid",
+          1,
+          "mid"
+         ],
+         [
+          "u_in",
+          0,
+          "inner"
+         ]
+        ],
+        "net": "i",
+        "bit": "$absent",
+        "occurrences": [
+         0
+        ],
+        "terms": []
+       },
+       {
+        "path": [
+         [
+          "u_thru",
+          5,
+          "thru_wire"
+         ]
+        ],
+        "net": "w",
+        "bit": "$absent",
+        "occurrences": [],
+        "terms": []
+       },
+       {
+        "path": [],
+        "net": "t",
+        "bit": "$absent",
+        "occurrences": [
+         2
+        ],
+        "terms": []
+       }
+      ],
+      "edges": [
+       {
+        "kind": "port",
+        "from": 0,
+        "to": 1,
+        "pin": {
+         "path": [
+          [
+           "u_mid",
+           1,
+           "mid"
+          ]
+         ],
+         "name": "i",
+         "child_id": 0,
+         "direction": 0
+        }
+       },
+       {
+        "kind": "port",
+        "from": 1,
+        "to": 2,
+        "pin": {
+         "path": [
+          [
+           "u_mid",
+           1,
+           "mid"
+          ],
+          [
+           "u_in",
+           0,
+           "inner"
+          ]
+         ],
+         "name": "i",
+         "child_id": 0,
+         "direction": 0
+        }
+       },
+       {
+        "kind": "port",
+        "from": 0,
+        "to": 3,
+        "pin": {
+         "path": [
+          [
+           "u_thru",
+           5,
+           "thru_wire"
+          ]
+         ],
+         "name": "i",
+         "child_id": 0,
+         "direction": 0
+        }
+       },
+       {
+        "kind": "port",
+        "from": 4,
+        "to": 3,
+        "pin": {
+         "path": [
+          [
+           "u_thru",
+           5,
+           "thru_wire"
+          ]
+         ],
+         "name": "o",
+         "child_id": 1,
+         "direction": 1
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "a net out of two levels of hierarchy: port edges still go outer to inner",
+   "request": {
+    "request": "load_equipotential",
+    "path": [
+     1,
+     0,
+     0
+    ],
+    "term_id": 1
+   },
+   "expect": [
+    {
+     "response": "equipotential_response",
+     "found": true,
+     "occurrences": [
+      {
+       "path": [
+        [
+         "u_mid",
+         1,
+         "mid"
+        ],
+        [
+         "u_in",
+         0,
+         "inner"
+        ],
+        [
+         "g",
+         0,
+         "RCV"
+        ]
+       ],
+       "name": "Y"
+      },
+      {
+       "path": [
+        [
+         "sink",
+         4,
+         "RCV"
+        ]
+       ],
+       "name": "A"
+      }
+     ],
+     "graph": {
+      "nodes": [
+       {
+        "path": [
+         [
+          "u_mid",
+          1,
+          "mid"
+         ],
+         [
+          "u_in",
+          0,
+          "inner"
+         ]
+        ],
+        "net": "o",
+        "bit": "$absent",
+        "occurrences": [
+         0
+        ],
+        "terms": []
+       },
+       {
+        "path": [
+         [
+          "u_mid",
+          1,
+          "mid"
+         ]
+        ],
+        "net": "o",
+        "bit": "$absent",
+        "occurrences": [],
+        "terms": []
+       },
+       {
+        "path": [],
+        "net": "m",
+        "bit": "$absent",
+        "occurrences": [
+         1
+        ],
+        "terms": []
+       }
+      ],
+      "edges": [
+       {
+        "kind": "port",
+        "from": 1,
+        "to": 0,
+        "pin": {
+         "path": [
+          [
+           "u_mid",
+           1,
+           "mid"
+          ],
+          [
+           "u_in",
+           0,
+           "inner"
+          ]
+         ],
+         "name": "o",
+         "child_id": 1,
+         "direction": 1
+        }
+       },
+       {
+        "kind": "port",
+        "from": 2,
+        "to": 1,
+        "pin": {
+         "path": [
+          [
+           "u_mid",
+           1,
+           "mid"
+          ]
+         ],
+         "name": "o",
+         "child_id": 1,
+         "direction": 1
+        }
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "name": "a net in one design: one node holding its port and its pin",
+   "request": {
+    "request": "load_equipotential",
+    "path": [],
+    "term_id": 0
+   },
+   "expect": [
+    {
+     "response": "equipotential_response",
+     "found": true,
+     "terms": [
+      {
+       "name": "a"
+      }
+     ],
+     "occurrences": [
+      {
+       "path": [
+        [
+         "drv",
+         0,
+         "DRV"
+        ]
+       ],
+       "name": "A"
+      }
+     ],
+     "graph": {
+      "nodes": [
+       {
+        "path": [],
+        "net": "a",
+        "bit": "$absent",
+        "occurrences": [
+         0
+        ],
+        "terms": [
+         0
+        ]
+       }
+      ],
+      "edges": []
+     }
+    }
+   ]
+  },
+  {
+   "name": "a trace's partial net: no branch toward readers it doesn't list",
+   "request": {
+    "request": "trace_driver",
+    "path": [
+     2
+    ],
+    "term_id": 0,
+    "trace_id": 1
+   },
+   "expect": [
+    {
+     "response": "trace_driver_response",
+     "equipotentials": [
+      {
+       "occurrences": [
+        {
+         "path": [
+          [
+           "r",
+           2,
+           "RCV"
+          ]
+         ],
+         "name": "A"
+        },
+        {
+         "path": [
+          [
+           "drv",
+           0,
+           "DRV"
+          ]
+         ],
+         "name": "Y"
+        }
+       ],
+       "graph": {
+        "nodes": [
+         {
+          "path": [],
+          "net": "n",
+          "bit": "$absent",
+          "occurrences": [
+           0,
+           1
+          ],
+          "terms": []
+         }
+        ],
+        "edges": []
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "a trace's partial net: only the way to the reader it entered through",
+   "request": {
+    "request": "trace_driver",
+    "path": [
+     1,
+     0,
+     0
+    ],
+    "term_id": 0,
+    "trace_id": 2
+   },
+   "expect": [
+    {
+     "response": "trace_driver_response",
+     "equipotentials": [
+      {
+       "occurrences": [
+        {
+         "path": [
+          [
+           "u_mid",
+           1,
+           "mid"
+          ],
+          [
+           "u_in",
+           0,
+           "inner"
+          ],
+          [
+           "g",
+           0,
+           "RCV"
+          ]
+         ],
+         "name": "A"
+        },
+        {
+         "path": [
+          [
+           "drv",
+           0,
+           "DRV"
+          ]
+         ],
+         "name": "Y"
+        }
+       ],
+       "graph": {
+        "nodes": [
+         {
+          "path": [
+           [
+            "u_mid",
+            1,
+            "mid"
+           ],
+           [
+            "u_in",
+            0,
+            "inner"
+           ]
+          ],
+          "net": "i",
+          "bit": "$absent",
+          "occurrences": [
+           0
+          ],
+          "terms": []
+         },
+         {
+          "path": [
+           [
+            "u_mid",
+            1,
+            "mid"
+           ]
+          ],
+          "net": "i",
+          "bit": "$absent",
+          "occurrences": [],
+          "terms": []
+         },
+         {
+          "path": [],
+          "net": "n",
+          "bit": "$absent",
+          "occurrences": [
+           1
+          ],
+          "terms": []
+         }
+        ],
+        "edges": [
+         {
+          "kind": "port",
+          "from": 1,
+          "to": 0,
+          "pin": {
+           "path": [
+            [
+             "u_mid",
+             1,
+             "mid"
+            ],
+            [
+             "u_in",
+             0,
+             "inner"
+            ]
+           ],
+           "name": "i",
+           "child_id": 0,
+           "direction": 0
+          }
+         },
+         {
+          "kind": "port",
+          "from": 2,
+          "to": 1,
+          "pin": {
+           "path": [
+            [
+             "u_mid",
+             1,
+             "mid"
+            ]
+           ],
+           "name": "i",
+           "child_id": 0,
+           "direction": 0
+          }
+         }
+        ]
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}
