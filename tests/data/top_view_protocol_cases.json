@@ -6,8 +6,10 @@
     "tests/provider/LocalSNLProviderProtocolTest.cpp against LocalSNLProvider,",
     "same format as source_protocol_cases.json. top_view/top.v: a top with a",
     "bus port, an assign joining y to w2, a hierarchical instance (u2) and",
-    "unconnected ports (b[1], nc), which have no net to draw. load_instance_view",
-    "opens u2: its model's nets, its pins seen from inside as terms."
+    "unconnected ports (b[1], nc), which have no net to draw, and u4, whose Y",
+    "is alone on its net. load_instance_view opens u2: its model's nets, its",
+    "pins seen from inside as terms. A pin nothing else is connected to is",
+    "flagged \"unconnected\" in the top's ports and an instance's terms."
   ],
   "source_root": "top_view",
   "design": {"verilog": "top.v", "top": "top"},
@@ -15,18 +17,19 @@
     {"name": "the contents: every top-level net, ports and one level of instance pins",
      "request": {"request": "load_top_view", "contents": true, "max_instances": 250},
      "expect": [{"response": "top_view_response", "found": true, "name": "top",
-       "instance_count": 3, "contents": true,
+       "instance_count": 4, "contents": true,
        "ports": [
-         {"name": "a", "child_id": 0, "direction": 0},
-         {"name": "b[0]", "child_id": 1, "direction": 0, "bit": 0},
-         {"name": "b[1]", "child_id": 1, "direction": 0, "bit": 1},
-         {"name": "y", "child_id": 2, "direction": 1},
-         {"name": "z", "child_id": 3, "direction": 1},
-         {"name": "nc", "child_id": 4, "direction": 1}],
+         {"name": "a", "child_id": 0, "direction": 0, "unconnected": "$absent"},
+         {"name": "b[0]", "child_id": 1, "direction": 0, "bit": 0, "unconnected": "$absent"},
+         {"name": "b[1]", "child_id": 1, "direction": 0, "bit": 1, "unconnected": true},
+         {"name": "y", "child_id": 2, "direction": 1, "unconnected": "$absent"},
+         {"name": "z", "child_id": 3, "direction": 1, "unconnected": "$absent"},
+         {"name": "nc", "child_id": 4, "direction": 1, "unconnected": true}],
        "nets": [
          {"terms": [{"name": "a", "child_id": 0, "net": "a"}],
           "occurrences": [{"path": [["u1", 0, "LEAF"]], "name": "A", "net": "a",
-                           "has_instances": false}]},
+                           "has_instances": false},
+                          {"path": [["u4", 4, "LEAF"]], "name": "A", "net": "a"}]},
          {"terms": [{"name": "b", "child_id": 1, "bit": 0, "net": "b[0]"}],
           "occurrences": [{"path": [["u3", 3, "LEAF"]], "name": "A", "net": "b[0]"}]},
          {"terms": [{"name": "y", "child_id": 2, "net": "y"}],
@@ -40,13 +43,13 @@
 
     {"name": "over max_instances: the ports only",
      "request": {"request": "load_top_view", "contents": true, "max_instances": 2},
-     "expect": [{"response": "top_view_response", "found": true, "instance_count": 3,
+     "expect": [{"response": "top_view_response", "found": true, "instance_count": 4,
        "contents": false, "nets": []}]},
 
     {"name": "the ports only, and the auto flag echoed",
      "request": {"request": "load_top_view", "auto": true},
      "expect": [{"response": "top_view_response", "found": true, "auto": true,
-       "instance_count": 3, "contents": false, "nets": []}]},
+       "instance_count": 4, "contents": false, "nets": []}]},
 
     {"name": "an instance opened: its nets, its own pins as terms, its instances' pins under its path",
      "request": {"request": "load_instance_view", "id_path": [1], "max_instances": 250},
@@ -73,6 +76,37 @@
     {"name": "an unknown instance, or the top: not found",
      "request": {"request": "load_instance_view", "id_path": [9]},
      "expect": [{"response": "instance_view_response", "found": false, "id_path": [9]}]},
+
+    {"name": "an instance's terms: a pin alone on its net is unconnected",
+     "request": {"request": "expand_instance_terms", "instance_path": ["u4"],
+                 "instance_id_path": [4], "design_ref": "$design:LEAF"},
+     "expect": [{"response": "expanded_instance_terms", "instance_id_path": [4],
+       "terms": [
+         {"name": "A", "child_id": 0, "unconnected": "$absent"},
+         {"name": "Y", "child_id": 1, "unconnected": true}]}]},
+
+    {"name": "a connected instance's terms: none unconnected",
+     "request": {"request": "expand_instance_terms", "instance_path": ["u1"],
+                 "instance_id_path": [0], "design_ref": "$design:LEAF"},
+     "expect": [{"response": "expanded_instance_terms",
+       "terms": [
+         {"name": "A", "unconnected": "$absent"},
+         {"name": "Y", "unconnected": "$absent"}]}]},
+
+    {"name": "a hierarchical instance's pins: connected inside and out",
+     "request": {"request": "expand_instance_terms", "instance_path": ["u2"],
+                 "instance_id_path": [1], "design_ref": "$design:sub"},
+     "expect": [{"response": "expanded_instance_terms",
+       "terms": [
+         {"name": "i", "unconnected": "$absent"},
+         {"name": "o", "unconnected": "$absent"}]}]},
+
+    {"name": "a resolved instance's terms carry the flag too",
+     "request": {"request": "resolve_instance", "id_path": [4]},
+     "expect": [{"response": "instance_resolved", "found": true,
+       "instance": {"terms": [
+         {"name": "A", "unconnected": "$absent"},
+         {"name": "Y", "unconnected": true}]}}]},
 
     {"name": "the top is no instance to open",
      "request": {"request": "load_instance_view", "id_path": []},

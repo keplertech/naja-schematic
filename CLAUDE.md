@@ -586,6 +586,18 @@ and is never requested again; the console logs it. A pin that didn't
 resolve (`found: false`) is never marked. Shared cases in
 `tests/data/anonymous_protocol_cases.json` cover both kinds.
 
+Pin lists say so up front, so a pin needn't be clicked to get its cross:
+the terms of `expanded_instance_terms` and `instance_resolved` and the
+`ports` of `top_view_response` carry a sparse `"unconnected": true` on a
+pin alone on its net outside the instance (or with no net) and inside it
+(a primitive has none) -- `isUnconnectedPin()` in `LocalSNLProvider.cpp`,
+`is_unconnected_pin()` in `protocol.py`. Conservative and local: a net
+going on through a port of the parent counts as connected, so a flagged
+pin is always one a click would mark too (the converse needn't hold).
+The viewer marks them as the list arrives (`ExpandedPort::unconnected`,
+`markUnconnectedPorts()`); a merged bus pin or flag is crossed when every
+bit is. Shared cases in `tests/data/top_view_protocol_cases.json`.
+
 Extending the schematic by hand works pin by pin. A box drawn with a dashed
 border shows only the pins on nets already in view; double-clicking its body
 sends `expand_instance_terms` and reveals the rest. Pins whose net isn't in
