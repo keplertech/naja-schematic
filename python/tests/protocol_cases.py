@@ -65,8 +65,11 @@ def build_design(spec):
                 naja.SNLBusNet.create(d, n["msb"], n["lsb"], n["name"])
                 continue
             net = naja.SNLScalarNet.create(d, n["name"])
-            if "term" in n:
-                d.getScalarTerm(n["term"]).setNet(net)
+            # "term": the design's term on the net, or a list of them (a
+            # feed-through: two ports on one net).
+            terms = n.get("term", [])
+            for term in [terms] if isinstance(terms, str) else terms:
+                d.getScalarTerm(term).setNet(net)
             for index, term in n.get("pins", []):
                 inst = instances[index]
                 inst.getInstTerm(inst.getModel().getScalarTerm(term)).setNet(net)

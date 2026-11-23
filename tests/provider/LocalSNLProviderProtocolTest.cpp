@@ -127,8 +127,11 @@ std::map<std::string, SNLDesign*> buildDesign(NLDB* db, const json& spec) {
         continue;
       }
       auto* net = SNLScalarNet::create(d, NLName(n["name"].get<std::string>()));
-      if (n.contains("term"))
-        d->getScalarTerm(NLName(n["term"].get<std::string>()))->setNet(net);
+      // "term": the design's term on the net, or a list of them (a
+      // feed-through: two ports on one net).
+      const json terms = n.value("term", json::array());
+      for (const auto& term : terms.is_string() ? json::array({terms}) : terms)
+        d->getScalarTerm(NLName(term.get<std::string>()))->setNet(net);
       for (const auto& pin : n.value("pins", json::array())) {
         auto* inst = instances.at(pin[0].get<size_t>());
         inst->getInstTerm(inst->getModel()->getScalarTerm(NLName(pin[1].get<std::string>())))->setNet(net);
@@ -294,6 +297,22 @@ class TopViewProtocol : public ::testing::Test {
 
 CaseSuite* TopViewProtocol::suite_ = nullptr;
 
+class CrossingProtocol : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() { suite_ = new CaseSuite("crossing_protocol_cases.json"); }
+  static CaseSuite* suite_;
+};
+
+CaseSuite* CrossingProtocol::suite_ = nullptr;
+
+class CrossingAssignProtocol : public ::testing::Test {
+ protected:
+  static void SetUpTestSuite() { suite_ = new CaseSuite("crossing_assign_protocol_cases.json"); }
+  static CaseSuite* suite_;
+};
+
+CaseSuite* CrossingAssignProtocol::suite_ = nullptr;
+
 } // namespace
 
 TEST_F(ProviderProtocol, AnswersEverySharedCaseLikeProtocolPy) {
@@ -306,6 +325,16 @@ TEST_F(SourceProtocol, AnswersEverySharedCaseLikeProtocolPy) {
 
 // The top design as a sheet (load_top_view): top_view_protocol_cases.json.
 TEST_F(TopViewProtocol, AnswersEverySharedCaseLikeProtocolPy) {
+  suite_->runCases();
+}
+
+// A net's structure across the hierarchy ("graph"):
+// crossing_protocol_cases.json and crossing_assign_protocol_cases.json.
+TEST_F(CrossingProtocol, AnswersEverySharedCaseLikeProtocolPy) {
+  suite_->runCases();
+}
+
+TEST_F(CrossingAssignProtocol, AnswersEverySharedCaseLikeProtocolPy) {
   suite_->runCases();
 }
 
