@@ -250,6 +250,17 @@ struct RoutePin {
 struct RouteNet {
     RoutePin              driver;
     std::vector<RoutePin> receivers;
+    // Regions (see routeNets): a confined net's spine stays out of every
+    // region but the ones listed here, the ones it's inside.
+    bool                  confined = false;
+    std::vector<int>      inside;
+};
+// A module frame: its left and right edges split the routing channels when
+// it's a `wall` (it has pins on them), and it keeps confined nets outside it
+// from running a spine through it.
+struct RouteRegion {
+    RouteRect r;
+    bool      wall = false;
 };
 struct RouteSegment {
     ImVec2 a, b;
@@ -262,7 +273,8 @@ struct RoutedNet {
 // or pin stubs, but a spine avoids running through them when it can.
 std::vector<RoutedNet> routeNets(const std::vector<RouteNet>& nets,
                                  const std::vector<RouteRect>& obstacles,
-                                 const std::vector<RouteRect>& keepOut = {});
+                                 const std::vector<RouteRect>& keepOut = {},
+                                 const std::vector<RouteRegion>& regions = {});
 
 // ---------------------------------------------------------------------------
 // One endpoint of an equipotential: a top-level term, or a pin on an instance
@@ -299,6 +311,50 @@ struct Item {
 };
 
 void buildItems(const Equipotential* eq, std::vector<Item>& drivers, std::vector<Item>& receivers);
+
+// ---------------------------------------------------------------------------
+// Net segments. With module frames drawn, a net with a graph (Equipotential::
+// graph) is wired one segment at a time -- the net inside one frame -- joined
+// through pins on the frames' edges, so a wire only ever enters a frame
+// through one of its pins. splitNet() cuts a net into those segments:
+//   - nodes joined by an assign, or by a pin of an instance with no frame
+//     drawn (`frames`), are one segment: the wire just goes on;
+//   - from the segment of the net's first driving end, each port edge is a
+//     frame pin, entering the frame (signal flowing in: on its left edge) or
+//     leaving it (on its right edge), whichever way the walk crosses it. The
+//     segment it's reached from gets the pin's face on its side as a
+//     receiver; the segment beyond it, the other face as its source.
+//   - an edge closing a cycle is a pin too, a receiver on both sides.
+// `endNodes` gives the graph node of each of the caller's ends, `drives`
+// which ones drive. Nothing (draw the net whole) when an end isn't on the
+// graph, no end drives, or no frame pin is crossed.
+// ---------------------------------------------------------------------------
+struct FramePin {
+    InstancePath       frame;       // the hierarchical instance
+    unsigned           termId = 0;
+    std::optional<int> bit;
+    std::string        name;        // its label: "a", "d[3]"
+    Direction          direction = Direction::Inout;
+    bool               entering = true;  // left edge (else right)
+};
+struct SegmentEnd {
+    int  end   = -1;     // one of the caller's ends, or
+    int  pin   = -1;     // a frame pin (index in NetSegments::pins)
+    bool inner = false;  //   on its inside face
+    bool operator==(const SegmentEnd& o) const { return end == o.end && pin == o.pin && inner == o.inner; }
+};
+struct NetSegment {
+    InstancePath            scope;    // the design it's in (the outermost, if it spans several)
+    std::string             net;      // the net at its source: the driver's, or on the source pin
+    SegmentEnd              source;
+    std::vector<SegmentEnd> receivers;
+};
+struct NetSegments {
+    std::vector<FramePin>   pins;
+    std::vector<NetSegment> segments;   // the driver's first
+};
+std::optional<NetSegments> splitNet(const NetGraph& graph, const std::vector<std::optional<size_t>>& endNodes,
+                                    const std::vector<bool>& drives, const std::set<InstancePath>& frames);
 
 // ---------------------------------------------------------------------------
 // Opened instances. A hierarchical instance opened in the schematic
@@ -418,6 +474,20 @@ struct HierFrame {
                             // the module's instance path in `path`
 };
 
+// Extra room a frame needs for its pins (see splitNet): inside its left and
+// right edges, past the padding, and its least height.
+struct FrameRoom {
+    float left = 0.f, right = 0.f, minH = 0.f;
+};
+// A frame drawn with no leaf in it: a module a net only goes through (a
+// feed-through), placed like a leaf at that logic level (a half level puts
+// it in a column of its own between two) and height.
+struct EmptyFrame {
+    std::vector<std::string> pathModels;  // model per level of its path
+    float level = 0.f;
+    float y     = 0.f;
+};
+
 // Moves the leaves of `instances` (looked up through pathToInstId) into their
 // module frames and returns the frames, parent first, with ids allocated from
 // nextInstId. Leaves inside a frame get their `label` shortened to the leaf
@@ -428,6 +498,12 @@ std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHi
                                              std::vector<InstanceShape>& instances,
                                              const std::map<InstancePath, int>& pathToInstId,
                                              int& nextInstId,
-                                             const NameWidthFn& nameWidth);
+                                             const NameWidthFn& nameWidth,
+                                             const std::map<InstancePath, FrameRoom>& room = {},
+                                             const std::map<InstancePath, EmptyFrame>& empty = {});
+
+// The frames layoutHierarchyGroups() draws for these leaves: every module
+// above a leaf, when any leaf is below the top.
+std::set<InstancePath> framePaths(const std::map<InstancePath, LeafHier>& leafHier);
 
 } // namespace SchematicLayout

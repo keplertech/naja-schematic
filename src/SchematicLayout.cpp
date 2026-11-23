@@ -981,7 +981,8 @@ int assignTracks(std::vector<Trunk*>& ts) {
 
 std::vector<RoutedNet> routeNets(const std::vector<RouteNet>& nets,
                                  const std::vector<RouteRect>& obstacles,
-                                 const std::vector<RouteRect>& keepOut) {
+                                 const std::vector<RouteRect>& keepOut,
+                                 const std::vector<RouteRegion>& regions) {
     // A spine avoids boxes, labels, every other net's pin stubs (across the
     // stub's whole channel), and the spines chosen before it.
     std::vector<Blocker> spineBlockers;
@@ -989,7 +990,25 @@ std::vector<RoutedNet> routeNets(const std::vector<RouteNet>& nets,
         for (const auto& r : *rects) spineBlockers.push_back({ r, -1 });
     std::vector<RoutedNet> out(nets.size());
     if (nets.empty()) return out;
-    const auto channels = findChannels(obstacles, nets);
+    // A walled frame's edges split the channels: a wire outside it keeps its
+    // trunk outside, one inside, inside.
+    std::vector<RouteRect> spans = obstacles;
+    for (const auto& g : regions)
+        if (g.wall)
+            for (float x : { g.r.x0, g.r.x1 }) spans.push_back({ x - 0.5f, g.r.y0, x + 0.5f, g.r.y1 });
+    const auto channels = findChannels(spans, nets);
+    // A confined net's spine stays out of the frames it isn't inside.
+    auto spineFree = [&](size_t ni, float y, float xa, float xb) {
+        if (!horizontalIsFree(spineBlockers, int(ni), y, xa, xb)) return false;
+        if (!nets[ni].confined) return true;
+        constexpr float clearance = 4.f;
+        for (int gi = 0; gi < int(regions.size()); ++gi) {
+            const auto& r = regions[size_t(gi)].r;
+            if (std::find(nets[ni].inside.begin(), nets[ni].inside.end(), gi) != nets[ni].inside.end()) continue;
+            if (y > r.y0 - clearance && y < r.y1 + clearance && xb > r.x0 && xa < r.x1) return false;
+        }
+        return true;
+    };
     for (size_t ni = 0; ni < nets.size(); ++ni) {
         auto block = [&](const RoutePin& p) {
             const Channel& c = channels[channelOf(channels, p)];
@@ -1026,7 +1045,7 @@ std::vector<RoutedNet> routeNets(const std::vector<RouteNet>& nets,
         const float dy = net.driver.at.y;
         if (plan.hasSpine) {
             plan.spineY = dy;
-            for (int k = 1; k <= 400 && !horizontalIsFree(spineBlockers, int(ni), plan.spineY, xa, xb); ++k)
+            for (int k = 1; k <= 400 && !spineFree(ni, plan.spineY, xa, xb); ++k)
                 plan.spineY = dy + (k % 2 ? 1.f : -1.f) * kGrid * float((k + 1) / 2);
             spineBlockers.push_back({ { xa, plan.spineY - 1.f, xb, plan.spineY + 1.f }, int(ni) });
         }
@@ -1268,6 +1287,105 @@ FanoutPlan planFanout(const std::vector<FanoutNet>& nets, int maxSinks, FanoutGr
 }
 
 // ---------------------------------------------------------------------------
+// Net segments
+// ---------------------------------------------------------------------------
+std::optional<NetSegments> splitNet(const NetGraph& graph, const std::vector<std::optional<size_t>>& endNodes,
+                                    const std::vector<bool>& drives, const std::set<InstancePath>& frames) {
+    const size_t n = graph.nodes.size();
+    if (n == 0) return std::nullopt;
+    for (const auto& node : endNodes)
+        if (!node || *node >= n) return std::nullopt;
+
+    // Segments: nodes joined by an assign, or by a pin no frame is drawn for.
+    std::vector<size_t> parent(n);
+    for (size_t i = 0; i < n; ++i) parent[i] = i;
+    std::function<size_t(size_t)> find = [&](size_t i) { return parent[i] == i ? i : parent[i] = find(parent[i]); };
+    std::vector<size_t> crossings;  // the port edges that are frame pins
+    for (size_t e = 0; e < graph.edges.size(); ++e) {
+        const NetGraphEdge& edge = graph.edges[e];
+        if (edge.port && frames.count(edge.path)) crossings.push_back(e);
+        else parent[find(edge.from)] = find(edge.to);
+    }
+    std::vector<size_t> crossing;  // a pin's two sides may still be one segment (a loop)
+    for (size_t e : crossings)
+        if (find(graph.edges[e].from) != find(graph.edges[e].to)) crossing.push_back(e);
+    if (crossing.empty()) return std::nullopt;
+
+    size_t root = 0;
+    bool   hasDriver = false;
+    for (size_t i = 0; i < endNodes.size() && !hasDriver; ++i)
+        if (drives[i]) { root = find(*endNodes[i]); hasDriver = true; }
+    if (!hasDriver) return std::nullopt;
+
+    NetSegments out;
+    std::map<size_t, size_t> segmentOf;  // segment root node -> index in out.segments
+    auto segment = [&](size_t root) -> NetSegment& {
+        auto [it, added] = segmentOf.emplace(root, out.segments.size());
+        if (added) {
+            NetSegment s;
+            s.scope = graph.nodes[root].path;
+            for (size_t i = 0; i < n; ++i)
+                if (find(i) == root && graph.nodes[i].path.size() < s.scope.size()) s.scope = graph.nodes[i].path;
+            out.segments.push_back(std::move(s));
+        }
+        return out.segments[it->second];
+    };
+    segment(root);
+
+    // Walk out from the driver's segment, a frame pin at a time.
+    std::vector<bool> used(graph.edges.size(), false);
+    std::vector<size_t> queue{ root };
+    std::set<size_t> reached{ root };
+    for (size_t q = 0; q < queue.size(); ++q) {
+        const size_t here = queue[q];
+        for (size_t e : crossing) {
+            if (used[e]) continue;
+            const NetGraphEdge& edge = graph.edges[e];
+            const size_t outer = find(edge.from), inner = find(edge.to);
+            if (outer != here && inner != here) continue;
+            used[e] = true;
+            const bool entering = outer == here;
+            const size_t there = entering ? inner : outer;
+            FramePin pin;
+            pin.frame     = edge.path;
+            pin.termId    = edge.pin.child_id;
+            pin.bit       = edge.pin.bit;
+            pin.name      = edge.pin.getString();
+            pin.direction = edge.pin.direction;
+            pin.entering  = entering;
+            const int pi = int(out.pins.size());
+            out.pins.push_back(std::move(pin));
+            // Here's face receives; the face beyond drives its segment --
+            // unless that one's reached already (a loop): it receives there too.
+            segment(here).receivers.push_back({ -1, pi, !entering });
+            if (reached.insert(there).second) {
+                NetSegment& beyond = segment(there);
+                beyond.source = { -1, pi, entering };
+                beyond.net    = graph.nodes[entering ? edge.to : edge.from].net;  // on the pin, that side
+                queue.push_back(there);
+            } else {
+                segment(there).receivers.push_back({ -1, pi, entering });
+            }
+        }
+    }
+    // The ends, each on its segment: the first driver is the root's source.
+    bool sourced = false;
+    for (size_t i = 0; i < endNodes.size(); ++i) {
+        const size_t s = find(*endNodes[i]);
+        if (!reached.count(s)) return std::nullopt;  // not joined to the driver
+        NetSegment& seg = segment(s);
+        if (!sourced && drives[i] && s == root) {
+            seg.source = { int(i), -1, false };
+            seg.net    = graph.nodes[*endNodes[i]].net;  // the driver's own net
+            sourced    = true;
+            continue;
+        }
+        seg.receivers.push_back({ int(i), -1, false });
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // Hierarchy grouping
 // ---------------------------------------------------------------------------
 namespace {
@@ -1275,6 +1393,8 @@ struct GroupNode {
     InstancePath path;
     std::string label;
     int         depth = 0;
+    FrameRoom   room;
+    std::optional<EmptyFrame> empty;   // drawn with nothing in it
     std::vector<std::unique_ptr<GroupNode>> groups;
     std::map<InstanceRef, GroupNode*>       groupByRef;   // by instance id
     std::vector<std::pair<InstanceShape*, int>> leaves;   // leaf, logic level
@@ -1307,6 +1427,10 @@ void measureGroup(GroupNode& node, bool isRoot, const NameWidthFn& nameWidth) {
         node.levelMax = std::max(node.levelMax, lv);
         node.sortY    = std::min(node.sortY, leaf->y);
     }
+    if (elems.empty() && node.empty) {
+        node.levelMin = node.levelMax = node.empty->level;
+        node.sortY    = node.empty->y;
+    }
 
     // Bucket into columns by half-level so a module spanning an odd number
     // of logic columns doesn't get forced into the same column as a leaf.
@@ -1314,6 +1438,7 @@ void measureGroup(GroupNode& node, bool isRoot, const NameWidthFn& nameWidth) {
     for (auto& e : elems) columns[std::lround(e.center * 2.0f)].push_back(&e);
 
     const float pad    = isRoot ? 0.f : kGroupPad;
+    const float padL   = pad + node.room.left;
     const float top    = isRoot ? 0.f : kGroupHeader;
     const float colGap = isRoot ? kChannelMin + 2.f * kGroupPad : kGroupColGap;
     // A sub-frame is raised by its header so its own leaves land at their
@@ -1322,7 +1447,7 @@ void measureGroup(GroupNode& node, bool isRoot, const NameWidthFn& nameWidth) {
     float raise = 0.f;
     for (const auto& e : elems)
         if (e.g) raise = std::max(raise, kGroupHeader - (e.sortY - node.sortY));
-    float x = pad, maxBottom = top;
+    float x = padL, maxBottom = top;
     for (auto& [col, members] : columns) {
         std::stable_sort(members.begin(), members.end(),
                          [](const Elem* a, const Elem* b) { return a->sortY < b->sortY; });
@@ -1341,8 +1466,8 @@ void measureGroup(GroupNode& node, bool isRoot, const NameWidthFn& nameWidth) {
         maxBottom = std::max(maxBottom, y - kRowSpacing);
         x += colW + colGap;
     }
-    node.w = std::max(x - colGap + pad, 2.f * pad + 6.f * kGrid);
-    node.h = maxBottom + pad;
+    node.w = std::max(x - colGap + pad + node.room.right, padL + pad + node.room.right + 6.f * kGrid);
+    node.h = std::max(maxBottom + pad, node.room.minH);
 }
 
 void placeGroup(const GroupNode& node, ImVec2 origin, bool isRoot,
@@ -1373,9 +1498,11 @@ std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHi
                                              std::vector<InstanceShape>& instances,
                                              const std::map<InstancePath, int>& pathToInstId,
                                              int& nextInstId,
-                                             const NameWidthFn& nameWidth) {
+                                             const NameWidthFn& nameWidth,
+                                             const std::map<InstancePath, FrameRoom>& room,
+                                             const std::map<InstancePath, EmptyFrame>& empty) {
     std::vector<HierFrame> frames;
-    bool anyNested = false;
+    bool anyNested = !empty.empty();
     for (const auto& [path, lh] : leafHier)
         if (lh.path.size() >= 2 && pathToInstId.count(path)) { anyNested = true; break; }
     if (!anyNested) return frames;
@@ -1386,34 +1513,52 @@ std::vector<HierFrame> layoutHierarchyGroups(const std::map<InstancePath, LeafHi
     };
 
     GroupNode root;
-    for (const auto& [path, lh] : leafHier) {
-        auto kit = pathToInstId.find(path);
-        if (kit == pathToInstId.end()) continue;
-        InstanceShape* leaf = findById(kit->second);
-        if (!leaf) continue;
+    // The frame of each level of `path` down to `depth` levels, made as needed.
+    auto descend = [&](const InstancePath& path, const std::vector<std::string>& models, size_t depth) {
         GroupNode* node = &root;
-        for (size_t i = 0; i + 1 < lh.path.size(); ++i) {
-            const InstanceRef& seg = lh.path[i];
+        for (size_t i = 0; i < depth; ++i) {
+            const InstanceRef& seg = path[i];
             auto git = node->groupByRef.find(seg);
             if (git == node->groupByRef.end()) {
                 auto child = std::make_unique<GroupNode>();
                 child->path    = node->path;
                 child->path.push_back(seg);
                 child->depth   = node->depth + 1;
-                const std::string model = i < lh.pathModels.size() ? lh.pathModels[i] : "";
+                const std::string model = i < models.size() ? models[i] : "";
                 const std::string name = displayName(seg);
                 child->label   = model.empty() ? name : name + " (" + model + ")";
+                if (auto r = room.find(child->path); r != room.end()) child->room = r->second;
                 git = node->groupByRef.emplace(seg, child.get()).first;
                 node->groups.push_back(std::move(child));
             }
             node = git->second;
         }
-        node->leaves.push_back({ leaf, lh.level });
+        return node;
+    };
+    for (const auto& [path, lh] : leafHier) {
+        auto kit = pathToInstId.find(path);
+        if (kit == pathToInstId.end()) continue;
+        InstanceShape* leaf = findById(kit->second);
+        if (!leaf) continue;
+        descend(lh.path, lh.pathModels, lh.path.size() - 1)->leaves.push_back({ leaf, lh.level });
     }
+    for (const auto& [path, e] : empty) descend(path, e.pathModels, path.size())->empty = e;
 
     measureGroup(root, true, nameWidth);
     placeGroup(root, ImVec2(kLeftMargin, 0.f), true, nextInstId, frames);
     return frames;
+}
+
+std::set<InstancePath> framePaths(const std::map<InstancePath, LeafHier>& leafHier) {
+    std::set<InstancePath> out;
+    bool anyNested = false;
+    for (const auto& [path, lh] : leafHier) {
+        if (lh.path.size() >= 2) anyNested = true;
+        for (size_t k = 1; k < lh.path.size(); ++k)
+            out.insert(InstancePath(lh.path.begin(), lh.path.begin() + long(k)));
+    }
+    if (!anyNested) out.clear();
+    return out;
 }
 
 } // namespace SchematicLayout

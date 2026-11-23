@@ -150,6 +150,67 @@ static void readPinNet(const json& j, BitTerm& term) {
     term.netId = j["net_id"].get<unsigned>();
 }
 
+// [name, child_id, model] levels, as occurrence paths carry them.
+static bool readLevels(const json& j, InstancePath& path, std::vector<std::string>& models) {
+  if (!j.is_array()) return false;
+  for (const auto& level : j) {
+    if (!level.is_array() || level.size() < 2 || !level[0].is_string() ||
+        !level[1].is_number_integer() || level[1].get<long long>() < 0) return false;
+    path.push_back({ level[1].get<unsigned>(), level[0].get<std::string>() });
+    models.push_back(level.size() > 2 && level[2].is_string() ? level[2].get<std::string>() : std::string());
+  }
+  return true;
+}
+
+// An equipotential's "graph" (NetGraph), or nothing when it doesn't fit the
+// body it came with: an index out of range or a malformed entry.
+static std::optional<NetGraph> readNetGraph(const json& j, const Equipotential& e) {
+  if (!j.contains("nodes") || !j["nodes"].is_array() || !j.contains("edges") || !j["edges"].is_array())
+    return std::nullopt;
+  auto indices = [](const json& v, size_t size, std::vector<size_t>& out) {
+    if (!v.is_array()) return false;
+    for (const auto& i : v) {
+      if (!i.is_number_integer() || i.get<long long>() < 0 || i.get<size_t>() >= size) return false;
+      out.push_back(i.get<size_t>());
+    }
+    return true;
+  };
+  NetGraph g;
+  for (const auto& nj : j["nodes"]) {
+    NetGraphNode n;
+    std::vector<std::string> models;
+    if (!nj.is_object() || !readLevels(nj.value("path", json::array()), n.path, models) ||
+        !indices(nj.value("occurrences", json::array()), e.occurrences.size(), n.occurrences) ||
+        !indices(nj.value("terms", json::array()), e.terms.size(), n.terms))
+      return std::nullopt;
+    if (nj.contains("net") && nj["net"].is_string()) n.net = nj["net"].get<std::string>();
+    g.nodes.push_back(std::move(n));
+  }
+  for (const auto& ej : j["edges"]) {
+    if (!ej.is_object()) return std::nullopt;
+    NetGraphEdge edge;
+    const json from = ej.value("from", json()), to = ej.value("to", json());
+    if (!from.is_number_integer() || !to.is_number_integer() || from.get<long long>() < 0 ||
+        to.get<long long>() < 0 || from.get<size_t>() >= g.nodes.size() || to.get<size_t>() >= g.nodes.size())
+      return std::nullopt;
+    edge.from = from.get<size_t>();
+    edge.to   = to.get<size_t>();
+    edge.port = ej.value("kind", std::string()) == "port";
+    if (edge.port) {
+      const json pin = ej.value("pin", json());
+      if (!pin.is_object() || !readLevels(pin.value("path", json()), edge.path, edge.pathModels) ||
+          edge.path.empty() || !pin.contains("child_id") || !pin["child_id"].is_number_integer())
+        return std::nullopt;
+      edge.pin.name      = pin.value("name", std::string());
+      edge.pin.child_id  = pin["child_id"].get<unsigned>();
+      edge.pin.direction = intToDirection(pin.value("direction", 2));
+      if (pin.contains("bit") && pin["bit"].is_number_integer()) edge.pin.bit = pin["bit"].get<int>();
+    }
+    g.edges.push_back(std::move(edge));
+  }
+  return g;
+}
+
 void from_json(const json& j, Equipotential& e) {
   if (j.contains("terms") && j["terms"].is_array()) {
     for (const auto& termJson : j["terms"]) {
@@ -233,6 +294,7 @@ void from_json(const json& j, Equipotential& e) {
       e.occurrences.push_back(std::move(occurrence));
     }
   }
+  if (j.contains("graph") && j["graph"].is_object()) e.graph = readNetGraph(j["graph"], e);
 }
 
 // An instance ID on the wire: a non-negative integer (nlohmann keeps

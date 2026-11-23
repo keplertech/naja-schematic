@@ -345,6 +345,51 @@ TEST(DiagnosisItemJson, MalformedIdPathIsIgnored) {
   }
 }
 
+// The net's structure across the hierarchy ("graph"): nodes with the
+// indices of their pins in the body, port edges with their pin.
+TEST(EquipotentialJson, ParsesTheNetGraph) {
+  json j = json::parse(R"({
+    "terms": [ {"name": "a", "child_id": 0, "direction": 0} ],
+    "occurrences": [ {"path": [["u_mid", 1, "mid"], ["g", 0, "RCV"]], "name": "A", "child_id": 0, "direction": 0} ],
+    "graph": {
+      "nodes": [ {"path": [], "net": "a", "occurrences": [], "terms": [0]},
+                 {"path": [["u_mid", 1, "mid"]], "net": "i", "bit": 3, "occurrences": [0], "terms": []} ],
+      "edges": [ {"kind": "port", "from": 0, "to": 1,
+                  "pin": {"path": [["u_mid", 1, "mid"]], "name": "d", "child_id": 2, "direction": 0, "bit": 3}},
+                 {"kind": "assign", "from": 1, "to": 1} ] } })");
+  Equipotential e = j.get<Equipotential>();
+  ASSERT_TRUE(e.graph.has_value());
+  ASSERT_EQ(e.graph->nodes.size(), 2u);
+  EXPECT_TRUE(e.graph->nodes[0].path.empty());
+  EXPECT_EQ(e.graph->nodes[0].terms, std::vector<size_t>{0});
+  EXPECT_EQ(e.graph->nodes[1].path, (InstancePath{{1, "u_mid"}}));
+  EXPECT_EQ(e.graph->nodes[1].net, "i");
+  EXPECT_EQ(e.graph->nodes[1].occurrences, std::vector<size_t>{0});
+  ASSERT_EQ(e.graph->edges.size(), 2u);
+  const auto& port = e.graph->edges[0];
+  EXPECT_TRUE(port.port);
+  EXPECT_EQ(port.from, 0u);
+  EXPECT_EQ(port.to, 1u);
+  EXPECT_EQ(port.path, (InstancePath{{1, "u_mid"}}));
+  EXPECT_EQ(port.pathModels, std::vector<std::string>{"mid"});
+  EXPECT_EQ(port.pin.child_id, 2u);
+  EXPECT_EQ(port.pin.getString(), "d[3]");
+  EXPECT_FALSE(e.graph->edges[1].port);
+}
+
+// A graph that doesn't fit its body (an index past its lists) is dropped:
+// the net is drawn whole.
+TEST(EquipotentialJson, DropsAGraphThatDoesNotFitItsBody) {
+  json j = json::parse(R"({ "terms": [], "occurrences": [],
+    "graph": {"nodes": [{"path": [], "occurrences": [0], "terms": []}], "edges": []} })");
+  EXPECT_FALSE(j.get<Equipotential>().graph.has_value());
+  json k = json::parse(R"({ "terms": [], "occurrences": [],
+    "graph": {"nodes": [{"path": []}], "edges": [{"kind": "assign", "from": 0, "to": 1}]} })");
+  EXPECT_FALSE(k.get<Equipotential>().graph.has_value());
+  json none = json::parse(R"({ "terms": [], "occurrences": [] })");
+  EXPECT_FALSE(none.get<Equipotential>().graph.has_value());
+}
+
 TEST(EquipotentialJson, AnonymousInstancesKeepTheirIds) {
   json j = json::parse(R"({"terms": [], "occurrences": [
       {"path": [["", 0, "mid"], ["", 1, "LEAF"]], "name": "A", "child_id": 0, "direction": 0},

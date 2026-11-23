@@ -1590,3 +1590,141 @@ TEST_F(SchematicClicks, OnlyAFoundPinAloneOnItsNetIsNotConnected) {
   EXPECT_TRUE(pin({{2, "u2"}}, "B")->open);
   EXPECT_FALSE(pin({{2, "u2"}}, "B")->unconnected);
 }
+
+// ---------------------------------------------------------------------------
+// Frame pins: a net with a graph is wired through pins on its frames' edges.
+// ---------------------------------------------------------------------------
+namespace {
+
+NetGraphEdge framePort(size_t from, size_t to, InstancePath frame, const std::string& model,
+                       const std::string& pin, unsigned id, Direction dir) {
+  NetGraphEdge e;
+  e.from       = from;
+  e.to         = to;
+  e.path       = std::move(frame);
+  e.pathModels = {model};
+  e.pin        = BitTerm{pin, id, dir, std::nullopt};
+  return e;
+}
+
+const InstanceShape* frameShape(const SchematicView& sv, const InstancePath& path) {
+  for (const auto& s : sv.instances)
+    if (s.isHierGroup && s.path == path) return &s;
+  return nullptr;
+}
+
+const Port* framePinPort(const InstanceShape& f, const std::string& name, bool inner) {
+  for (const auto& p : f.ports)
+    if (p.framePin && p.name == name && p.innerFace == inner) return &p;
+  return nullptr;
+}
+
+} // namespace
+
+TEST_F(SchematicClicks, ANetEntersAModuleFrameThroughAPinOnItsEdge) {
+  // u1.Y at the top drives m/g.A, through m's pin i.
+  const InstancePath m{{5, "m"}};
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u1", 1, "Y", 1, Direction::Output, 2));
+  InstTermOccurrence g = occ("g", 0, "A", 0, Direction::Input, 2);
+  g.path       = {{5, "m"}, {0, "g"}};
+  g.pathIds    = {5, 0};
+  g.pathModels = {"mid", "RCV"};
+  e.occurrences.push_back(g);
+  NetGraph graph;
+  graph.nodes = { {{}, "n", {0}, {}}, {m, "i", {1}, {}} };
+  graph.edges = { framePort(0, 1, m, "mid", "i", 0, Direction::Input) };
+  e.graph = graph;
+  add(e);
+  frame(3);
+
+  const InstanceShape* f = frameShape(sv(), m);
+  ASSERT_NE(f, nullptr);
+  const Port* outer = framePinPort(*f, "i", false);
+  const Port* inner = framePinPort(*f, "i", true);
+  ASSERT_NE(outer, nullptr);
+  ASSERT_NE(inner, nullptr);
+  EXPECT_LT(outer->lx, 0.f);  // signal flowing in: the left edge
+  const ImVec2 at = portAnchor(*f, *outer);
+  EXPECT_FLOAT_EQ(at.x, f->x);
+  // Level with the pin it leads to inside: a straight inner wire.
+  const InstancePath gPath{{5, "m"}, {0, "g"}};
+  EXPECT_FLOAT_EQ(at.y, portAnchor(*shape(gPath), *pin(gPath, "A")).y);
+  // Two wire trees, one each side of the frame's edge: no wire crosses it
+  // anywhere else.
+  ASSERT_EQ(sv().routes.size(), 2u);
+  int outside = 0, inside = 0;
+  for (const auto& r : sv().routes) {
+    float lo = 1e30f, hi = -1e30f;
+    for (const auto& s : r.segments) {
+      lo = std::min({lo, s.a.x, s.b.x});
+      hi = std::max({hi, s.a.x, s.b.x});
+    }
+    if (hi <= f->x + 1e-3f) ++outside;
+    if (lo >= f->x - 1e-3f) ++inside;
+  }
+  EXPECT_EQ(outside, 1);
+  EXPECT_EQ(inside, 1);
+}
+
+TEST_F(SchematicClicks, AFeedThroughModuleIsAnEmptyFrameTheWireCrosses) {
+  // u1.Y -> t.i, assigned to t.o -> u2.A: nothing of t is drawn but its frame.
+  const InstancePath t{{7, "t"}};
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u1", 1, "Y", 1, Direction::Output, 2));
+  e.occurrences.push_back(occ("u2", 2, "A", 0, Direction::Input, 2));
+  NetGraph graph;
+  graph.nodes = { {{}, "n", {0}, {}}, {t, "i", {}, {}}, {t, "o", {}, {}}, {{}, "m", {1}, {}} };
+  graph.edges = { framePort(0, 1, t, "thru", "i", 0, Direction::Input),
+                  NetGraphEdge{ false, 1, 2, {}, {}, {} },
+                  framePort(3, 2, t, "thru", "o", 1, Direction::Output) };
+  e.graph = graph;
+  add(e);
+  frame(3);
+
+  const InstanceShape* f = frameShape(sv(), t);
+  ASSERT_NE(f, nullptr);
+  EXPECT_EQ(f->name, "t (thru)");
+  const Port* in  = framePinPort(*f, "i", false);
+  const Port* out = framePinPort(*f, "o", false);
+  ASSERT_NE(in, nullptr);
+  ASSERT_NE(out, nullptr);
+  EXPECT_LT(in->lx, 0.f);
+  EXPECT_GT(out->lx, 0.f);
+  // Between the driver and the reader.
+  EXPECT_GT(f->x, shape(InstancePath{{1, "u1"}})->x);
+  EXPECT_LT(f->x + f->w, shape(InstancePath{{2, "u2"}})->x);
+  // Three trees: in, across, out -- the one across straight from i to o.
+  ASSERT_EQ(sv().routes.size(), 3u);
+  const float y = portAnchor(*f, *in).y;
+  EXPECT_FLOAT_EQ(portAnchor(*f, *out).y, y);
+  bool across = false;
+  for (const auto& r : sv().routes) {
+    bool flat = !r.segments.empty();
+    float lo = 1e30f, hi = -1e30f;
+    for (const auto& s : r.segments) {
+      flat = flat && std::abs(s.a.y - y) < 1e-3f && std::abs(s.b.y - y) < 1e-3f;
+      lo = std::min({lo, s.a.x, s.b.x});
+      hi = std::max({hi, s.a.x, s.b.x});
+    }
+    across = across || (flat && std::abs(lo - f->x) < 1e-3f && std::abs(hi - (f->x + f->w)) < 1e-3f);
+  }
+  EXPECT_TRUE(across);
+}
+
+TEST_F(SchematicClicks, ANetWithoutAGraphCrossesFramesAsBefore) {
+  // The same net as above with no graph: no frame pin, one wire tree.
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u1", 1, "Y", 1, Direction::Output, 2));
+  InstTermOccurrence g = occ("g", 0, "A", 0, Direction::Input, 2);
+  g.path       = {{5, "m"}, {0, "g"}};
+  g.pathIds    = {5, 0};
+  g.pathModels = {"mid", "RCV"};
+  e.occurrences.push_back(g);
+  add(e);
+  frame(3);
+  const InstanceShape* f = frameShape(sv(), InstancePath{{5, "m"}});
+  ASSERT_NE(f, nullptr);
+  EXPECT_TRUE(f->ports.empty());
+  EXPECT_EQ(sv().routes.size(), 1u);
+}

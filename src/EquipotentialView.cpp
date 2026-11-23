@@ -3,6 +3,7 @@
 #include "Console.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <map>
 #include <memory>
@@ -1589,12 +1590,128 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     // With Show Hierarchy, wrap the leaves in module frames (which re-lays
     // them out, keeping each one's logic level).
     bool grouped = false;
+    // A net with a graph is wired segment by segment, through pins on the
+    // frames' edges (SchematicLayout::splitNet). The pins are shared by every
+    // net on them: one slot each, by (frame, term, bit).
+    struct FramePinSlot {
+        FramePin pin;
+        int      outerId = 0, innerId = 0;  // its two faces' port ids
+        float    labelW  = 0.f;
+        float    y       = 0.f;
+        bool     placed  = false;
+    };
+    std::vector<FramePinSlot> framePins;
+    std::vector<std::optional<NetSegments>> segmentsByEi(equipotentials.size());
+    std::vector<std::vector<size_t>>        slotOfPinByEi(equipotentials.size());  // a net's pin -> slot
+    std::map<size_t, std::vector<std::pair<size_t, size_t>>> innerSegmentsOf;    // slot -> (net, segment)
+    std::map<InstancePath, int> frameIdOf;  // the frames drawn, by module
     if (g_showHierarchy) {
         std::map<InstancePath, LeafHier> leafHier;
         for (const auto& [path, mi] : minsts)
             leafHier[path] = { mi.path, mi.pathModels, placement.level[nodeOfShape[pathToInstId[path]]] };
+        std::set<InstancePath> frameSet = framePaths(leafHier);
+        // A module a net goes through with no leaf of it drawn (a
+        // feed-through) gets a frame too, empty but for its pins: in a
+        // column of its own right after the net's driver, at its height.
+        std::map<InstancePath, EmptyFrame> emptyFrames;
+        for (size_t ei = 0; ei < equipotentials.size() && g_opened.empty(); ++ei) {
+            const Equipotential* eq = equipotentials[ei];
+            if (!eq || !eq->graph) continue;
+            for (const auto& edge : eq->graph->edges) {
+                if (!edge.port || frameSet.count(edge.path) || emptyFrames.count(edge.path)) continue;
+                EmptyFrame e;
+                e.pathModels = edge.pathModels;
+                for (const auto& we : equiEnds[ei]) {
+                    if (!we.drives) continue;
+                    if (!we.isTerm) {
+                        auto kit = pathToInstId.find(we.path);
+                        if (kit != pathToInstId.end()) e.level = float(placement.level[nodeOfShape[kit->second]]) + 0.5f;
+                        if (auto at = pinWorld(we)) e.y = at->y;
+                    } else {
+                        e.level = -0.5f;
+                        for (const auto& r : equiEnds[ei])
+                            if (auto at = r.isTerm ? std::nullopt : pinWorld(r)) { e.y = at->y; break; }
+                    }
+                    break;
+                }
+                emptyFrames[edge.path] = std::move(e);
+            }
+        }
+        for (const auto& [path, e] : emptyFrames)
+            for (size_t k = 1; k <= path.size(); ++k) frameSet.insert(InstancePath(path.begin(), path.begin() + long(k)));
+        // (Opened instances' nets are rebuilt by openInstances(), without graphs.)
+        std::map<std::tuple<InstancePath, unsigned, std::optional<int>>, size_t> slotOf;
+        for (size_t ei = 0; ei < equipotentials.size() && !frameSet.empty() && g_opened.empty(); ++ei) {
+            const Equipotential* eq = equipotentials[ei];
+            if (!eq || !eq->graph) continue;
+            // Each end's node, by its pin: (instance path, term, bit), {} for a port.
+            using PinKey = std::tuple<InstancePath, unsigned, std::optional<int>>;
+            std::map<PinKey, size_t> nodeOfPin;
+            for (size_t ni = 0; ni < eq->graph->nodes.size(); ++ni) {
+                for (size_t o : eq->graph->nodes[ni].occurrences) {
+                    const auto& oc = eq->occurrences[o];
+                    nodeOfPin.emplace(PinKey{ oc.path, oc.term.child_id, oc.term.bit }, ni);
+                }
+                for (size_t t : eq->graph->nodes[ni].terms)
+                    nodeOfPin.emplace(PinKey{ {}, eq->terms[t].child_id, eq->terms[t].bit }, ni);
+            }
+            std::vector<std::optional<size_t>> endNodes;
+            std::vector<bool>                  drives;
+            for (const auto& we : equiEnds[ei]) {
+                drives.push_back(we.drives);
+                endNodes.emplace_back();
+                auto req = g_portEquiByPortId.find(we.portId);
+                if (req == g_portEquiByPortId.end()) continue;
+                auto node = nodeOfPin.find(PinKey{ we.isTerm ? InstancePath{} : we.path, req->second.termId,
+                                                   req->second.bit });
+                if (node != nodeOfPin.end()) endNodes.back() = node->second;
+            }
+            segmentsByEi[ei] = splitNet(*eq->graph, endNodes, drives, frameSet);
+            if (!segmentsByEi[ei]) continue;
+            for (const auto& pin : segmentsByEi[ei]->pins) {
+                auto [it, added] = slotOf.emplace(std::make_tuple(pin.frame, pin.termId, pin.bit), framePins.size());
+                if (added) {
+                    FramePinSlot slot;
+                    slot.pin     = pin;
+                    slot.outerId = nextPortId++;
+                    slot.innerId = nextPortId++;
+                    slot.labelW  = netLabelWidth(pin.name);
+                    framePins.push_back(std::move(slot));
+                }
+                slotOfPinByEi[ei].push_back(it->second);
+            }
+            // Where each pin's inner face is wired: to place it (below).
+            for (size_t si = 0; si < segmentsByEi[ei]->segments.size(); ++si) {
+                const NetSegment& seg = segmentsByEi[ei]->segments[si];
+                auto note = [&](const SegmentEnd& se) {
+                    if (se.pin >= 0 && se.inner) innerSegmentsOf[slotOfPinByEi[ei][size_t(se.pin)]].push_back({ ei, si });
+                };
+                note(seg.source);
+                for (const auto& r : seg.receivers) note(r);
+            }
+        }
+        // Room for the pins inside each frame: their labels, then a track
+        // per pin for its inner wire; and their height.
+        std::map<InstancePath, FrameRoom> room;
+        {
+            std::map<InstancePath, std::array<std::pair<float, int>, 2>> sides;  // per side: widest label, count
+            for (const auto& slot : framePins) {
+                auto& side = sides[slot.pin.frame][slot.pin.entering ? 0 : 1];
+                side.first = std::max(side.first, slot.labelW);
+                ++side.second;
+            }
+            for (const auto& [frame, s] : sides) {
+                FrameRoom& r = room[frame];
+                for (int k = 0; k < 2; ++k) {
+                    if (s[size_t(k)].second == 0) continue;
+                    const float w = s[size_t(k)].first + 2.f * kNetLabelGap + kTrackPitch * float(s[size_t(k)].second);
+                    (k == 0 ? r.left : r.right) = w;
+                    r.minH = std::max(r.minH, kGroupHeader + kPinPitch * float(s[size_t(k)].second) + kGroupPad);
+                }
+            }
+        }
         auto frames = layoutHierarchyGroups(leafHier, g_schematic.instances, pathToInstId, nextInstId,
-                                            instanceNameWidth);
+                                            instanceNameWidth, room, emptyFrames);
         grouped = !frames.empty();
         std::vector<InstanceShape> frameShapes;
         for (auto& f : frames) {
@@ -1613,6 +1730,100 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         g_schematic.instances.insert(g_schematic.instances.begin(),
                                      std::make_move_iterator(frameShapes.begin()),
                                      std::make_move_iterator(frameShapes.end()));
+
+        // The frame pins, on their frames' edges: each level with what it
+        // leads to inside (a straight inner wire), spaced kPinPitch apart,
+        // inside the frame. Deepest frames first, so a pin can line up with
+        // a pin of a frame inside it.
+        auto endY = [&](size_t ei, const SegmentEnd& se) -> std::optional<float> {
+            if (se.pin >= 0) {
+                const FramePinSlot& slot = framePins[slotOfPinByEi[ei][size_t(se.pin)]];
+                return slot.placed ? std::optional<float>(slot.y) : std::nullopt;
+            }
+            const WireEnd& we = equiEnds[ei][size_t(se.end)];
+            if (we.isTerm) return std::nullopt;
+            if (auto at = pinWorld(we)) return at->y;
+            return std::nullopt;
+        };
+        // What a pin's inner face is wired to: the rest of its inner segment.
+        auto innerWant = [&](size_t slotIndex) -> std::optional<float> {
+            auto it = innerSegmentsOf.find(slotIndex);
+            if (it == innerSegmentsOf.end()) return std::nullopt;
+            for (const auto& [ei, si] : it->second) {
+                const NetSegment& seg = segmentsByEi[ei]->segments[si];
+                auto isThis = [&](const SegmentEnd& se) {
+                    return se.pin >= 0 && se.inner && slotOfPinByEi[ei][size_t(se.pin)] == slotIndex;
+                };
+                // A source pin lines up with what it drives, a receiving one
+                // with what drives it.
+                std::vector<const SegmentEnd*> others;
+                if (!isThis(seg.source)) others.push_back(&seg.source);
+                for (const auto& r : seg.receivers) if (!isThis(r)) others.push_back(&r);
+                for (const auto* o : others)
+                    if (auto y = endY(ei, *o)) return y;
+            }
+            return std::nullopt;
+        };
+        std::map<InstancePath, InstanceShape*> frameOf;
+        for (auto& s : g_schematic.instances)
+            if (s.isHierGroup) {
+                frameOf[s.path]   = &s;
+                frameIdOf[s.path] = s.id;
+            }
+        std::vector<size_t> order(framePins.size());
+        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            const InstancePath& fa = framePins[a].pin.frame;
+            const InstancePath& fb = framePins[b].pin.frame;
+            return fa.size() != fb.size() ? fa.size() > fb.size() : fa < fb;
+        });
+        for (size_t at = 0; at < order.size();) {
+            const InstancePath frame = framePins[order[at]].pin.frame;
+            size_t next = at;
+            while (next < order.size() && framePins[order[next]].pin.frame == frame) ++next;
+            auto fit = frameOf.find(frame);
+            if (fit == frameOf.end()) { at = next; continue; }
+            InstanceShape& shape = *fit->second;
+            for (int side = 0; side < 2; ++side) {
+                std::vector<std::pair<float, size_t>> want;
+                for (size_t j = at; j < next; ++j)
+                    if (framePins[order[j]].pin.entering == (side == 0))
+                        want.push_back({ innerWant(order[j]).value_or(shape.y + kGroupHeader), order[j] });
+                std::stable_sort(want.begin(), want.end(),
+                                 [](const auto& a, const auto& b) { return a.first < b.first; });
+                const float lo = shape.y + kGroupHeader, hi = shape.y + shape.h - kGroupPad;
+                std::vector<float> ys(want.size());
+                for (size_t k = 0; k < want.size(); ++k) {
+                    float y = std::round(want[k].first / kGrid) * kGrid;
+                    if (k > 0) y = std::max(y, ys[k - 1] + kPinPitch);
+                    ys[k] = std::max(y, lo);
+                }
+                for (size_t k = want.size(); k-- > 0;) {
+                    float y = std::min(ys[k], hi);
+                    if (k + 1 < want.size()) y = std::min(y, ys[k + 1] - kPinPitch);
+                    ys[k] = y;
+                }
+                for (size_t k = 0; k < want.size(); ++k) {
+                    FramePinSlot& slot = framePins[want[k].second];
+                    slot.y      = ys[k];
+                    slot.placed = true;
+                    for (int face = 0; face < 2; ++face) {
+                        Port p;
+                        p.id        = face == 0 ? slot.outerId : slot.innerId;
+                        p.name      = slot.pin.name;
+                        p.direction = slot.pin.direction;
+                        p.isInput   = slot.pin.entering;
+                        p.lx        = slot.pin.entering ? -0.5f : 0.5f;
+                        p.ly        = shape.h > 0.f ? (slot.y - shape.y) / shape.h - 0.5f : 0.f;
+                        p.color     = DiagnosisStore::netColor(slot.pin.frame, stripBusIndex(slot.pin.name));
+                        p.framePin  = true;
+                        p.innerFace = face == 1;
+                        shape.ports.push_back(std::move(p));
+                    }
+                }
+            }
+            at = next;
+        }
     }
 
     // Opened instances' port flags, now in place: drawn from the pin end
@@ -1807,6 +2018,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     }
 
     // Pass 4: wires per equip
+    // A segment's wire tree, by its source pin: the design it's in, to keep
+    // it out of the frames it isn't inside (see the routing below).
+    std::map<std::pair<int, int>, InstancePath> segmentScopeOf;
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         const auto& ends = equiEnds[ei];
         if (ends.size() < 2) continue;
@@ -1826,14 +2040,48 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         const StyleAttrs netStyle = equipotentials[ei] ? StyleStore::netStyle(*equipotentials[ei])
                                                        : StyleAttrs{};
 
-        for (size_t i = 1; i < wrs.size(); ++i) {
+        // Wired from its driver to every other end -- or, split into
+        // segments, from each segment's source to its receivers, through
+        // the frame pins' faces.
+        struct WirePair { WR src, dst; std::string netName; };
+        std::vector<WirePair> pairs;
+        if (segmentsByEi[ei]) {
+            auto resolve = [&](const SegmentEnd& se) -> std::optional<WR> {
+                if (se.pin >= 0) {
+                    const FramePinSlot& slot = framePins[slotOfPinByEi[ei][size_t(se.pin)]];
+                    auto f = frameIdOf.find(slot.pin.frame);
+                    if (f == frameIdOf.end() || !slot.placed) return std::nullopt;
+                    return WR{ f->second, se.inner ? slot.innerId : slot.outerId };
+                }
+                const WireEnd& we = ends[size_t(se.end)];
+                int instId = we.termInstId;
+                if (!we.isTerm) {
+                    auto it = pathToInstId.find(we.path);
+                    instId = it != pathToInstId.end() ? it->second : -1;
+                }
+                if (instId < 0) return std::nullopt;
+                return WR{ instId, renderedPort(we.portId) };
+            };
+            for (const auto& seg : segmentsByEi[ei]->segments) {
+                auto src = resolve(seg.source);
+                if (!src) continue;
+                segmentScopeOf[{ src->instId, src->portId }] = seg.scope;
+                for (const auto& r : seg.receivers)
+                    if (auto dst = resolve(r))
+                        pairs.push_back({ *src, *dst, seg.net.empty() ? netNameByEi[ei] : seg.net });
+            }
+        } else {
+            for (size_t i = 1; i < wrs.size(); ++i) pairs.push_back({ wrs[0], wrs[i], netNameByEi[ei] });
+        }
+
+        for (const auto& pair : pairs) {
             NetWire n;
             n.id          = int(g_schematic.nets.size()) + 1;
-            n.srcInstance = wrs[0].instId;
-            n.srcPortId   = wrs[0].portId;
-            n.dstInstance = wrs[i].instId;
-            n.dstPortId   = wrs[i].portId;
-            n.netName     = netNameByEi[ei];
+            n.srcInstance = pair.src.instId;
+            n.srcPortId   = pair.src.portId;
+            n.dstInstance = pair.dst.instId;
+            n.dstPortId   = pair.dst.portId;
+            n.netName     = pair.netName;
             n.traceIds    = traceIdsByEi[ei];
             n.faint       = faintByEi[ei];
             n.styleColor  = netStyle.color;
@@ -1894,6 +2142,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     // expanded instance keeps its simple per-wire drawing.
     {
         std::vector<RouteRect> obstacles, keepOut;
+        std::vector<RouteRegion>  regions;      // the module frames
+        std::vector<InstancePath> regionPaths;  // and their paths
         for (const auto& inst : g_schematic.instances) {
             if (inst.parentShapeId >= 0) continue;
             // Net labels: in the box's span (so the trunk goes after them);
@@ -1912,6 +2162,16 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             if (inst.w <= 0.f || inst.h <= 0.f) continue;
             if (inst.isHierGroup) {  // its label row
                 keepOut.push_back({ inst.x, inst.y, inst.x + inst.w, inst.y + kGroupHeader - kPinPitch });
+                // Its pins' names, inside it above their wires: the inner
+                // wire's trunk goes past them.
+                bool walled = false;
+                for (const auto& p : inst.ports) {
+                    if (!p.framePin || p.innerFace) continue;
+                    walled = true;
+                    obstacles.push_back(framePinLabelRect(inst, p));
+                }
+                regions.push_back({ { inst.x, inst.y, inst.x + inst.w, inst.y + inst.h }, walled });
+                regionPaths.push_back(inst.path);
                 continue;
             }
             obstacles.push_back({ inst.x, inst.y, inst.x + inst.w, inst.y + inst.h });
@@ -1928,10 +2188,11 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         auto isLeftPort = [](const InstanceShape& inst, const Port& p) {
             return inst.modelName == "port" && p.lx >= 0.f && inst.path.empty();
         };
+        // (A frame pin's inner face leaves into the frame: the other way.)
         auto pinOf = [&](const InstanceShape& inst, const Port& p) {
             ImVec2 at = portAnchor(inst, p);
             if (isLeftPort(inst, p)) at.x += leftPortRoom;
-            return RoutePin{ at, p.lx >= 0.f };
+            return RoutePin{ at, (p.lx >= 0.f) != p.innerFace };
         };
         std::vector<std::vector<RouteSegment>> portLeads;  // per route
         for (auto& n : g_schematic.nets) {
@@ -1946,6 +2207,16 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             if (it == routeOfSource.end()) {
                 it = routeOfSource.emplace(key, routeNetsIn.size()).first;
                 routeNetsIn.push_back({ pinOf(*srcInst, *srcPort), {} });
+                // A segment stays out of the frames it isn't inside.
+                if (auto scope = segmentScopeOf.find(key); scope != segmentScopeOf.end()) {
+                    routeNetsIn.back().confined = true;
+                    for (size_t gi = 0; gi < regionPaths.size(); ++gi) {
+                        const InstancePath& f = regionPaths[gi];
+                        if (f.size() <= scope->second.size() &&
+                            std::equal(f.begin(), f.end(), scope->second.begin()))
+                            routeNetsIn.back().inside.push_back(int(gi));
+                    }
+                }
                 SchematicView::NetRoute r;
                 r.color   = n.color;
                 r.netName = n.netName;
@@ -2026,7 +2297,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             for (const auto& n : g_schematic.nets)
                 if (!n.routed) addWire(n.color, n.label, n.traceIds, n.faint, {});
         }
-        auto routed = routeNets(routeNetsIn, obstacles, keepOut);
+        auto routed = routeNets(routeNetsIn, obstacles, keepOut, regions);
         for (size_t i = 0; i < routed.size(); ++i) {
             g_schematic.routes[i].segments  = std::move(routed[i].segments);
             g_schematic.routes[i].segments.insert(g_schematic.routes[i].segments.begin(),

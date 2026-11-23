@@ -659,8 +659,27 @@ the same from both backends. `graphJson()` in `LocalSNLProvider.cpp`,
 `graph_json()` in `protocol.py`. Shared cases:
 `tests/data/crossing_protocol_cases.json` (built netlist; a net's `term`
 may list several terms there) and `crossing_assign_protocol_cases.json`
-(Verilog: assigns, buses). The viewer doesn't draw it yet (issue #54:
-port names where a wire enters a module frame).
+(Verilog: assigns, buses).
+
+The viewer draws it as **frame pins** (with Show Hierarchy): a net with a
+graph is wired one segment at a time, each segment's wire tree inside its
+own frame, joined through pins on the frames' edges -- a marker where the
+wire crosses the edge and the pin's name inside, above the wire
+(`framePinLabelRect()`). `SchematicLayout::splitNet()` cuts the net: from
+the driver's segment, a pin is on a frame's left edge when the signal flows
+in, its right edge when it flows out; nodes joined by an assign, or by a
+pin of a module with no frame, are one segment. A pin has two faces at one
+point (`Port::framePin`, `innerFace` for the inside one, which isn't
+drawn), the inner face's wire leaving the other way. A module a net only
+goes through, with no leaf of it drawn (a feed-through), gets an empty frame
+(`EmptyFrame`), in a column of its own after the net's driver. Frames make
+room for their pins (`FrameRoom`), which line up with what they lead to
+inside, deepest frames first; their edges split the routing channels and
+they keep other segments' spines out (`RouteRegion`, `RouteNet::confined`),
+so a wire only enters a frame through one of its pins. A segment is named
+by the net at its source (`data-net`). A net without a graph, or one
+`splitNet()` can't map (a fanout summary on it, opened instances), is drawn
+whole, crossing frames as before.
 
 Occurrence `path` entries (in `equipotential_response` and each
 `trace_driver_response` net) are `[name, child_id, model_name]`; the third
@@ -1307,7 +1326,9 @@ and a leaf reveal (review Go To) also selects the panel's tab
     box-free channels between columns, on distinct tracks that respect
     channel routing's vertical constraints, plus a spine that detours around
     boxes, labels and other spines. Junction dots mark real branch points.
-  - `layoutHierarchyGroups()`: module frames.
+  - `layoutHierarchyGroups()`: module frames (with room for their pins,
+    and empty frames for feed-throughs); `splitNet()`: a net's segments
+    and frame pins (see `"graph"` under Wire protocol).
   - `openInstances()`: the nets drawn once instances are opened (see
     `load_instance_view` under Wire protocol).
   - Fanout: `layeredPlacement(..., maxSinkRows)` deals a column's sinks

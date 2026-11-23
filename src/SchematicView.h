@@ -19,6 +19,11 @@ float netLabelWidth(const std::string& label);
 // the name past its base.
 float boundaryFlagWidth(const std::string& name);
 float boundaryFlagHeight();
+// Where a module frame's pin (Port::framePin) has its name: inside the
+// frame, above the wire, from the frame's edge -- as far as the name and a
+// kNetLabelGap each side of it. The name starts kNetLabelGap past the edge
+// (or ends that far before it), on the rect's bottom line.
+SchematicLayout::RouteRect framePinLabelRect(const InstanceShape& frame, const Port& p);
 
 // The world rect a shape covers when drawn: the shape, plus its name row or
 // its port flag.
