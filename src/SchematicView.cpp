@@ -401,6 +401,14 @@ float boundaryFlagWidth(const std::string& name) {
 
 float boundaryFlagHeight() { return 2.0f * kBoundaryPortHalfHBase; }
 
+SchematicLayout::RouteRect framePinLabelRect(const InstanceShape& frame, const Port& p) {
+    using namespace SchematicLayout;
+    const ImVec2 at = portAnchor(frame, p);
+    const float  w  = 2.0f * kNetLabelGap + netLabelWidth(p.label.empty() ? p.name : p.label);
+    const float  y1 = at.y - kNetLabelLift, y0 = y1 - kNetLabelH;
+    return p.lx < 0.0f ? RouteRect{ at.x, y0, at.x + w, y1 } : RouteRect{ at.x - w, y0, at.x, y1 };
+}
+
 float netLabelWidth(const std::string& label) {
     return ImGui::GetFont()->CalcTextSizeA(SchematicLayout::kNetLabelFontSize, FLT_MAX, 0.0f, label.c_str()).x;
 }
@@ -962,6 +970,26 @@ static void drawHierGroupInstance(SchematicPainter* dl, const InstanceShape& ins
                         pal().frameLabel, label.c_str());
     }
     drawHierToggle(dl, inst, sv, canvasPos, canvasSize);
+
+    // Its pins (Port::framePin): a marker on the edge where the net crosses
+    // it, the pin's name inside, above the wire.
+    const float labelSize = labelFontSize(SchematicLayout::kNetLabelFontSize, sv.transform.scale);
+    for (const auto& p : inst.ports) {
+        if (!p.framePin || p.innerFace) continue;
+        const ImVec2 at = sv.worldToScreen(portAnchor(inst, p), canvasPos, canvasSize);
+        const ImU32 color = p.color != 0 ? p.color : p.styleColor != 0 ? p.styleColor : pal().pinLine;
+        const float r = std::max(1.5f, 3.0f * sv.transform.scale);
+        dl->AddRectFilled(ImVec2(at.x - r, at.y - r), ImVec2(at.x + r, at.y + r), color, 0.0f);
+        if (labelSize <= 0.0f) continue;
+        const std::string& name = p.label.empty() ? p.name : p.label;
+        const SchematicLayout::RouteRect rect = framePinLabelRect(inst, p);
+        ImFont* font = ImGui::GetFont();
+        const ImVec2 size = font->CalcTextSizeA(labelSize, FLT_MAX, 0.0f, name.c_str());
+        const float gap = SchematicLayout::kNetLabelGap * sv.transform.scale;
+        const ImVec2 bottom = sv.worldToScreen(ImVec2(p.lx < 0.0f ? rect.x0 : rect.x1, rect.y1), canvasPos, canvasSize);
+        const float x = p.lx < 0.0f ? bottom.x + gap : bottom.x - gap - size.x;
+        dl->AddText(font, labelSize, ImVec2(x, bottom.y - size.y), pal().pinLabel, name.c_str());
+    }
 }
 
 // ---------------------------------------------------------------------------

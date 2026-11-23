@@ -1,6 +1,8 @@
 #include "SchematicLayout.h"
 
+#include <algorithm>
 #include <cmath>
+#include <set>
 #include <map>
 
 #include <gtest/gtest.h>
@@ -792,8 +794,9 @@ struct HierFixture {
       pathToInstId[l.path] = id;
     }
   }
-  std::vector<HierFrame> run() {
-    return layoutHierarchyGroups(leafHier, shapes, pathToInstId, nextInstId, charWidth);
+  std::vector<HierFrame> run(const std::map<InstancePath, FrameRoom>& room = {},
+                             const std::map<InstancePath, EmptyFrame>& empty = {}) {
+    return layoutHierarchyGroups(leafHier, shapes, pathToInstId, nextInstId, charWidth, room, empty);
   }
 };
 
@@ -1159,4 +1162,230 @@ TEST(OpenedInstances, ANetReachingManyPinsGetsAFlagForEach) {
   std::set<unsigned> ids;
   for (const auto& [path, pin] : view.boundary) ids.insert(path.back().id);
   EXPECT_EQ(ids.size(), 16u);  // one made-up id per bit
+}
+
+// ---------------------------------------------------------------------------
+// Frame room and empty frames (frame pins)
+// ---------------------------------------------------------------------------
+
+TEST(HierarchyGroups, RoomForPinsWidensAFrameOnThatSide) {
+  HierFixture plain({{{"core", "g1"}, {}, 0, 0.f}});
+  const auto f0 = frame(plain.run(), {"core"}).shape;
+  const float g0x = byPath(plain.shapes, {"core", "g1"}).x;
+
+  HierFixture fx({{{"core", "g1"}, {}, 0, 0.f}});
+  FrameRoom room;
+  room.left  = 50.f;
+  room.right = 30.f;
+  room.minH  = 400.f;
+  const auto f = frame(fx.run({{P({"core"}), room}}), {"core"}).shape;
+  EXPECT_FLOAT_EQ(f.w, f0.w + 80.f);
+  // The leaf moves right by the left room only.
+  EXPECT_FLOAT_EQ(byPath(fx.shapes, {"core", "g1"}).x - f.x, g0x - f0.x + 50.f);
+  EXPECT_FLOAT_EQ(f.h, 400.f);
+}
+
+TEST(HierarchyGroups, AnEmptyFrameGetsAColumnOfItsOwnBetweenTwoLevels) {
+  HierFixture fx({{{"drv"}, {}, 0, 0.f}, {{"rcv"}, {}, 1, 0.f}});
+  EmptyFrame e;
+  e.pathModels = {"thru"};
+  e.level      = 0.5f;
+  e.y          = 20.f;
+  auto frames = fx.run({}, {{P({"u_thru"}), e}});
+  ASSERT_EQ(frames.size(), 1u);
+  const auto& f = frames[0].shape;
+  EXPECT_EQ(f.name, "u_thru (thru)");
+  const auto& drv = byPath(fx.shapes, {"drv"});
+  const auto& rcv = byPath(fx.shapes, {"rcv"});
+  EXPECT_GT(f.x, drv.x + drv.w);
+  EXPECT_LT(f.x + f.w, rcv.x);
+}
+
+// ---------------------------------------------------------------------------
+// splitNet
+// ---------------------------------------------------------------------------
+
+namespace {
+
+NetGraphEdge portEdge(size_t from, size_t to, const std::vector<std::string>& inst, const std::string& term,
+                      unsigned termId = 0, Direction dir = Direction::Input) {
+  NetGraphEdge e;
+  e.port = true;
+  e.from = from;
+  e.to   = to;
+  e.path = P(inst);
+  e.pin  = BitTerm{term, termId, dir, std::nullopt};
+  return e;
+}
+NetGraphEdge assignEdge(size_t from, size_t to) {
+  NetGraphEdge e;
+  e.port = false;
+  e.from = from;
+  e.to   = to;
+  return e;
+}
+NetGraphNode node(const std::vector<std::string>& path, const std::string& net) {
+  NetGraphNode n;
+  n.path = path.empty() ? InstancePath{} : P(path);
+  n.net  = net;
+  return n;
+}
+
+// drv (top) drives net n, which goes into m (pin i) and on into m/s (pin
+// i) to the leaf g; r reads n at the top.
+NetGraph twoLevels() {
+  NetGraph g;
+  g.nodes = { node({}, "n"), node({"m"}, "i"), node({"m", "s"}, "i") };
+  g.edges = { portEdge(0, 1, {"m"}, "i"), portEdge(1, 2, {"m", "s"}, "i") };
+  return g;
+}
+
+bool hasEnd(const NetSegment& s, int end) {
+  return std::find(s.receivers.begin(), s.receivers.end(), SegmentEnd{ end, -1, false }) != s.receivers.end();
+}
+
+} // namespace
+
+TEST(NetSegments, ANetEnteringTwoFramesIsThreeSegmentsJoinedByTheirPins) {
+  // Ends: 0 drv (node 0, drives), 1 g (node 2), 2 r (node 0).
+  auto ns = splitNet(twoLevels(), {0, 2, 0}, {true, false, false}, {P({"m"}), P({"m", "s"})});
+  ASSERT_TRUE(ns);
+  ASSERT_EQ(ns->pins.size(), 2u);
+  EXPECT_EQ(ns->pins[0].frame, P({"m"}));
+  EXPECT_EQ(ns->pins[1].frame, P({"m", "s"}));
+  EXPECT_TRUE(ns->pins[0].entering && ns->pins[1].entering);
+  EXPECT_EQ(ns->pins[0].name, "i");
+  ASSERT_EQ(ns->segments.size(), 3u);
+  const auto& top = ns->segments[0];
+  EXPECT_EQ(top.scope, InstancePath{});
+  EXPECT_EQ(top.net, "n");
+  EXPECT_EQ(top.source, (SegmentEnd{ 0, -1, false }));
+  EXPECT_TRUE(hasEnd(top, 2));
+  EXPECT_EQ(top.receivers.back(), (SegmentEnd{ 2, -1, false }));
+  EXPECT_NE(std::find(top.receivers.begin(), top.receivers.end(), SegmentEnd{ -1, 0, false }), top.receivers.end());
+  const auto& mid = ns->segments[1];
+  EXPECT_EQ(mid.scope, P({"m"}));
+  EXPECT_EQ(mid.source, (SegmentEnd{ -1, 0, true }));
+  ASSERT_EQ(mid.receivers.size(), 1u);
+  EXPECT_EQ(mid.receivers[0], (SegmentEnd{ -1, 1, false }));
+  const auto& in = ns->segments[2];
+  EXPECT_EQ(in.source, (SegmentEnd{ -1, 1, true }));
+  EXPECT_TRUE(hasEnd(in, 1));
+}
+
+TEST(NetSegments, APinOfAModuleWithNoFrameIsNoCrossing) {
+  auto ns = splitNet(twoLevels(), {0, 2, 0}, {true, false, false}, {P({"m"})});
+  ASSERT_TRUE(ns);
+  ASSERT_EQ(ns->pins.size(), 1u);
+  ASSERT_EQ(ns->segments.size(), 2u);
+  EXPECT_TRUE(hasEnd(ns->segments[1], 1));   // g, in m's segment (m/s isn't drawn)
+  EXPECT_EQ(ns->segments[1].scope, P({"m"}));
+}
+
+TEST(NetSegments, ADriverInsideLeavesThroughTheRightEdge) {
+  // g drives from inside m/s; r reads at the top.
+  auto ns = splitNet(twoLevels(), {2, 0}, {true, false}, {P({"m"}), P({"m", "s"})});
+  ASSERT_TRUE(ns);
+  ASSERT_EQ(ns->pins.size(), 2u);
+  EXPECT_FALSE(ns->pins[0].entering);
+  EXPECT_FALSE(ns->pins[1].entering);
+  EXPECT_EQ(ns->segments[0].scope, P({"m", "s"}));
+  EXPECT_EQ(ns->segments[0].source, (SegmentEnd{ 0, -1, false }));
+  EXPECT_EQ(ns->segments.back().scope, InstancePath{});
+  EXPECT_TRUE(hasEnd(ns->segments.back(), 1));
+}
+
+TEST(NetSegments, AnAssignFeedThroughIsOneSegmentBetweenItsTwoPins) {
+  // n enters t at i, i is assigned to o, o leaves t as m.
+  NetGraph g;
+  g.nodes = { node({}, "n"), node({"t"}, "i"), node({"t"}, "o"), node({}, "m") };
+  g.edges = { portEdge(0, 1, {"t"}, "i", 0), assignEdge(1, 2), portEdge(3, 2, {"t"}, "o", 1, Direction::Output) };
+  auto ns = splitNet(g, {0, 3}, {true, false}, {P({"t"})});
+  ASSERT_TRUE(ns);
+  ASSERT_EQ(ns->pins.size(), 2u);
+  EXPECT_TRUE(ns->pins[0].entering);    // i, on the left
+  EXPECT_FALSE(ns->pins[1].entering);   // o, on the right
+  ASSERT_EQ(ns->segments.size(), 3u);
+  const auto& inside = ns->segments[1];
+  EXPECT_EQ(inside.source, (SegmentEnd{ -1, 0, true }));
+  ASSERT_EQ(inside.receivers.size(), 1u);
+  EXPECT_EQ(inside.receivers[0], (SegmentEnd{ -1, 1, true }));
+  // Each named by the net at its source: inside, the one on i.
+  EXPECT_EQ(ns->segments[0].net, "n");
+  EXPECT_EQ(inside.net, "i");
+  EXPECT_EQ(ns->segments[2].net, "m");
+  EXPECT_EQ(ns->segments[2].source, (SegmentEnd{ -1, 1, false }));
+  EXPECT_TRUE(hasEnd(ns->segments[2], 1));
+}
+
+TEST(NetSegments, TwoPinsIntoOneInnerNetMakeTheSecondAReceiverOnBothSides) {
+  NetGraph g;
+  g.nodes = { node({}, "n"), node({"m"}, "x") };
+  g.edges = { portEdge(0, 1, {"m"}, "a", 0), portEdge(0, 1, {"m"}, "b", 1) };
+  auto ns = splitNet(g, {0, 1}, {true, false}, {P({"m"})});
+  ASSERT_TRUE(ns);
+  ASSERT_EQ(ns->pins.size(), 2u);
+  ASSERT_EQ(ns->segments.size(), 2u);
+  const auto& top = ns->segments[0];
+  const auto& in  = ns->segments[1];
+  EXPECT_EQ(in.source, (SegmentEnd{ -1, 0, true }));
+  EXPECT_NE(std::find(top.receivers.begin(), top.receivers.end(), SegmentEnd{ -1, 1, false }), top.receivers.end());
+  EXPECT_NE(std::find(in.receivers.begin(), in.receivers.end(), SegmentEnd{ -1, 1, true }), in.receivers.end());
+}
+
+TEST(NetSegments, NothingWhenTheNetCantBeSplit) {
+  const std::set<InstancePath> frames{ P({"m"}), P({"m", "s"}) };
+  EXPECT_FALSE(splitNet(twoLevels(), {0, std::nullopt}, {true, false}, frames));  // an end off the graph
+  EXPECT_FALSE(splitNet(twoLevels(), {0, 2}, {false, false}, frames));           // no driver
+  EXPECT_FALSE(splitNet(twoLevels(), {0, 2}, {true, false}, {}));                // no frame crossed
+  EXPECT_FALSE(splitNet(NetGraph{}, {}, {}, frames));
+}
+
+// ---------------------------------------------------------------------------
+// Routing with frames
+// ---------------------------------------------------------------------------
+
+TEST(RouteNets, AFrameWithPinsKeepsOuterTrunksOutsideAndInnerOnesInside) {
+  // A frame from x=100 to 300 with a pin on its left edge at y=50. Outside:
+  // a driver at (40, 30) reaches the pin's outer face. Inside: the pin's
+  // inner face reaches a box at x=200, at y=90.
+  const std::vector<RouteRect> boxes = {{0.f, 0.f, 40.f, 200.f}, {200.f, 80.f, 240.f, 100.f}};
+  const std::vector<RouteRegion> frames = {{{100.f, 0.f, 300.f, 200.f}, true}};
+  RouteNet outer{{{40.f, 30.f}, true}, {{{100.f, 50.f}, false}}};
+  RouteNet inner{{{100.f, 50.f}, true}, {{{200.f, 90.f}, false}}};
+  auto r = routeNets({outer, inner}, boxes, {}, frames);
+  ASSERT_EQ(r.size(), 2u);
+  EXPECT_LT(trunkX(r[0], 40.f, 100.f), 100.f);
+  EXPECT_GT(trunkX(r[1], 100.f, 200.f), 100.f);
+  for (const auto& s : r[0].segments) EXPECT_LE(std::max(s.a.x, s.b.x), 100.f + 1e-3f);
+  for (const auto& s : r[1].segments) EXPECT_GE(std::min(s.a.x, s.b.x), 100.f - 1e-3f);
+}
+
+TEST(RouteNets, AConfinedNetsSpineGoesAroundAFrameItIsNotIn) {
+  // Two columns of boxes, a frame between them at the wire's height.
+  const std::vector<RouteRect> boxes = {{0.f, 0.f, 40.f, 200.f}, {140.f, 150.f, 160.f, 200.f},
+                                        {300.f, 0.f, 340.f, 200.f}};
+  const std::vector<RouteRegion> frames = {{{100.f, 0.f, 200.f, 100.f}, false}};
+  RouteNet net{{{40.f, 50.f}, true}, {{{300.f, 50.f}, false}}};
+  auto spineYs = [&](const RoutedNet& n) {
+    std::vector<float> ys;
+    for (const auto& s : n.segments)
+      if (std::abs(s.a.y - s.b.y) < 1e-3f && std::min(s.a.x, s.b.x) < 140.f && std::max(s.a.x, s.b.x) > 160.f)
+        ys.push_back(s.a.y);
+    return ys;
+  };
+  // Free to run through it...
+  auto free = spineYs(routeNets({net}, boxes, {}, frames)[0]);
+  ASSERT_EQ(free.size(), 1u);
+  EXPECT_FLOAT_EQ(free[0], 50.f);
+  // ...but not when confined outside it.
+  net.confined = true;
+  auto around = spineYs(routeNets({net}, boxes, {}, frames)[0]);
+  ASSERT_EQ(around.size(), 1u);
+  EXPECT_TRUE(around[0] < 0.f || around[0] > 100.f) << around[0];
+  // Inside it, it may.
+  net.inside = {0};
+  auto inside = spineYs(routeNets({net}, boxes, {}, frames)[0]);
+  ASSERT_EQ(inside.size(), 1u);
+  EXPECT_FLOAT_EQ(inside[0], 50.f);
 }

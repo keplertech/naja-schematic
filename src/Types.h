@@ -340,10 +340,36 @@ struct NetsResponseJson {
   std::vector<NetResponseJson> children;
 };
 
+// A net's structure across the hierarchy (an equipotential's "graph"): one
+// node per net segment -- the net in one design, at one path -- holding the
+// equipotential's pins on it (indices into its `occurrences`/`terms`), and
+// the edges joining segments: through the pin of a hierarchical instance
+// (outer -> inner) or through an assign (input -> output).
+struct NetGraphNode {
+  InstancePath        path;   // the instance whose design holds the net ({} = top)
+  std::string         net;    // "name", "name[bit]"
+  std::vector<size_t> occurrences;
+  std::vector<size_t> terms;
+};
+struct NetGraphEdge {
+  bool   port = true;          // false: an assign
+  size_t from = 0, to = 0;     // node indices
+  // A port edge's pin: the hierarchical instance (last in `path`) and its term.
+  InstancePath             path;
+  std::vector<std::string> pathModels;
+  BitTerm                  pin;
+};
+struct NetGraph {
+  std::vector<NetGraphNode> nodes;
+  std::vector<NetGraphEdge> edges;
+};
+
 struct Equipotential {
   bool found;
   std::vector<BitTerm> terms;
   std::vector<InstTermOccurrence> occurrences;
+  // The host's "graph" for this net, when it sent one.
+  std::optional<NetGraph> graph;
   // Viewer-side, not part of the wire format: who put this net in the view
   // (see GUIData::addEquipotential). `traceIds` lists the driver traces
   // (TraceStore ids) that reached it; `direct` is set when it was also shown
@@ -478,6 +504,13 @@ struct Port {
     // only; empty for an unlabeled net.
     std::string netLabel;
     float       netLabelW = 0.0f;
+    // A module frame's pin (SchematicLayout::splitNet): where a net crosses
+    // the frame's edge, drawn as a marker on the edge and its name inside.
+    // It has two faces at the same point, one per side of the edge: this
+    // port is the outer one (its wire leaves the frame), or with `innerFace`
+    // the inner one (its wire goes into the frame), which isn't drawn.
+    bool framePin  = false;
+    bool innerFace = false;
 };
 
 struct InstanceShape {

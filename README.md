@@ -56,7 +56,9 @@ your own tool).
 
 - **Schematic view** with real gate symbols (AND, OR, XOR, inverter,
   flip-flop, ...), taken from the cell's Liberty function, never guessed
-  from its name. Modules are drawn as nested frames.
+  from its name. Modules are drawn as nested frames, a wire entering or
+  leaving one through a named pin on its edge; a module a net only passes
+  through is drawn too, as an empty frame the wire crosses.
 - **Trace to Driver**: the whole combinational fan-in cone of a pin, back
   to flip-flops and ports. Overlay several traces: each gets its own color,
   shared wires are striped and shared gates outlined.
