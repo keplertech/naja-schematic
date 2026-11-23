@@ -789,9 +789,42 @@ def _handle_trace_driver(u, request):
     return [reply]
 
 
-def bit_terms_json(design):
+def _alone_on_net(component):
+    # Whether a pin is the only thing on its net (no net counts too).
+    net = component.getNet() if component is not None else None
+    if net is None:
+        return True
+    count = 0
+    for _ in net.getComponents():
+        count += 1
+        if count > 1:
+            return False
+    return True
+
+
+def is_unconnected_pin(instance, bit_term):
+    # A pin whose equipotential would hold only itself: alone on its net
+    # outside the instance (none for a top-level port) and inside it (a
+    # primitive has no net inside). Conservative: a pin whose net goes up
+    # through a port counts as connected, even if nothing is there either,
+    # so a pin is never marked unconnected wrongly. Same as
+    # LocalSNLProvider.cpp's isUnconnectedPin().
+    if instance is not None and not _alone_on_net(instance.getInstTerm(bit_term)):
+        return False
+    return _alone_on_net(bit_term)
+
+
+def bit_terms_json(design, connectivity=False, instance=None):
     # Every pin of a design, bus terms expanded bit by bit ("data[3]", with
-    # "bit" set) so each gets its own schematic pin.
+    # "bit" set) so each gets its own schematic pin. With `connectivity`,
+    # the pins of `instance` (or, for None, the design's own ports) nothing
+    # else is connected to carry "unconnected": True, so the viewer draws
+    # their no-connect cross at once.
+    def mark(entry, bit_term):
+        if connectivity and is_unconnected_pin(instance, bit_term):
+            entry["unconnected"] = True
+        return entry
+
     terms = []
     for term in design.getTerms():
         if isinstance(term, naja.SNLBusTerm):
@@ -799,18 +832,18 @@ def bit_terms_json(design):
             for b in range(lo, hi + 1):
                 bit_term = term.getBusTermBit(b)
                 if bit_term:
-                    terms.append(with_clock({
+                    terms.append(mark(with_clock({
                         "name": f"{term.getName()}[{b}]",
                         "child_id": bit_term.getID(),
                         "direction": direction_to_int(bit_term.getDirection()),
                         "bit": b,
-                    }, bit_term))
+                    }, bit_term), bit_term))
         else:
-            terms.append(with_clock({
+            terms.append(mark(with_clock({
                 "name": term.getName(),
                 "child_id": term.getID(),
                 "direction": direction_to_int(term.getDirection()),
-            }, term))
+            }, term), term))
     return terms
 
 
@@ -823,11 +856,21 @@ def _handle_expand_instance_terms(u, request):
     design = u.getSNLDesign(design_ref) if design_ref else None
     if not design:
         log.warning("expand_instance_terms: design not found for %s", design_ref)
+    # The instance itself, for its pins' connectivity (when it resolves to
+    # one of this model).
+    instance = None
+    top = u.getTopDesign()
+    if design and top is not None:
+        resolved, chain = resolve_request_path(top, {"id_path": instance_id_path})
+        def ref(d):
+            return (d.getDB().getID(), d.getLibrary().getID(), d.getID())
+        if chain and ref(resolved) == ref(design):
+            instance = chain[-1]
     return [{
         "response": "expanded_instance_terms",
         "instance_path": instance_path,
         "instance_id_path": instance_id_path,
-        "terms": bit_terms_json(design) if design else []
+        "terms": bit_terms_json(design, instance is not None, instance) if design else []
     }]
 
 
@@ -865,7 +908,7 @@ def _handle_resolve_instance(u, request):
         },
         "has_instances": (design.hasNonPrimitiveInstances() or
                           has_visible_primitive_instances(design)),
-        "terms": bit_terms_json(design),
+        "terms": bit_terms_json(design, True, chain[-1]),
     }
     with_sources(reply["instance"], has_sources(chain[-1], design))
     return [reply]
@@ -971,7 +1014,7 @@ def _handle_load_top_view(u, request):
     reply.update({
         "found": True,
         "name": top.getName(),
-        "ports": bit_terms_json(top),
+        "ports": bit_terms_json(top, True),
         "instance_count": count,
         "contents": contents,
         "nets": top_view_nets(top) if contents else [],

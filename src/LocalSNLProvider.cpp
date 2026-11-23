@@ -274,10 +274,40 @@ static json bitTermJson(const SNLBitTerm* bt) {
   return t;
 }
 
+// Whether a pin is the only thing on its net (no net counts too).
+static bool aloneOnNet(const SNLNetComponent* c) {
+  auto* net = c ? c->getNet() : nullptr;
+  if (!net) return true;
+  size_t n = 0;
+  for (auto* comp : net->getComponents()) {
+    (void)comp;
+    if (++n > 1) return false;
+  }
+  return true;
+}
+
+// A pin whose equipotential would hold only itself: alone on its net
+// outside the instance (`inst`; none for a top-level port) and inside it
+// (a primitive has no net inside). Conservative: a pin whose net goes up
+// through a port is counted connected, even if nothing is there either,
+// so a pin is never marked unconnected wrongly.
+static bool isUnconnectedPin(const SNLInstance* inst, const SNLBitTerm* bt) {
+  if (inst && !aloneOnNet(inst->getInstTerm(bt))) return false;
+  return aloneOnNet(bt);
+}
+
 // Every pin of a design, bus terms expanded bit by bit ("data[3]", with
-// "bit" set) so each gets its own schematic pin.
-static json allBitTermsJson(const SNLDesign* design) {
+// "bit" set) so each gets its own schematic pin. With `connectivity`,
+// pins of `inst` (or, for none, the design's own ports) that nothing else
+// is connected to carry "unconnected": true (isUnconnectedPin()), so the
+// viewer draws their no-connect cross at once. Same as protocol.py's
+// bit_terms_json().
+static json allBitTermsJson(const SNLDesign* design, bool connectivity = false,
+                            const SNLInstance* inst = nullptr) {
   json terms = json::array();
+  auto mark = [&](json& t, const SNLBitTerm* bt) {
+    if (connectivity && isUnconnectedPin(inst, bt)) t["unconnected"] = true;
+  };
   for (auto* term : design->getTerms()) {
     if (auto* bus = dynamic_cast<SNLBusTerm*>(term)) {
       int lo = std::min(static_cast<int>(bus->getLSB()),
@@ -293,11 +323,14 @@ static json allBitTermsJson(const SNLDesign* design) {
             t["name"] = t["name"].get<std::string>() +
                         "[" + std::to_string(t["bit"].get<int>()) + "]";
           }
+          mark(t, bit);
           terms.push_back(std::move(t));
         }
       }
     } else if (auto* st = dynamic_cast<SNLBitTerm*>(term)) {
-      terms.push_back(bitTermJson(st));
+      json t = bitTermJson(st);
+      mark(t, st);
+      terms.push_back(std::move(t));
     }
   }
   return terms;
@@ -1265,11 +1298,18 @@ std::string LocalSNLProvider::buildExpandInstanceTermsResponse(const json& req) 
   }
 
   auto* design = findDesign(dbId, libId, designId);
+  // The instance itself, for its pins' connectivity (when it resolves to
+  // one of this model).
+  const SNLInstance* inst = nullptr;
+  if (auto* top = db_ ? db_->getTopDesign() : nullptr; top && design) {
+    auto resolved = resolveRequestPath(top, json{{"id_path", instanceIdPath}});
+    if (resolved.ok && resolved.instance() && resolved.design == design) inst = resolved.instance();
+  }
   return json{
     {"response", "expanded_instance_terms"},
     {"instance_path", instancePath},
     {"instance_id_path", instanceIdPath},
-    {"terms",    design ? allBitTermsJson(design) : json::array()}
+    {"terms",    design ? allBitTermsJson(design, inst != nullptr, inst) : json::array()}
   }.dump();
 }
 
@@ -1317,7 +1357,7 @@ std::string LocalSNLProvider::buildResolveInstanceResponse(const json& req) cons
     }},
     {"primitive_type", toString(getPrimitiveType(design))},
     {"has_instances", hasAnySubInstances(design)},
-    {"terms",         allBitTermsJson(design)}
+    {"terms",         allBitTermsJson(design, true, instance)}
   };
   withSources(reply["instance"], instanceHasSources(instance));
   return reply.dump();
@@ -1422,7 +1462,7 @@ std::string LocalSNLProvider::buildTopViewResponse(const json& req) const {
   const bool contents = req.value("contents", false) && count <= maxInstances;
   reply["found"]          = true;
   reply["name"]           = designName(top);
-  reply["ports"]          = allBitTermsJson(top);
+  reply["ports"]          = allBitTermsJson(top, true);
   reply["instance_count"] = count;
   reply["contents"]       = contents;
   reply["nets"]           = contents ? topViewNets(top) : json::array();

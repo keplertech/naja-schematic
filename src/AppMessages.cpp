@@ -303,23 +303,8 @@ void setupProvider(AppState& state) {
         Console::Error("expanded_instance_terms without a valid instance_id_path");
         return;
       }
-      std::vector<EquipotentialView::ExpandedPort> ports;
-      if (j.contains("terms") && j["terms"].is_array()) {
-        for (const auto& t : j["terms"]) {
-          EquipotentialView::ExpandedPort ep;
-          ep.childId = t.value("child_id", 0u);
-          ep.name    = displayPinLabel(t.value("name", std::string("")), ep.childId);
-          if (t.contains("bit") && !t["bit"].is_null())
-            ep.bit = t["bit"].get<int>();
-          ep.clock = t.value("clock", false);
-          int dirInt   = t.value("direction", 0);
-          ep.direction = dirInt == 1 ? Direction::Output
-                       : dirInt == 2 ? Direction::Inout
-                                     : Direction::Input;
-          ports.push_back(std::move(ep));
-        }
-      }
-      EquipotentialView::applyInstanceExpansion(*path, ports);
+      EquipotentialView::applyInstanceExpansion(
+          *path, EquipotentialView::portsFromJson(j.value("terms", json::array())));
     } else if (resp == "instance_view_response") {
       // A hierarchical instance's contents, to draw it opened (its "+").
       EquipotentialView::applyInstanceView(j);

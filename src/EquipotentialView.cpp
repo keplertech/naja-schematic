@@ -615,14 +615,24 @@ void EquipotentialView::setShowHierarchy(bool on) {
     g_pendingFit    = true;
 }
 
+// The pins the host flagged unconnected, marked so they're drawn with
+// their no-connect cross without being clicked first.
+static void markUnconnectedPorts(const std::vector<unsigned>& ids,
+                                 const std::vector<EquipotentialView::ExpandedPort>& ports) {
+    for (const auto& ep : ports)
+        if (ep.unconnected) EquipotentialView::markUnconnected(ids, ep.childId, ep.bit);
+}
+
 void EquipotentialView::showInstance(const StartInstance& start) {
     if (start.path.empty()) return;  // the top design has no box of its own
     g_startInstances[start.path]    = start;
     g_expandedInstances[start.path] = start.ports;
+    markUnconnectedPorts(pathIds(start.path), start.ports);
 }
 
 void EquipotentialView::showTopPorts(const std::vector<ExpandedPort>& ports) {
     g_startPorts = ports;
+    markUnconnectedPorts({}, ports);
 }
 
 bool EquipotentialView::hasStartShapes() {
@@ -648,6 +658,7 @@ std::vector<EquipotentialView::ExpandedPort> EquipotentialView::portsFromJson(co
         ep.name    = displayPinLabel(t.value("name", std::string("")), ep.childId);
         if (t.contains("bit") && !t["bit"].is_null()) ep.bit = t["bit"].get<int>();
         ep.clock   = t.value("clock", false);
+        ep.unconnected = t.value("unconnected", false);
         int dirInt   = t.value("direction", 0);
         ep.direction = dirInt == 1 ? Direction::Output
                      : dirInt == 2 ? Direction::Inout : Direction::Input;
@@ -682,6 +693,7 @@ void EquipotentialView::applyInstanceExpansion(
         const std::vector<ExpandedPort>& ports) {
     g_expandedInstances[path] = ports;
     g_pendingExpansions.erase(path);
+    markUnconnectedPorts(pathIds(path), ports);
 }
 
 void EquipotentialView::openInstance(const InstancePath& path) {
@@ -1372,7 +1384,14 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                     for (auto* m : row.members) logicalToRenderedPortId[m->pid] = p.id;
                     g_busGroupByPortId[p.id] = row.groupKey;
                     p.color = DiagnosisStore::netColor(key, row.busBase);
-                    for (auto* m : row.members) p.open = p.open || m->open;
+                    // Open while a bit's net can still be loaded; not
+                    // connected when no bit is.
+                    p.unconnected = true;
+                    for (auto* m : row.members) {
+                        const bool nc = g_unconnectedPins.count(pinRequestKey(g_portEquiByPortId[m->pid])) > 0;
+                        p.open        = p.open || (m->open && !nc);
+                        p.unconnected = p.unconnected && nc;
+                    }
                 } else {
                     p.id   = row.members[0]->pid;
                     p.name = row.members[0]->ep->name;
@@ -1623,8 +1642,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     // with no net yet (showTopPorts()), drawn open.
     constexpr size_t kNoEqui = size_t(-1);
     // isBus: an open bus's bits merged into one flag (see below).
+    // unconnected: an open bus whose every bit the host found not connected.
     struct PortStub { size_t ei; std::string label; Direction direction; int portId; float wantY;
-                      bool isBus = false; };
+                      bool isBus = false; bool unconnected = false; };
     std::vector<PortStub> leftStubs, rightStubs;
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
@@ -1693,8 +1713,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                 g_busGroupByPortId[pid] = key;
                 g_busTermByPortId[pid]  = { {}, ep.childId, std::nullopt };
                 y = y < -1e29f ? 0.f : y + kPinPitch;
+                bool allUnconnected = true;
+                for (int b : bits)
+                    allUnconnected = allUnconnected &&
+                        g_unconnectedPins.count(SchematicInteraction::pinRequestKey({}, ep.childId, b)) > 0;
                 (isInput ? leftStubs : rightStubs).push_back(
-                    { kNoEqui, busLabel(base, bits), ep.direction, pid, y, true });
+                    { kNoEqui, busLabel(base, bits), ep.direction, pid, y, true, allUnconnected });
                 continue;
             }
             const int pid = nextPortId++;
@@ -1741,8 +1765,9 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             p.color     = DiagnosisStore::netColor({}, stripBusIndex(st.isBus ? st.label.substr(0, st.label.find(' '))
                                                                                : st.label));
             if (st.isBus) {
-                p.open  = true;
-                p.isBus = true;
+                p.open        = !st.unconnected;
+                p.unconnected = st.unconnected;
+                p.isBus       = true;
             } else if (st.ei == kNoEqui) {
                 p.open    = true;
                 p.pending = g_pendingPinNets.isPending(pinRequestKey(g_portEquiByPortId[p.id]),

@@ -1522,6 +1522,56 @@ TEST_F(SchematicClicks, APinWithNothingOnItsNetIsMarkedNotConnected) {
   EXPECT_TRUE(sent("load_equipotential").empty());
 }
 
+// An expansion reply flags the pins nothing else is connected to: they're
+// drawn not connected at once, with no click to find out.
+TEST_F(SchematicClicks, AnExpandedPinFlaggedUnconnectedIsCrossedAtOnce) {
+  showFirstNet();
+  EquipotentialView::applyInstanceExpansion(InstancePath{{2, "u2"}},
+      EquipotentialView::portsFromJson(nlohmann::json::parse(R"([
+        {"name": "A", "child_id": 20, "direction": 0},
+        {"name": "B", "child_id": 21, "direction": 0, "unconnected": true},
+        {"name": "Y", "child_id": 22, "direction": 1}])")));
+  frame(2);
+  const Port* b = pin({{2, "u2"}}, "B");
+  ASSERT_NE(b, nullptr);
+  EXPECT_TRUE(b->unconnected);
+  EXPECT_FALSE(b->open);
+  EXPECT_FALSE(pin({{2, "u2"}}, "A")->unconnected);
+
+  provider.sent.clear();
+  moveTo(pinScreen({{2, "u2"}}, "B"));
+  click();
+  EXPECT_TRUE(sent("load_equipotential").empty());
+}
+
+// A bus whose every bit is unconnected is crossed while merged; one with a
+// bit still to load stays open.
+TEST_F(SchematicClicks, AMergedBusIsCrossedOnlyWhenEveryBitIsUnconnected) {
+  showFirstNet();
+  EquipotentialView::applyInstanceExpansion(InstancePath{{2, "u2"}},
+      EquipotentialView::portsFromJson(nlohmann::json::parse(R"([
+        {"name": "d[0]", "child_id": 30, "direction": 0, "bit": 0, "unconnected": true},
+        {"name": "d[1]", "child_id": 30, "direction": 0, "bit": 1, "unconnected": true},
+        {"name": "e[0]", "child_id": 31, "direction": 0, "bit": 0, "unconnected": true},
+        {"name": "e[1]", "child_id": 31, "direction": 0, "bit": 1},
+        {"name": "Y", "child_id": 22, "direction": 1}])")));
+  frame(2);
+  const InstanceShape* box = shape({{2, "u2"}});
+  ASSERT_NE(box, nullptr);
+  const Port *d = nullptr, *e = nullptr;
+  for (const auto& p : box->ports) {
+    if (p.name.rfind("d", 0) == 0) d = &p;
+    if (p.name.rfind("e", 0) == 0) e = &p;
+  }
+  ASSERT_NE(d, nullptr);
+  ASSERT_NE(e, nullptr);
+  EXPECT_TRUE(d->isBus);
+  EXPECT_TRUE(d->unconnected);
+  EXPECT_FALSE(d->open);
+  EXPECT_FALSE(e->unconnected);
+  EXPECT_TRUE(e->open);
+}
+
 TEST_F(SchematicClicks, OnlyAFoundPinAloneOnItsNetIsNotConnected) {
   showFirstNet();
   expandU2();
