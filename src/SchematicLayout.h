@@ -199,8 +199,12 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
 // Stacks the top-level port flags of one side of the drawing: each wants the
 // height of the pin it connects to (`desiredY`), and no two may be closer than
 // kPinPitch. Returns the heights, in input order, as close to their desired
-// ones as that spacing allows.
-std::vector<float> stackPorts(const std::vector<float>& desiredY);
+// ones as that spacing allows. Each of `blocks` (indices into desiredY,
+// top to bottom) stays together, its ports kPinPitch apart: the flags of
+// an expanded bus, drawn with one bracket. Placed as one item, as close
+// to its ports' desired heights as it can be.
+std::vector<float> stackPorts(const std::vector<float>& desiredY,
+                              const std::vector<std::vector<size_t>>& blocks = {});
 
 // ---------------------------------------------------------------------------
 // Orthogonal net routing. Box rectangles are obstacles, and the vertical

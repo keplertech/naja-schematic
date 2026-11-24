@@ -476,6 +476,10 @@ struct Port {
     // single bit/scalar terminal — drives a distinct draw style and expands
     // the bus (instead of load_equipotential) on click.
     bool isBus = false;
+    // A bit of a bus shown expanded on a box: the bus's index among the
+    // box's expanded buses. Its bits are adjacent pins on one side, drawn
+    // inside a bracket that ties them together (SchematicView). -1: none.
+    int busBracket = -1;
     // True when this pin's net isn't in the view yet (only revealed by
     // expanding the instance's full interface): clicking it adds that net.
     // Drawn with an open-circle stub so it reads as "more to see here".

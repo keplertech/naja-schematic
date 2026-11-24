@@ -607,7 +607,19 @@ sends `expand_instance_terms` and reveals the rest. Pins whose net isn't in
 the view yet are "open" (`Port::open`, drawn with a hollow-circle stub), and a
 **single click** on one sends `load_equipotential` for its net (the stub fills
 while it loads; `SchematicInteraction::PendingRequests` stops repeat sends).
-A single click on a merged bus pin shows its bits instead. Hovering a pin
+A single click on a merged bus pin sends one `load_equipotential` per open
+bit (`g_busOpenBitsByPortId`, `requestBusNets()`) and the pin stays merged,
+so bits joined to another merged bus pin are one bus wire; a double-click
+toggles the bus (`toggleBus()`): a merged pin splits into its bits, a bit
+merges them back. A top-level bus is one flag the same way, wired bits
+included (`PortStub::members`, their wires reach the flag through
+`logicalToRenderedPortId`). An expanded bus's bits stay tied together by
+a bracket: on a box, inside it before their names (`Port::busBracket`,
+`drawBusBrackets()`; the box is a grid step wider); on the sheet's edge,
+its bit flags are stacked as one block (`stackPorts()`' `blocks`, ordered
+by what they lead to) with a bracket on their outer side and the bus's
+name past it, turned along it (`SchematicView::PortBracket`, `drawPortBrackets()`).
+Hovering a pin
 highlights it and shows a tooltip naming its click action. When the requested
 net arrives the view pans so the clicked *pin* stays put on screen -- under
 the cursor that clicked it -- even though the whole schematic is laid out
@@ -747,8 +759,9 @@ layout is recomputed every frame and grows superlinearly (release build,
 because a page of thousands of gates reads as nothing: a large flat
 netlist gets its ports, explored by clicking them (`showTopPorts()`, open
 `Port`s on port flags with `PortStub::ei == kNoEqui`, replaced by the
-flag of a net that reaches the port; a bus's open bits are one flag,
-`d[7:0]`, expanded by a click like a box's bus pin, key
+flag of a net that reaches the port; a bus is one flag, `d[7:0]`
+(its wired bits too), loaded by a click and split by a double-click like
+a box's bus pin, key
 `BusGroupKey{{}, base, isInput}` in `g_expandedBuses`) or tracing from them. Sent on every
 first `root_response` with `"auto": true` when `AppState::showTopOnLoad`
 (set by `main_native.cpp`/`main_wasm.cpp`, never by the headless
@@ -1435,7 +1448,10 @@ and a leaf reveal (review Go To) also selects the panel's tab
   `serviceTextures()`), so headless text is measured at exact sizes like
   the GUI. `tests/RasterTest.cpp` (with a small inflate).
 - **`SchematicPainter`** — what `SchematicView` draws with: the subset of
-  `ImDrawList` it uses, same names and argument order.
+  `ImDrawList` it uses, same names and argument order, plus
+  `AddTextVertical()` (text turned a quarter turn counterclockwise, by its
+  box's top-left corner: `addTextVertical()` renders it level through
+  `ImFont::RenderText` and turns the vertices; SVG, `rotate(-90 x y)`).
   `ImDrawListPainter` paints on screen. `SvgPainter` (`SvgPainter.cpp`)
   writes the same drawing as SVG, keeping text as `<text>` pinned to the
   ImGui-measured width (`textLength`). `SchematicView::exportSvg()` draws a

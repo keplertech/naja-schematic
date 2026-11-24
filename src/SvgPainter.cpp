@@ -130,6 +130,20 @@ void SvgPainter::AddText(ImFont* font, float fontSize, const ImVec2& pos, ImU32 
     out_ << fill(col) << ">" << escapeXml(text) << "</text>\n";
 }
 
+// The level text from the bottom-left corner of its box, turned about it
+// (SVG's rotate(-90) is counterclockwise on screen, as addTextVertical()).
+void SvgPainter::AddTextVertical(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col,
+                                 const char* text) {
+    if (!text || !*text) return;
+    const float ascent = font->GetFontBaked(fontSize)->Ascent;
+    const float width  = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text).x;
+    const ImVec2 pivot(pos.x, pos.y + width);
+    out_ << "<text x=\"" << num(pivot.x) << "\" y=\"" << num(pivot.y + ascent) << "\" font-size=\""
+         << num(fontSize) << "\" transform=\"rotate(-90 " << num(pivot.x) << " " << num(pivot.y) << ")\"";
+    if (width > 0.0f) out_ << " textLength=\"" << num(width) << "\" lengthAdjust=\"spacingAndGlyphs\"";
+    out_ << fill(col) << ">" << escapeXml(text) << "</text>\n";
+}
+
 void SvgPainter::BeginGroup(const GroupAttrs& attrs) {
     out_ << "<g";
     for (const auto& [name, value] : attrs) out_ << " " << name << "=\"" << escapeXml(value.c_str()) << "\"";

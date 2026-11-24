@@ -821,17 +821,41 @@ Placement layeredPlacement(const std::vector<PlaceNode>& nodes, const std::vecto
     return out;
 }
 
-std::vector<float> stackPorts(const std::vector<float>& desiredY) {
-    std::vector<size_t> idx(desiredY.size());
-    for (size_t i = 0; i < idx.size(); ++i) idx[i] = i;
-    std::stable_sort(idx.begin(), idx.end(),
-                     [&](size_t a, size_t b) { return desiredY[a] < desiredY[b]; });
-    std::vector<float> target, weight(idx.size(), 1.f), h(idx.size(), 0.f);
-    for (size_t i : idx) target.push_back(desiredY[i]);
+std::vector<float> stackPorts(const std::vector<float>& desiredY,
+                              const std::vector<std::vector<size_t>>& blocks) {
+    // Items: each block, then every port in none. An item is placed by its
+    // top; a block's target is the top that best fits its ports'.
+    std::vector<std::vector<size_t>> items;
+    std::vector<bool> inBlock(desiredY.size(), false);
+    for (const auto& b : blocks) {
+        if (b.empty()) continue;
+        items.push_back(b);
+        for (size_t i : b) inBlock[i] = true;
+    }
+    for (size_t i = 0; i < desiredY.size(); ++i)
+        if (!inBlock[i]) items.push_back({ i });
+    std::vector<float> want(items.size());
+    for (size_t k = 0; k < items.size(); ++k) {
+        float sum = 0.f;
+        for (size_t j = 0; j < items[k].size(); ++j) sum += desiredY[items[k][j]] - kPinPitch * float(j);
+        want[k] = sum / float(items[k].size());
+    }
+    std::vector<size_t> idx(items.size());
+    for (size_t k = 0; k < idx.size(); ++k) idx[k] = k;
+    std::stable_sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return want[a] < want[b]; });
+    std::vector<float> target, weight, h;
+    for (size_t k : idx) {
+        target.push_back(want[k]);
+        weight.push_back(float(items[k].size()));
+        h.push_back(kPinPitch * float(items[k].size() - 1));
+    }
     // Not snapped: a port lines up with its pin wherever that is.
     auto placed = packColumn(target, weight, h, kPinPitch, /*snap=*/false);
     std::vector<float> out(desiredY.size());
-    for (size_t k = 0; k < idx.size(); ++k) out[idx[k]] = placed[k];
+    for (size_t r = 0; r < idx.size(); ++r) {
+        const auto& item = items[idx[r]];
+        for (size_t j = 0; j < item.size(); ++j) out[item[j]] = placed[r] + kPinPitch * float(j);
+    }
     return out;
 }
 

@@ -11,6 +11,7 @@
 #include "TraceStore.h"
 
 #include <imgui.h>
+#include <algorithm>
 #include <cmath>
 #include <map>
 #include <cstdio>
@@ -404,7 +405,9 @@ TEST_F(SchematicClicks, ANetNotFromAClickIsLaidOutFresh) {
   EXPECT_GT(shape({{3, "u3"}})->x, shape({{2, "u2"}})->x);
 }
 
-TEST_F(SchematicClicks, ClickOnMergedBusPinShowsItsBits) {
+// Issue #74: a bus stays one pin (and one wire) until double-clicked, and a
+// double-click on one of its bits merges it back.
+TEST_F(SchematicClicks, DoubleClickTogglesABusBetweenOnePinAndItsBits) {
   for (int b = 0; b < 2; ++b) {
     Equipotential e{true, {}, {}};
     e.occurrences.push_back(occ("u1", 1, "Q", 10, Direction::Output, 2, b));
@@ -414,14 +417,80 @@ TEST_F(SchematicClicks, ClickOnMergedBusPinShowsItsBits) {
   frame(3);
   ASSERT_NE(pin({{2, "u2"}}, "D[1:0]"), nullptr);
   EXPECT_TRUE(pin({{2, "u2"}}, "D[1:0]")->isBus);
+  ASSERT_EQ(sv().nets.size(), 1u);  // the two bits, one bus wire
+  EXPECT_TRUE(sv().nets[0].isBus);
 
+  // A click: every bit is loaded already, so nothing to do; still merged.
   moveTo(pinScreen({{2, "u2"}}, "D[1:0]"));
   click();
+  frame();
+  EXPECT_NE(pin({{2, "u2"}}, "D[1:0]"), nullptr);
+  EXPECT_TRUE(provider.sent.empty());
+
+  frame(30);  // long after the click above
+  moveTo(pinScreen({{2, "u2"}}, "D[1:0]"));
+  doubleClick();
   frame();
   EXPECT_EQ(pin({{2, "u2"}}, "D[1:0]"), nullptr);
   EXPECT_NE(pin({{2, "u2"}}, "D[0]"), nullptr);
   EXPECT_NE(pin({{2, "u2"}}, "D[1]"), nullptr);
   EXPECT_TRUE(provider.sent.empty());  // all bits were already loaded
+
+  // The bits are bracketed together.
+  EXPECT_GE(pin({{2, "u2"}}, "D[0]")->busBracket, 0);
+  EXPECT_EQ(pin({{2, "u2"}}, "D[0]")->busBracket, pin({{2, "u2"}}, "D[1]")->busBracket);
+
+  frame(30);
+  moveTo(pinScreen({{2, "u2"}}, "D[1]"));
+  doubleClick();
+  frame();
+  EXPECT_NE(pin({{2, "u2"}}, "D[1:0]"), nullptr);
+  EXPECT_EQ(pin({{2, "u2"}}, "D[1]"), nullptr);
+}
+
+// A click on a box's bus pin loads every open bit's net, and the pin stays
+// merged: two buses joined bit for bit are then one bus wire.
+TEST_F(SchematicClicks, ClickOnABusPinLoadsEveryOpenBit) {
+  showFirstNet();
+  EquipotentialView::applyInstanceExpansion(InstancePath{{2, "u2"}},
+      EquipotentialView::portsFromJson(nlohmann::json::parse(R"([
+        {"name": "A", "child_id": 20, "direction": 0},
+        {"name": "d[0]", "child_id": 30, "direction": 0, "bit": 0},
+        {"name": "d[1]", "child_id": 30, "direction": 0, "bit": 1},
+        {"name": "d[2]", "child_id": 30, "direction": 0, "bit": 2, "unconnected": true},
+        {"name": "Y", "child_id": 22, "direction": 1}])")));
+  frame(2);
+  const InstancePath u2{{2, "u2"}};
+  ASSERT_NE(pin(u2, "d[2:0]"), nullptr);
+  EXPECT_TRUE(pin(u2, "d[2:0]")->open);
+
+  moveTo(pinScreen(u2, "d[2:0]"));
+  click();
+  frame();
+  auto reqs = sent("load_equipotential");
+  ASSERT_EQ(reqs.size(), 2u);  // not the unconnected bit 2
+  for (int b = 0; b < 2; ++b) {
+    EXPECT_EQ(reqs[size_t(b)]["path"], nlohmann::json::array({2}));
+    EXPECT_EQ(reqs[size_t(b)]["term_id"], 30);
+    EXPECT_EQ(reqs[size_t(b)]["bit"], b);
+  }
+  EXPECT_TRUE(pin(u2, "d[2:0]")->pending);
+  frame(30);  // not a double-click
+  click();    // in flight: not sent again
+  EXPECT_EQ(sent("load_equipotential").size(), 2u);
+
+  for (int b = 0; b < 2; ++b) {
+    Equipotential e{true, {}, {}};
+    e.occurrences.push_back(occ("u3", 3, "Q", 40, Direction::Output, 2, b));
+    e.occurrences.push_back(occ("u2", 2, "d", 30, Direction::Input, 5, b));
+    add(e);
+  }
+  frame(3);
+  ASSERT_NE(pin(u2, "d[2:0]"), nullptr);  // still one pin
+  EXPECT_FALSE(pin(u2, "d[2:0]")->open);  // nothing left to load
+  int busWires = 0;
+  for (const auto& n : sv().nets) busWires += n.isBus;
+  EXPECT_EQ(busWires, 1);
 }
 
 // The same net listed twice (e.g. a trace re-listing a net already shown)
@@ -761,7 +830,7 @@ TEST_F(SchematicClicks, ANetReachingATopPortReplacesItsOpenFlag) {
   ASSERT_EQ(sv().routes.size(), 1u);
 }
 
-TEST_F(SchematicClicks, AnOpenTopBusIsOneFlagUntilClicked) {
+TEST_F(SchematicClicks, AClickOnATopBusLoadsEveryBitAndADoubleClickShowsThem) {
   EquipotentialView::showTopPorts(EquipotentialView::portsFromJson(nlohmann::json::parse(R"([
     {"name": "d[0]", "child_id": 4, "direction": 0, "bit": 0},
     {"name": "d[1]", "child_id": 4, "direction": 0, "bit": 1},
@@ -773,30 +842,75 @@ TEST_F(SchematicClicks, AnOpenTopBusIsOneFlagUntilClicked) {
   EXPECT_TRUE(bus->ports[0].isBus);
   EXPECT_EQ(portFlag(sv(), "d[0]"), nullptr);
 
-  // A click shows the bits (no request: nothing to load yet)...
+  // A click loads every bit's net, and the flag stays one...
   const ImVec2 at = portAnchor(*bus, bus->ports[0]);
   moveTo(toScreen(ImVec2(at.x + 4.f, at.y)));
   click();
   frame();
-  EXPECT_TRUE(sent("load_equipotential").empty());
-  EXPECT_EQ(portFlag(sv(), "d[3:0]"), nullptr);
-  for (auto name : {"d[0]", "d[1]", "d[2]", "d[3]"}) {
-    ASSERT_NE(portFlag(sv(), name), nullptr) << name;
-    EXPECT_TRUE(portFlag(sv(), name)->ports[0].open) << name;
-  }
-
-  // ...each of which then loads its own net.
-  const InstanceShape* d2 = portFlag(sv(), "d[2]");
-  const ImVec2 at2 = portAnchor(*d2, d2->ports[0]);
-  moveTo(toScreen(ImVec2(at2.x + 4.f, at2.y)));
-  click();
   auto reqs = sent("load_equipotential");
-  ASSERT_EQ(reqs.size(), 1u);
-  EXPECT_EQ(reqs[0]["term_id"], 4);
-  EXPECT_EQ(reqs[0]["bit"], 2);
+  ASSERT_EQ(reqs.size(), 4u);
+  for (int b = 0; b < 4; ++b) {
+    EXPECT_EQ(reqs[size_t(b)]["path"], nlohmann::json::array());
+    EXPECT_EQ(reqs[size_t(b)]["term_id"], 4);
+    EXPECT_EQ(reqs[size_t(b)]["bit"], b);
+  }
+  EXPECT_NE(portFlag(sv(), "d[3:0]"), nullptr);
+  EXPECT_EQ(portFlag(sv(), "d[0]"), nullptr);
+
+  // ...also once the nets are drawn: every bit's wire reaches it.
+  for (int b = 0; b < 4; ++b) {
+    Equipotential e{true, {}, {}};
+    e.terms.push_back(BitTerm{"d", 4, Direction::Input, b});
+    e.occurrences.push_back(occ("u" + std::to_string(b), unsigned(b + 1), "A", 10, Direction::Input, 1));
+    add(e);
+  }
+  frame(3);
+  bus = portFlag(sv(), "d[3:0]");
+  ASSERT_NE(bus, nullptr);
+  EXPECT_FALSE(bus->ports[0].open);
+  EXPECT_EQ(portFlag(sv(), "d[2]"), nullptr);
+  int fromBus = 0;
+  for (const auto& n : sv().nets) fromBus += n.srcInstance == bus->id || n.dstInstance == bus->id;
+  EXPECT_EQ(fromBus, 4);
+
+  // A double-click shows the bits, one flag each...
+  frame(30);  // long after the click above
+  const ImVec2 at2 = portAnchor(*bus, bus->ports[0]);
+  moveTo(toScreen(ImVec2(at2.x + 4.f, at2.y)));
+  doubleClick();
+  frame();
+  EXPECT_EQ(portFlag(sv(), "d[3:0]"), nullptr);
+  for (auto name : {"d[0]", "d[1]", "d[2]", "d[3]"}) ASSERT_NE(portFlag(sv(), name), nullptr) << name;
+  // ...stacked together, under one bracket named after the bus.
+  ASSERT_EQ(sv().portBrackets.size(), 1u);
+  EXPECT_EQ(sv().portBrackets[0].label, "d[3:0]");
+  EXPECT_TRUE(sv().portBrackets[0].isInput);
+  EXPECT_EQ(sv().portBrackets[0].flagIds.size(), 4u);
+  std::vector<float> flagYs;
+  for (auto name : {"d[0]", "d[1]", "d[2]", "d[3]"}) flagYs.push_back(portFlag(sv(), name)->y);
+  std::sort(flagYs.begin(), flagYs.end());
+  for (size_t i = 1; i < flagYs.size(); ++i) EXPECT_FLOAT_EQ(flagYs[i] - flagYs[i - 1], SchematicLayout::kPinPitch);
+  // The bus's name runs along the bracket, turned, in exports too.
+  const std::string svg = EquipotentialView::exportSvg();
+  const size_t name = svg.find(">d[3:0]</text>");
+  ASSERT_NE(name, std::string::npos);
+  EXPECT_NE(svg.rfind("transform=\"rotate(-90 ", name), std::string::npos);
+
+  // ...and a double-click on one merges them back.
+  EquipotentialView::fitView();  // the bits spread past the canvas
+  frame(30);
+  const InstanceShape* d2 = portFlag(sv(), "d[2]");
+  const ImVec2 at3 = portAnchor(*d2, d2->ports[0]);
+  moveTo(toScreen(ImVec2(at3.x + 4.f, at3.y)));
+  doubleClick();
+  frame();
+  EXPECT_NE(portFlag(sv(), "d[3:0]"), nullptr);
+  EXPECT_EQ(portFlag(sv(), "d[2]"), nullptr);
+  EXPECT_TRUE(sv().portBrackets.empty());
+  EXPECT_EQ(sent("load_equipotential").size(), 4u);  // nothing more to load
 }
 
-TEST_F(SchematicClicks, AWiredBitLeavesTheRestOfItsBusMerged) {
+TEST_F(SchematicClicks, AWiredBitStaysInItsBusFlag) {
   EquipotentialView::showTopPorts(EquipotentialView::portsFromJson(nlohmann::json::parse(R"([
     {"name": "d[0]", "child_id": 4, "direction": 0, "bit": 0},
     {"name": "d[1]", "child_id": 4, "direction": 0, "bit": 1},
@@ -806,8 +920,20 @@ TEST_F(SchematicClicks, AWiredBitLeavesTheRestOfItsBusMerged) {
   e.occurrences.push_back(occ("u1", 1, "A", 10, Direction::Input, 1));
   add(e);
   frame(3);
-  EXPECT_NE(portFlag(sv(), "d[1]"), nullptr);       // wired, on its own
-  EXPECT_NE(portFlag(sv(), "d (*2)"), nullptr);     // the open bits 0 and 2
+  EXPECT_EQ(portFlag(sv(), "d[1]"), nullptr);
+  const InstanceShape* bus = portFlag(sv(), "d[2:0]");  // one flag, every bit
+  ASSERT_NE(bus, nullptr);
+  EXPECT_TRUE(bus->ports[0].open);                      // bits 0 and 2 to load
+  ASSERT_EQ(sv().nets.size(), 1u);                      // bit 1's wire, from it
+  EXPECT_EQ(sv().nets[0].srcInstance, bus->id);
+
+  const ImVec2 at = portAnchor(*bus, bus->ports[0]);
+  moveTo(toScreen(ImVec2(at.x + 4.f, at.y)));
+  click();
+  auto reqs = sent("load_equipotential");
+  ASSERT_EQ(reqs.size(), 2u);
+  EXPECT_EQ(reqs[0]["bit"], 0);
+  EXPECT_EQ(reqs[1]["bit"], 2);
 }
 
 // An escaped instance name can contain '/': the top-level instance "a/b" and
