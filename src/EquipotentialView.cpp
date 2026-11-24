@@ -1692,13 +1692,46 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         for (const auto& [path, mi] : minsts)
             leafHier[path] = { mi.path, mi.pathModels, placement.level[nodeOfShape[pathToInstId[path]]] };
         std::set<InstancePath> frameSet = framePaths(leafHier);
-        // A module a net goes through with no leaf of it drawn (a
-        // feed-through) gets a frame too, empty but for its pins: in a
-        // column of its own right after the net's driver, at its height.
-        std::map<InstancePath, EmptyFrame> emptyFrames;
+        // Each drawn end's graph node, by its pin: (instance path, term,
+        // bit), {} for a port. An end with none (a fanout summary) leaves
+        // the net unsplittable: it's drawn whole.
+        using PinKey = std::tuple<InstancePath, unsigned, std::optional<int>>;
+        std::vector<std::vector<std::optional<size_t>>> endNodesByEi(equipotentials.size());
+        std::vector<bool> mappedByEi(equipotentials.size(), false);
         for (size_t ei = 0; ei < equipotentials.size() && g_opened.empty(); ++ei) {
             const Equipotential* eq = equipotentials[ei];
             if (!eq || !eq->graph) continue;
+            std::map<PinKey, size_t> nodeOfPin;
+            for (size_t ni = 0; ni < eq->graph->nodes.size(); ++ni) {
+                for (size_t o : eq->graph->nodes[ni].occurrences) {
+                    const auto& oc = eq->occurrences[o];
+                    nodeOfPin.emplace(PinKey{ oc.path, oc.term.child_id, oc.term.bit }, ni);
+                }
+                for (size_t t : eq->graph->nodes[ni].terms)
+                    nodeOfPin.emplace(PinKey{ {}, eq->terms[t].child_id, eq->terms[t].bit }, ni);
+            }
+            bool mapped = true;
+            for (const auto& we : equiEnds[ei]) {
+                endNodesByEi[ei].emplace_back();
+                auto req = g_portEquiByPortId.find(we.portId);
+                if (req != g_portEquiByPortId.end()) {
+                    auto node = nodeOfPin.find(PinKey{ we.isTerm ? InstancePath{} : we.path, req->second.termId,
+                                                       req->second.bit });
+                    if (node != nodeOfPin.end()) endNodesByEi[ei].back() = node->second;
+                }
+                mapped = mapped && endNodesByEi[ei].back().has_value();
+            }
+            mappedByEi[ei] = mapped;
+        }
+        // A module a net goes through with no leaf of it drawn (a
+        // feed-through) gets a frame too, empty but for its pins: in a
+        // column of its own right after the net's driver, at its height.
+        // Only for a net split at frame pins: one drawn whole would leave
+        // the frame empty and unwired (its leaves summarized, say).
+        std::map<InstancePath, EmptyFrame> emptyFrames;
+        for (size_t ei = 0; ei < equipotentials.size() && g_opened.empty(); ++ei) {
+            const Equipotential* eq = equipotentials[ei];
+            if (!eq || !eq->graph || !mappedByEi[ei]) continue;
             for (const auto& edge : eq->graph->edges) {
                 if (!edge.port || frameSet.count(edge.path) || emptyFrames.count(edge.path)) continue;
                 EmptyFrame e;
@@ -1725,30 +1758,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         std::map<std::tuple<InstancePath, unsigned, std::optional<int>>, size_t> slotOf;
         for (size_t ei = 0; ei < equipotentials.size() && !frameSet.empty() && g_opened.empty(); ++ei) {
             const Equipotential* eq = equipotentials[ei];
-            if (!eq || !eq->graph) continue;
-            // Each end's node, by its pin: (instance path, term, bit), {} for a port.
-            using PinKey = std::tuple<InstancePath, unsigned, std::optional<int>>;
-            std::map<PinKey, size_t> nodeOfPin;
-            for (size_t ni = 0; ni < eq->graph->nodes.size(); ++ni) {
-                for (size_t o : eq->graph->nodes[ni].occurrences) {
-                    const auto& oc = eq->occurrences[o];
-                    nodeOfPin.emplace(PinKey{ oc.path, oc.term.child_id, oc.term.bit }, ni);
-                }
-                for (size_t t : eq->graph->nodes[ni].terms)
-                    nodeOfPin.emplace(PinKey{ {}, eq->terms[t].child_id, eq->terms[t].bit }, ni);
-            }
-            std::vector<std::optional<size_t>> endNodes;
-            std::vector<bool>                  drives;
-            for (const auto& we : equiEnds[ei]) {
-                drives.push_back(we.drives);
-                endNodes.emplace_back();
-                auto req = g_portEquiByPortId.find(we.portId);
-                if (req == g_portEquiByPortId.end()) continue;
-                auto node = nodeOfPin.find(PinKey{ we.isTerm ? InstancePath{} : we.path, req->second.termId,
-                                                   req->second.bit });
-                if (node != nodeOfPin.end()) endNodes.back() = node->second;
-            }
-            segmentsByEi[ei] = splitNet(*eq->graph, endNodes, drives, frameSet);
+            if (!eq || !eq->graph || !mappedByEi[ei]) continue;
+            std::vector<bool> drives;
+            for (const auto& we : equiEnds[ei]) drives.push_back(we.drives);
+            segmentsByEi[ei] = splitNet(*eq->graph, endNodesByEi[ei], drives, frameSet);
             if (!segmentsByEi[ei]) continue;
             for (const auto& pin : segmentsByEi[ei]->pins) {
                 auto [it, added] = slotOf.emplace(std::make_tuple(pin.frame, pin.termId, pin.bit), framePins.size());

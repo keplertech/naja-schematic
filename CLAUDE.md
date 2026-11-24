@@ -690,7 +690,8 @@ pin of a module with no frame, are one segment. A pin has two faces at one
 point (`Port::framePin`, `innerFace` for the inside one, which isn't
 drawn), the inner face's wire leaving the other way. A module a net only
 goes through, with no leaf of it drawn (a feed-through), gets an empty frame
-(`EmptyFrame`), in a column of its own after the net's driver. Frames make
+(`EmptyFrame`), in a column of its own after the net's driver -- only on a
+net that is split (every end on a graph node), or it would float unwired. Frames make
 room for their pins (`FrameRoom`), which line up with what they lead to
 inside, deepest frames first; their edges split the routing channels and
 they keep other segments' spines out (`RouteRegion`, `RouteNet::confined`),

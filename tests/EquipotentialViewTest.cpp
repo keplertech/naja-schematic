@@ -9,6 +9,7 @@
 #include "SchematicView.h"
 #include "SelectionStore.h"
 #include "TraceStore.h"
+#include "ViewOptions.h"
 
 #include <imgui.h>
 #include <algorithm>
@@ -1858,6 +1859,53 @@ TEST_F(SchematicClicks, AFeedThroughModuleIsAnEmptyFrameTheWireCrosses) {
     across = across || (flat && std::abs(lo - f->x) < 1e-3f && std::abs(hi - (f->x + f->w)) < 1e-3f);
   }
   EXPECT_TRUE(across);
+}
+
+TEST_F(SchematicClicks, AModuleWhoseReadersAreSummarizedGetsNoEmptyFrame) {
+  // u1.Y drives u2..u4 at the top and one flop in each of x and y. With two
+  // sinks drawn, the rest -- x's and y's flops among them -- are one summary
+  // at the top: the net is drawn whole, so x and y get no frame (an empty
+  // one would float there, unwired).
+  const ViewOptions saved = ViewOptions::current();
+  ViewOptions::current().maxSinks = 2;
+  auto rcv = [](InstancePath path, const std::string& name, unsigned id) {
+    InstTermOccurrence o = occ(name, id, "CK", 0, Direction::Input, 2);
+    o.path.clear();
+    o.pathIds.clear();
+    o.pathModels.clear();
+    for (const auto& r : path) {
+      o.path.push_back(r);
+      o.pathIds.push_back(r.id);
+      o.pathModels.push_back("mod");
+    }
+    o.path.push_back({id, name});
+    o.pathIds.push_back(id);
+    o.pathModels.push_back("DFF");
+    return o;
+  };
+  const InstancePath x{{8, "x"}}, y{{9, "y"}};
+  Equipotential e{true, {}, {}};
+  e.occurrences.push_back(occ("u1", 1, "Y", 1, Direction::Output, 2));
+  e.occurrences.push_back(rcv({}, "u2", 2));
+  e.occurrences.push_back(rcv({}, "u3", 3));
+  e.occurrences.push_back(rcv({}, "u4", 4));
+  e.occurrences.push_back(rcv(x, "f", 0));
+  e.occurrences.push_back(rcv(y, "f", 0));
+  NetGraph graph;
+  graph.nodes = { {{}, "n", {0, 1, 2, 3}, {}}, {x, "c", {4}, {}}, {y, "c", {5}, {}} };
+  graph.edges = { framePort(0, 1, x, "mod", "c", 0, Direction::Input),
+                  framePort(0, 2, y, "mod", "c", 0, Direction::Input) };
+  e.graph = graph;
+  add(e);
+  frame(3);
+  ViewOptions::current() = saved;
+
+  int summaries = 0;
+  for (const auto& s : sv().instances) summaries += s.isSummary;
+  EXPECT_EQ(summaries, 1);
+  EXPECT_EQ(frameShape(sv(), x), nullptr);
+  EXPECT_EQ(frameShape(sv(), y), nullptr);
+  EXPECT_EQ(sv().routes.size(), 1u);
 }
 
 TEST_F(SchematicClicks, ANetWithoutAGraphCrossesFramesAsBefore) {
