@@ -61,6 +61,10 @@ void RasterPainter::AddCircleFilled(const ImVec2& c, float r, ImU32 col) {
 void RasterPainter::AddText(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col, const char* text) {
   dl_->AddText(font, fontSize * scale_, at(pos), col, text);
 }
+void RasterPainter::AddTextVertical(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col,
+                                    const char* text) {
+  addTextVertical(dl_.get(), font, fontSize * scale_, at(pos), col, text);
+}
 void RasterPainter::PushClipRect(const ImVec2& rmin, const ImVec2& rmax) {
   dl_->PushClipRect(at(rmin), at(rmax), true);
 }

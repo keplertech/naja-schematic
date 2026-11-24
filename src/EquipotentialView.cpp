@@ -367,12 +367,17 @@ static std::vector<const ReviewThread*> badgeThreads(const SchematicView::Review
 }
 // One bus pin group: (instance, bus base name, is input).
 using BusGroupKey = std::tuple<InstancePath, std::string, bool>;
-// Merged bus-pin port id -> the bus group it expands on click.
-// Checked before g_portEquiByPortId. Rebuilt every frame.
+// Merged bus-pin port id -> the bus group a double-click (or "Expand Bus")
+// splits into its bits. Checked before g_portEquiByPortId. Rebuilt every
+// frame.
 static std::map<int, BusGroupKey> g_busGroupByPortId;
-// Bit port id of a bus shown expanded -> its bus group, for the pin
-// context menu's "Collapse Bus". Clicking an open bit loads its net like any
-// scalar pin. Rebuilt every frame.
+// Merged bus-pin port id -> the bits whose nets a click on it loads: those
+// still open (not shown, not known to be unconnected). Rebuilt every frame.
+static std::map<int, std::vector<PortEquiRequest>> g_busOpenBitsByPortId;
+// Bit port id of a bus shown expanded -> its bus group, which a
+// double-click on the bit (or "Collapse Bus") merges back into one pin.
+// Clicking an open bit loads its net like any scalar pin. Rebuilt every
+// frame.
 static std::map<int, BusGroupKey> g_expandedBusGroupByPortId;
 
 static std::map<InstancePath, std::vector<EquipotentialView::ExpandedPort>> g_expandedInstances;
@@ -452,6 +457,11 @@ static void applySymbolGeometry(InstanceShape& inst, float extraH) {
     for (const auto& p : inst.ports) (p.lx < 0.f ? left : right).push_back(p.name);
     const SymbolGeometry g = symbolGeometry(inst.primitiveType, left, right);
     inst.w = g.w;
+    // Room for the bracket of an expanded bus, inside the box before its
+    // bits' names (SchematicView's drawBusBrackets()).
+    if (!isGateSymbol(inst.primitiveType) &&
+        std::any_of(inst.ports.begin(), inst.ports.end(), [](const Port& p) { return p.busBracket >= 0; }))
+        inst.w += kGrid;
     inst.h = g.h + extraH;
     size_t li = 0, ri = 0;
     for (auto& p : inst.ports) {
@@ -472,22 +482,47 @@ static ImVec2 mouseWorldPos(const SchematicView& sv, const ImVec2& cpos) {
 // ---------------------------------------------------------------------------
 // Pin interactions. A left click on a pin does the one thing that pin
 // offers -- the same thing its hover tooltip announces:
-//   - merged bus pin  -> show its individual bits (no request needed)
+//   - merged bus pin  -> add the nets of its open bits to the view (one
+//                        load_equipotential per bit); the pin stays merged,
+//                        so the bus is drawn as one wire where it can be
 //   - open pin        -> add its net to the view (load_equipotential)
+// A double-click toggles a bus between one pin and its bits: on a merged
+// bus pin it shows the bits, on a bit it merges them back.
 // A pin whose net is already shown has no click action (its right-click menu
 // still offers Trace to Driver). Pins are hit-tested nearest-first with
 // SchematicInteraction::pickPin against what was drawn last frame.
 // ---------------------------------------------------------------------------
-enum class PinAction { None, ExpandBus, LoadNet, Loading };
+enum class PinAction { None, LoadBus, LoadNet, Loading };
+
+static SchematicInteraction::PinRequestKey pinRequestKey(const PortEquiRequest& r) {
+    return SchematicInteraction::pinRequestKey(r.pathIds, r.termId, r.bit);
+}
 
 static PinAction pinAction(const Port& p) {
-    if (g_busGroupByPortId.count(p.id)) return PinAction::ExpandBus;
+    if (g_busGroupByPortId.count(p.id)) {
+        auto bits = g_busOpenBitsByPortId.find(p.id);
+        if (bits == g_busOpenBitsByPortId.end() || bits->second.empty()) return PinAction::None;
+        for (const auto& b : bits->second)
+            if (!g_pendingPinNets.isPending(pinRequestKey(b), ImGui::GetTime())) return PinAction::LoadBus;
+        return PinAction::Loading;
+    }
     if (p.open) return p.pending ? PinAction::Loading : PinAction::LoadNet;
     return PinAction::None;
 }
 
-static SchematicInteraction::PinRequestKey pinRequestKey(const PortEquiRequest& r) {
-    return SchematicInteraction::pinRequestKey(r.pathIds, r.termId, r.bit);
+// What a double-click on the pin does to its bus: split a merged pin into
+// its bits (+1), merge a bit back with the rest (-1), or nothing (0).
+static int busToggle(int portId) {
+    if (g_busGroupByPortId.count(portId)) return +1;
+    if (g_expandedBusGroupByPortId.count(portId)) return -1;
+    return 0;
+}
+
+static void toggleBus(int portId) {
+    if (auto it = g_busGroupByPortId.find(portId); it != g_busGroupByPortId.end())
+        g_expandedBuses.insert(it->second);
+    else if (auto bit = g_expandedBusGroupByPortId.find(portId); bit != g_expandedBusGroupByPortId.end())
+        g_expandedBuses.erase(bit->second);
 }
 
 // The shape whose pin was clicked last (see requestPinNet()): a box by its
@@ -499,25 +534,46 @@ static bool isKeptInPlace(const InstanceShape& inst) {
     return g_keepInPlacePort.empty();
 }
 
-// Sends load_equipotential for `port` (sitting on `inst`) unless it's already
-// in flight, and arranges for `inst` to stay where it is on screen when the
-// net arrives.
-static void requestPinNet(const InstanceShape& inst, const Port& port) {
-    auto it = g_portEquiByPortId.find(port.id);
-    if (!g_provider || it == g_portEquiByPortId.end()) return;
-    if (!g_pendingPinNets.begin(pinRequestKey(it->second), ImGui::GetTime())) return;
+// Sends load_equipotential for one pin's net unless it's already in flight.
+// Returns whether it was sent.
+static bool sendPinNet(const PortEquiRequest& r) {
+    if (!g_provider || !g_pendingPinNets.begin(pinRequestKey(r), ImGui::GetTime())) return false;
     json j;
     j["request"] = "load_equipotential";
-    j["path"]    = it->second.pathIds;
-    j["term_id"] = it->second.termId;
-    if (it->second.bit.has_value()) j["bit"] = it->second.bit.value();
+    j["path"]    = r.pathIds;
+    j["term_id"] = r.termId;
+    if (r.bit.has_value()) j["bit"] = r.bit.value();
     g_provider->send(j.dump());
+    return true;
+}
+
+// Arranges for `inst` to stay where it is on screen, `port` under the
+// cursor that clicked it, when the nets the click asked for arrive.
+static void keepInPlace(const InstanceShape& inst, const Port& port) {
     g_skipNextAutoFit  = true;
     g_keepInPlacePath  = inst.path;
     g_keepInPlacePort  = inst.modelName == "port" ? port.name : std::string();
     g_keepInPlacePin   = port.name;
     g_keepInPlaceWorld = portAnchor(inst, port);
     g_keepInPlaceBoxWorld = ImVec2(inst.x, inst.y);
+}
+
+// Sends load_equipotential for `port` (sitting on `inst`) unless it's already
+// in flight, and keeps `inst` in place when the net arrives.
+static void requestPinNet(const InstanceShape& inst, const Port& port) {
+    auto it = g_portEquiByPortId.find(port.id);
+    if (it == g_portEquiByPortId.end()) return;
+    if (sendPinNet(it->second)) keepInPlace(inst, port);
+}
+
+// The same for every open bit of a merged bus pin: the pin stays merged,
+// and the bits' wires between two merged pins are drawn as one bus wire.
+static void requestBusNets(const InstanceShape& inst, const Port& port) {
+    auto it = g_busOpenBitsByPortId.find(port.id);
+    if (it == g_busOpenBitsByPortId.end()) return;
+    bool sent = false;
+    for (const auto& r : it->second) sent = sendPinNet(r) || sent;
+    if (sent) keepInPlace(inst, port);
 }
 
 // Runs the click action of the pin under `wp`, if any. Returns true when a
@@ -539,7 +595,7 @@ static bool clickPin(const ImVec2& wp) {
     Port* port = inst ? g_schematic.findPortById(*inst, hit->portId) : nullptr;
     if (!port) return true;
     switch (pinAction(*port)) {
-        case PinAction::ExpandBus: g_expandedBuses.insert(g_busGroupByPortId[port->id]); break;
+        case PinAction::LoadBus:   requestBusNets(*inst, *port); break;
         case PinAction::LoadNet:   requestPinNet(*inst, *port); break;
         default: break;
     }
@@ -858,7 +914,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         g_ctxPortId     = -1;
         g_ctxSummaryId  = -1;
         if (auto hit = SchematicInteraction::pickPin(g_schematic.instances, wp, g_schematic.transform.scale))
-            if (g_portEquiByPortId.count(hit->portId)) g_ctxPortId = hit->portId;
+            if (g_portEquiByPortId.count(hit->portId) || g_busGroupByPortId.count(hit->portId))
+                g_ctxPortId = hit->portId;
         for (auto rit = g_schematic.instances.rbegin(); rit != g_schematic.instances.rend(); ++rit) {
             if (rit->w <= 0.f || rit->h <= 0.f) continue;
             if (wp.x < rit->x || wp.x > rit->x + rit->w) continue;
@@ -917,6 +974,16 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             auto busIt = g_expandedBusGroupByPortId.find(g_ctxPortId);
             if (busIt != g_expandedBusGroupByPortId.end() && ImGui::MenuItem("Collapse Bus"))
                 g_expandedBuses.erase(busIt->second);
+        } else if (g_busGroupByPortId.count(g_ctxPortId)) {
+            // A merged bus pin: load its bits' nets, or show its bits.
+            for (auto& inst : g_schematic.instances) {
+                const Port* p = g_schematic.findPortById(inst, g_ctxPortId);
+                if (!p) continue;
+                if (ImGui::MenuItem("Add Bus Nets", nullptr, false, pinAction(*p) == PinAction::LoadBus))
+                    requestBusNets(inst, *p);
+                break;
+            }
+            if (ImGui::MenuItem("Expand Bus")) toggleBus(g_ctxPortId);
         } else if (auto sumIt = g_summaryByShapeId.find(g_ctxSummaryId); sumIt != g_summaryByShapeId.end()) {
             const auto* shape = g_schematic.findInstanceById(g_ctxSummaryId);
             const std::string item = "Expand " + std::to_string(shape ? shape->summaryCount : 0) + " Sinks";
@@ -967,8 +1034,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     // instance. The glyph is checked first since it's a small,
     // distinct hotspot (top-center of the box) that never overlaps a pin.
     // Only the first click of a double-click counts, so a double-click
-    // doesn't act twice (e.g. expand a bus, then load the bit that lands
-    // under the cursor).
+    // doesn't act twice (e.g. load a bus's nets, then load the bit its
+    // double-click split off under the cursor).
     if (ImGui::IsItemHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
         ImGui::GetMouseClickedCount(ImGuiMouseButton_Left) == 1) {
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
@@ -1016,16 +1083,19 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         }
     }
 
-    // Double-click on a box body (not a pin -- those act on single click
-    // above): a partial-interface box loads its full interface, revealing
-    // the pins whose nets aren't shown yet.
+    // Double-click on a bus pin: split a merged bus pin into its bits, or
+    // merge a bit back with the rest of its bus (the first click of the
+    // double-click already ran the pin's click action above).
+    // Double-click on a box body: a partial-interface box loads its full
+    // interface, revealing the pins whose nets aren't shown yet.
     if (ImGui::IsItemHovered() &&
         ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && g_provider) {
         ImVec2 wp = mouseWorldPos(g_schematic, cpos);
         const float wx = wp.x, wy = wp.y;
-        const bool hit = SchematicInteraction::pickPin(g_schematic.instances, wp,
-                                                       g_schematic.transform.scale).has_value() ||
-                         pickReviewBadge(ImGui::GetMousePos()).has_value();
+        const auto pinHit = SchematicInteraction::pickPin(g_schematic.instances, wp,
+                                                          g_schematic.transform.scale);
+        if (pinHit) toggleBus(pinHit->portId);
+        const bool hit = pinHit.has_value() || pickReviewBadge(ImGui::GetMousePos()).has_value();
         if (!hit) {
             // A hierarchy-expanded box's nested children sit *inside* its
             // own bounding rect, so a forward scan would always match the
@@ -1053,11 +1123,13 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     // Rebuild geometry: merged instances + per-equip wires
     // -----------------------------------------------------------------------
     g_schematic.instances.clear();
+    g_schematic.portBrackets.clear();
     g_schematic.nets.clear();
     g_occInfoByShapeId.clear();
     g_portEquiByPortId.clear();
     g_busGroupByPortId.clear();
     g_expandedBusGroupByPortId.clear();
+    g_busOpenBitsByPortId.clear();
     g_busTermByPortId.clear();
 
     int nextInstId = 1, nextPortId = 1, totalItems = 0;
@@ -1373,6 +1445,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                 }
             }
 
+            std::map<BusGroupKey, int> bracketOf;  // expanded bus -> its index on this box
             for (const auto& row : rows) {
                 bool isIn = row.members[0]->ep->direction == Direction::Input;
                 Port p;
@@ -1389,16 +1462,21 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                     // connected when no bit is.
                     p.unconnected = true;
                     for (auto* m : row.members) {
-                        const bool nc = g_unconnectedPins.count(pinRequestKey(g_portEquiByPortId[m->pid])) > 0;
+                        const PortEquiRequest& r = g_portEquiByPortId[m->pid];
+                        const bool nc = g_unconnectedPins.count(pinRequestKey(r)) > 0;
                         p.open        = p.open || (m->open && !nc);
                         p.unconnected = p.unconnected && nc;
+                        if (m->open && !nc) g_busOpenBitsByPortId[p.id].push_back(r);
                     }
                 } else {
                     p.id   = row.members[0]->pid;
                     p.name = row.members[0]->ep->name;
                     p.clock = row.members[0]->ep->clock;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->ep->name));
-                    if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
+                    if (row.isExpandedBusBit) {
+                        g_expandedBusGroupByPortId[p.id] = row.groupKey;
+                        p.busBracket = bracketOf.try_emplace(row.groupKey, int(bracketOf.size())).first->second;
+                    }
                     p.open    = row.members[0]->open;
                     p.pending = p.open && g_pendingPinNets.isPending(
                                     pinRequestKey(g_portEquiByPortId[p.id]), ImGui::GetTime());
@@ -1452,6 +1530,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                 }
             }
 
+            std::map<BusGroupKey, int> bracketOf;  // expanded bus -> its index on this box
             for (const auto& row : rows) {
                 bool isIn = row.members[0]->direction == Direction::Input;
                 Port p;
@@ -1469,7 +1548,10 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                     p.name = row.members[0]->name;
                     p.clock = row.members[0]->clock;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->name));
-                    if (row.isExpandedBusBit) g_expandedBusGroupByPortId[p.id] = row.groupKey;
+                    if (row.isExpandedBusBit) {
+                        g_expandedBusGroupByPortId[p.id] = row.groupKey;
+                        p.busBracket = bracketOf.try_emplace(row.groupKey, int(bracketOf.size())).first->second;
+                    }
                 }
                 p.lx = isIn ? -0.5f : 0.5f;
                 p.direction = row.members[0]->direction;
@@ -1852,10 +1934,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     // ei: the equipotential the port is on, or kNoEqui for a port shown
     // with no net yet (showTopPorts()), drawn open.
     constexpr size_t kNoEqui = size_t(-1);
-    // isBus: an open bus's bits merged into one flag (see below).
-    // unconnected: an open bus whose every bit the host found not connected.
+    // isBus: a bus's bits merged into one flag (see below); members: its
+    // wired bits, (ei, bit port id); open: a bit still to load;
+    // unconnected: no bit wired and every one found not connected.
     struct PortStub { size_t ei; std::string label; Direction direction; int portId; float wantY;
-                      bool isBus = false; bool unconnected = false; };
+                      bool isBus = false; bool unconnected = false; bool open = false;
+                      std::vector<std::pair<size_t, int>> members; };
     std::vector<PortStub> leftStubs, rightStubs;
     for (size_t ei = 0; ei < equipotentials.size(); ++ei) {
         Equipotential* eq = equipotentials[ei];
@@ -1890,53 +1974,127 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             }
         }
     }
-    // The top's ports no shown net reaches yet (showTopPorts()), open, after
-    // the connected ones on their side, in the top's order. A bus's open
-    // bits are one flag ("b[7:0]", or "b (*3)" when some bits are wired
-    // already) until it's clicked, like a box's bus pin: then one flag per
-    // bit, and "Collapse Bus" (pin menu) merges them back.
-    if (!g_startPorts.empty()) {
-        std::set<std::pair<unsigned, int>> shown;
+    // A top-level bus is one flag ("d[7:0]") -- its wired bits and, with
+    // showTopPorts(), its open ones -- until double-clicked, like a box's
+    // bus pin: then one flag per bit, which a double-click on a bit (or
+    // "Collapse Bus" in its menu) merges back. Every wired bit's wire
+    // reaches the one flag, so a bus between two merged pins is one wire.
+    using TermDir = std::pair<unsigned, Direction>;
+    std::set<std::pair<unsigned, int>> shown;  // (term, bit) wired
+    std::map<TermDir, std::set<int>> busBits;  // every bit known, wired or open
+    std::map<TermDir, std::string>   busBase;
+    for (const auto* stubs : { &leftStubs, &rightStubs })
+        for (const auto& st : *stubs) {
+            auto it = g_portEquiByPortId.find(st.portId);
+            if (it == g_portEquiByPortId.end()) continue;
+            shown.insert({ it->second.termId, it->second.bit.value_or(-1) });
+            if (!it->second.bit) continue;
+            busBits[{ it->second.termId, st.direction }].insert(*it->second.bit);
+            busBase[{ it->second.termId, st.direction }] = stripBusIndex(st.label);
+        }
+    for (const auto& ep : g_startPorts) {
+        if (!ep.bit) continue;
+        busBits[{ ep.childId, ep.direction }].insert(*ep.bit);
+        busBase[{ ep.childId, ep.direction }] = stripBusIndex(ep.name);
+    }
+    auto busKey = [&](const TermDir& td) {
+        return BusGroupKey{ InstancePath{}, busBase[td], td.second == Direction::Input };
+    };
+    // A bus is one flag only when its wired bits all lead to the same pins
+    // (a merged bus pin, say): their wires are then one bus wire. Bits going
+    // to different pins would share one wire tree from the flag, drawn as
+    // if their nets were joined: those get a flag per bit (in a bracketed
+    // block), as if the bus were expanded.
+    std::set<TermDir> splitBuses;
+    {
+        using Ends = std::set<std::pair<InstancePath, std::string>>;
+        std::map<TermDir, std::optional<Ends>> endsOf;  // the first wired bit's
         for (const auto* stubs : { &leftStubs, &rightStubs })
-            for (const auto& st : *stubs)
-                if (auto it = g_portEquiByPortId.find(st.portId); it != g_portEquiByPortId.end())
-                    shown.insert({ it->second.termId, it->second.bit.value_or(-1) });
+            for (const auto& st : *stubs) {
+                auto it = g_portEquiByPortId.find(st.portId);
+                if (it == g_portEquiByPortId.end() || !it->second.bit) continue;
+                Ends ends;
+                for (const auto& we : equiEnds[st.ei]) {
+                    if (we.isTerm && we.portId == st.portId) continue;
+                    if (we.isTerm) ends.insert({ InstancePath{}, stripBusIndex(we.term) });
+                    else           ends.insert({ we.path, std::to_string(renderedPort(we.portId)) });
+                }
+                const TermDir td{ it->second.termId, st.direction };
+                auto& first = endsOf[td];
+                if (!first) first = std::move(ends);
+                else if (*first != ends) splitBuses.insert(td);
+            }
+    }
+    auto isBusTerm  = [&](const TermDir& td) { return busBits[td].size() > 1; };
+    auto mergedBus  = [&](const TermDir& td) {
+        return isBusTerm(td) && !g_expandedBuses.count(busKey(td)) && !splitBuses.count(td);
+    };
+    auto busStub = [&](const TermDir& td, float wantY) {
+        const std::set<int>& bits = busBits[td];
+        PortStub bus{ kNoEqui, busLabel(busBase[td], std::vector<int>(bits.begin(), bits.end())),
+                      td.second, nextPortId++, wantY, true, true };
+        g_busGroupByPortId[bus.portId] = busKey(td);
+        g_busTermByPortId[bus.portId]  = { {}, td.first, std::nullopt };
+        return bus;
+    };
+    // Where each merged bus's flag is: its side's stubs, and its index.
+    std::map<TermDir, std::pair<std::vector<PortStub>*, size_t>> busFlagOf;
+    for (auto* stubs : { &leftStubs, &rightStubs }) {
+        std::vector<PortStub> kept;
+        for (auto& st : *stubs) {
+            auto it = g_portEquiByPortId.find(st.portId);
+            const TermDir td{ it != g_portEquiByPortId.end() ? it->second.termId : 0u, st.direction };
+            if (it == g_portEquiByPortId.end() || !it->second.bit || !mergedBus(td)) {
+                if (it != g_portEquiByPortId.end() && it->second.bit && isBusTerm(td))
+                    g_expandedBusGroupByPortId[st.portId] = busKey(td);
+                kept.push_back(std::move(st));
+                continue;
+            }
+            // Where its first wired bit would have gone.
+            auto [flag, fresh] = busFlagOf.emplace(td, std::make_pair(stubs, kept.size()));
+            if (fresh) kept.push_back(busStub(td, st.wantY));
+            PortStub& bus = kept[flag->second.second];
+            bus.unconnected = false;
+            bus.members.push_back({ st.ei, st.portId });
+            logicalToRenderedPortId[st.portId] = bus.portId;
+        }
+        *stubs = std::move(kept);
+    }
+    // The top's ports no shown net reaches yet (showTopPorts()), open, after
+    // the connected ones on their side, in the top's order; a merged bus's
+    // open bits join its flag.
+    if (!g_startPorts.empty()) {
         float below[2] = { -1e30f, -1e30f };
         for (int side = 0; side < 2; ++side)
             for (const auto& st : side == 0 ? leftStubs : rightStubs)
                 below[side] = std::max(below[side], st.wantY);
-        // Open bits per bus (term, direction), in the top's order.
-        std::map<std::pair<unsigned, Direction>, std::vector<int>> openBits;
-        for (const auto& ep : g_startPorts)
-            if (ep.bit && !shown.count({ ep.childId, *ep.bit }))
-                openBits[{ ep.childId, ep.direction }].push_back(*ep.bit);
-        std::set<std::pair<unsigned, Direction>> merged;
         for (const auto& ep : g_startPorts) {
             if (shown.count({ ep.childId, ep.bit.value_or(-1) })) continue;
             const bool isInput = ep.direction == Direction::Input;
+            auto& stubs = isInput ? leftStubs : rightStubs;
             float& y = below[isInput ? 0 : 1];
-            const std::string base = stripBusIndex(ep.name);
-            const BusGroupKey key{ InstancePath{}, base, isInput };
-            const auto& bits = ep.bit ? openBits[{ ep.childId, ep.direction }] : std::vector<int>{};
-            if (bits.size() > 1 && !g_expandedBuses.count(key)) {
-                if (!merged.insert({ ep.childId, ep.direction }).second) continue;  // flag drawn
-                const int pid = nextPortId++;
-                g_busGroupByPortId[pid] = key;
-                g_busTermByPortId[pid]  = { {}, ep.childId, std::nullopt };
-                y = y < -1e29f ? 0.f : y + kPinPitch;
-                bool allUnconnected = true;
-                for (int b : bits)
-                    allUnconnected = allUnconnected &&
-                        g_unconnectedPins.count(SchematicInteraction::pinRequestKey({}, ep.childId, b)) > 0;
-                (isInput ? leftStubs : rightStubs).push_back(
-                    { kNoEqui, busLabel(base, bits), ep.direction, pid, y, true, allUnconnected });
+            const TermDir td{ ep.childId, ep.direction };
+            if (ep.bit && mergedBus(td)) {
+                auto flag = busFlagOf.find(td);
+                if (flag == busFlagOf.end()) {
+                    y = y < -1e29f ? 0.f : y + kPinPitch;
+                    flag = busFlagOf.emplace(td, std::make_pair(&stubs, stubs.size())).first;
+                    stubs.push_back(busStub(td, y));
+                }
+                PortStub& bus = (*flag->second.first)[flag->second.second];
+                const PortEquiRequest r{ {}, ep.childId, ep.bit };
+                if (!g_unconnectedPins.count(pinRequestKey(r))) {
+                    bus.open        = true;
+                    bus.unconnected = false;
+                    g_busOpenBitsByPortId[bus.portId].push_back(r);
+                }
                 continue;
             }
             const int pid = nextPortId++;
             g_portEquiByPortId[pid] = { {}, ep.childId, ep.bit };
-            if (bits.size() > 1) g_expandedBusGroupByPortId[pid] = key;
+            if (ep.bit && isBusTerm(td)) g_expandedBusGroupByPortId[pid] = busKey(td);
             y = y < -1e29f ? 0.f : y + kPinPitch;
-            (isInput ? leftStubs : rightStubs).push_back({ kNoEqui, ep.name, ep.direction, pid, y });
+            stubs.push_back({ kNoEqui, ep.name, ep.direction, pid, y });
         }
     }
     // Input ports driving a labeled net: the label goes right past the flag,
@@ -1950,12 +2108,27 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     for (auto* stubs : { &leftStubs, &rightStubs }) {
         std::vector<float> want;
         for (const auto& st : *stubs) want.push_back(st.wantY);
-        const std::vector<float> ys = stackPorts(want);
+        // An expanded bus's bit flags stay together, under one bracket, in
+        // the order of what they lead to (so their wires don't cross).
+        std::map<BusGroupKey, std::vector<size_t>> busFlags;
+        for (size_t i = 0; i < stubs->size(); ++i)
+            if (auto it = g_expandedBusGroupByPortId.find((*stubs)[i].portId); it != g_expandedBusGroupByPortId.end())
+                busFlags[it->second].push_back(i);
+        std::vector<std::vector<size_t>> blocks;
+        for (auto& [key, members] : busFlags) {
+            if (members.size() < 2) continue;
+            std::stable_sort(members.begin(), members.end(),
+                             [&](size_t a, size_t b) { return want[a] < want[b]; });
+            blocks.push_back(members);
+        }
+        const std::vector<float> ys = stackPorts(want, blocks);
         const bool isInput = stubs == &leftStubs;
+        std::map<size_t, int> flagIdOfStub;
         for (size_t i = 0; i < stubs->size(); ++i) {
             const PortStub& st = (*stubs)[i];
             InstanceShape inst;
             inst.id = nextInstId++;
+            flagIdOfStub[i] = inst.id;
             inst.x  = isInput ? sheetX0 - kPortGap - leftPortRoom : sheetX1 + kPortGap;
             inst.y  = ys[i];
             inst.w  = 0.f; inst.h = 0.f;
@@ -1976,7 +2149,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             p.color     = DiagnosisStore::netColor({}, stripBusIndex(st.isBus ? st.label.substr(0, st.label.find(' '))
                                                                                : st.label));
             if (st.isBus) {
-                p.open        = !st.unconnected;
+                p.open        = st.open;
                 p.unconnected = st.unconnected;
                 p.isBus       = true;
             } else if (st.ei == kNoEqui) {
@@ -1991,7 +2164,24 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             if (st.ei != kNoEqui)
                 for (auto& we : equiEnds[st.ei])
                     if (we.isTerm && we.portId == st.portId) we.termInstId = inst.id;
+            for (const auto& [ei, pid] : st.members)
+                for (auto& we : equiEnds[ei])
+                    if (we.isTerm && we.portId == pid) we.termInstId = inst.id;
             g_schematic.instances.push_back(std::move(inst));
+        }
+        for (const auto& block : blocks) {
+            SchematicView::PortBracket b;
+            b.isInput = isInput;
+            const BusGroupKey& key = g_expandedBusGroupByPortId[(*stubs)[block[0]].portId];
+            std::vector<int> bits;
+            for (size_t i : block) {
+                b.flagIds.push_back(flagIdOfStub[i]);
+                if (auto r = g_portEquiByPortId.find((*stubs)[i].portId);
+                    r != g_portEquiByPortId.end() && r->second.bit)
+                    bits.push_back(*r->second.bit);
+            }
+            b.label = busLabel(std::get<1>(key), bits);
+            g_schematic.portBrackets.push_back(std::move(b));
         }
     }
 
@@ -2009,6 +2199,12 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             p.reviewOpen  = int(ReviewStore::openCount(threads));
             p.reviewColor = ReviewStore::openColor(threads);
             applyPinStyle(inst, p);
+            // A bus pin is loading while every bit it asked for is.
+            if (auto bits = g_busOpenBitsByPortId.find(p.id); bits != g_busOpenBitsByPortId.end()) {
+                p.pending = p.open && !bits->second.empty();
+                for (const auto& b : bits->second)
+                    p.pending = p.pending && g_pendingPinNets.isPending(pinRequestKey(b), ImGui::GetTime());
+            }
             auto req = g_portEquiByPortId.find(p.id);
             if (req != g_portEquiByPortId.end() && g_unconnectedPins.count(pinRequestKey(req->second))) {
                 p.unconnected = true;
@@ -2389,7 +2585,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
             pinHovered = true;
             g_schematic.hoveredPortId = port->id;
             const PinAction action = pinAction(*port);
-            if (action == PinAction::ExpandBus || action == PinAction::LoadNet)
+            if (action == PinAction::LoadBus || action == PinAction::LoadNet)
                 ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
             ImGui::BeginTooltip();
             if (inst->modelName == "port" && inst->path.empty())
@@ -2398,12 +2594,18 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                 ImGui::Text("%s  (pin of %s)", port->name.c_str(), displayPath(pinOwnerPath(*inst)).c_str());
             else                           ImGui::Text("%s / %s", inst->name.c_str(), port->name.c_str());
             switch (action) {
-                case PinAction::ExpandBus: ImGui::TextDisabled("Click: show the individual bits"); break;
+                case PinAction::LoadBus:   ImGui::TextDisabled("Click: add the bus's nets to the view"); break;
                 case PinAction::LoadNet:   ImGui::TextDisabled("Click: add this net to the view"); break;
                 case PinAction::Loading:   ImGui::TextDisabled("Loading net..."); break;
                 case PinAction::None:
-                    ImGui::TextDisabled(port->unconnected ? "Not connected" : "Net shown");
+                    ImGui::TextDisabled(port->unconnected ? "Not connected"
+                                        : port->isBus     ? "Nets shown" : "Net shown");
                     break;
+            }
+            switch (busToggle(port->id)) {
+                case +1: ImGui::TextDisabled("Double-click: show the individual bits"); break;
+                case -1: ImGui::TextDisabled("Double-click: merge the bits back into one bus pin"); break;
+                default: break;
             }
             if (g_portEquiByPortId.count(port->id))
                 ImGui::TextDisabled("Right-click: Trace to Driver (add to view)");

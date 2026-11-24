@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cfloat>
 #include <sstream>
 #include <string>
 #include <utility>
@@ -31,6 +32,12 @@ public:
     virtual void AddCircleFilled(const ImVec2& c, float r, ImU32 col) = 0;
     virtual void AddText(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col,
                          const char* text) = 0;
+    // Text turned a quarter turn counterclockwise, reading bottom to top.
+    // `pos` is the top-left corner of the box it fills: as wide as a line
+    // of text is high, as tall as the text is wide. (Not an ImDrawList
+    // call: see addTextVertical().)
+    virtual void AddTextVertical(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col,
+                                 const char* text) = 0;
     virtual void PushClipRect(const ImVec2& rmin, const ImVec2& rmax) = 0;
     virtual void PopClipRect() = 0;
 
@@ -42,6 +49,24 @@ public:
     virtual void BeginGroup(const GroupAttrs& /*attrs*/) {}
     virtual void EndGroup() {}
 };
+
+// AddTextVertical() on an ImDrawList: the text drawn level, from the
+// bottom-left corner of its box, then the vertices it added turned about
+// that corner. Rendered through ImFont::RenderText with an unbounded culling
+// rect, since the level text's extent isn't where the turned text lands
+// (the draw command keeps the list's clip rect).
+inline void addTextVertical(ImDrawList* dl, ImFont* font, float fontSize, const ImVec2& pos, ImU32 col,
+                            const char* text) {
+    if (!text || !*text || !font) return;
+    const float width = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, text).x;
+    const ImVec2 pivot(pos.x, pos.y + width);
+    const int first = dl->VtxBuffer.Size;
+    font->RenderText(dl, fontSize, pivot, col, ImVec4(-FLT_MAX, -FLT_MAX, FLT_MAX, FLT_MAX), text, nullptr);
+    for (int i = first; i < dl->VtxBuffer.Size; ++i) {
+        ImVec2& v = dl->VtxBuffer[i].pos;
+        v = ImVec2(pivot.x + (v.y - pivot.y), pivot.y - (v.x - pivot.x));
+    }
+}
 
 class ImDrawListPainter : public SchematicPainter {
 public:
@@ -75,6 +100,9 @@ public:
     void AddText(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col, const char* text) override {
         dl_->AddText(font, fontSize, pos, col, text);
     }
+    void AddTextVertical(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col, const char* text) override {
+        addTextVertical(dl_, font, fontSize, pos, col, text);
+    }
     void PushClipRect(const ImVec2& rmin, const ImVec2& rmax) override {
         dl_->PushClipRect(rmin, rmax, true);
     }
@@ -104,6 +132,7 @@ public:
     void AddCircle(const ImVec2& c, float r, ImU32 col, int segments, float thickness) override;
     void AddCircleFilled(const ImVec2& c, float r, ImU32 col) override;
     void AddText(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col, const char* text) override;
+    void AddTextVertical(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col, const char* text) override;
     void PushClipRect(const ImVec2&, const ImVec2&) override {}
     void PopClipRect() override {}
     // A <g> with the attributes (values XML-escaped), on a line of its own;

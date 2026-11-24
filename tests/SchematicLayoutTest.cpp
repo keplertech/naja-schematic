@@ -647,6 +647,21 @@ TEST(StackPorts, PortsKeepTheirHeightUnlessCrowded) {
   EXPECT_GE(ys[1] - ys[0], kPinPitch - 1e-3f);
 }
 
+// An expanded bus's flags stay together, a pitch apart in the block's
+// order, even when another port wants to be between them.
+TEST(StackPorts, ABlockStaysTogether) {
+  // Ports 0 and 2 are a block; port 1 wants to be between them.
+  auto ys = stackPorts({0.f, 30.f, 60.f}, {{0, 2}});
+  EXPECT_FLOAT_EQ(ys[2] - ys[0], kPinPitch);
+  EXPECT_TRUE(ys[1] >= ys[2] + kPinPitch - 1e-3f || ys[1] <= ys[0] - kPinPitch + 1e-3f);
+  // Alone, a block sits where its ports want, on average.
+  auto alone = stackPorts({10.f, 50.f}, {{0, 1}});
+  EXPECT_FLOAT_EQ(alone[0] + alone[1], 60.f);
+  EXPECT_FLOAT_EQ(alone[1] - alone[0], kPinPitch);
+  // No blocks: as before.
+  EXPECT_EQ(stackPorts({50.f, 50.f, 7.f}, {}), stackPorts({50.f, 50.f, 7.f}));
+}
+
 // ---------------------------------------------------------------------------
 // routeNets
 // ---------------------------------------------------------------------------

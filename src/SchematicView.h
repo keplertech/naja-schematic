@@ -73,6 +73,15 @@ public:
         bool        selected = false;
     };
     std::vector<NetRoute> routes;
+    // An expanded top-level bus: its bit flags, stacked together on one
+    // side of the sheet, drawn with a bracket on their outer side and the
+    // bus's name past it.
+    struct PortBracket {
+        std::vector<int> flagIds;  // the flags' InstanceShape ids
+        std::string      label;    // e.g. "d[3:0]"
+        bool             isInput = true;  // left side of the sheet
+    };
+    std::vector<PortBracket> portBrackets;
     Transform transform;
     // Pin under the cursor (drawn highlighted), -1 = none. Set each frame by
     // the owning view, which does the hit-testing.

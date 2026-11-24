@@ -9,6 +9,7 @@
 #include <cfloat>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
@@ -72,6 +73,15 @@ constexpr float kMinBoundaryPortHalfH  = 3.0f;
 // gap between the flag and its name, outside it.
 constexpr float kBoundaryPortBodyHalfHs = 2.0f;
 constexpr float kBoundaryPortLabelGap   = 4.0f;
+// The bracket of an expanded bus (drawBusBrackets(), drawPortBrackets()),
+// world units: its line this far from the box edge (or past the flags'
+// outer end), serifs this long toward the pins, reaching this fraction of
+// a pin pitch past the outer bits; the bits' names move kBusBracketRoom
+// further in, and a top-level bus's name is kBusBracketRoom past it.
+constexpr float kBusBracketInset = 3.0f;
+constexpr float kBusBracketSerif = 2.5f;
+constexpr float kBusBracketReach = 0.35f;
+constexpr float kBusBracketRoom  = 4.0f;
 
 // Near-monochrome palette (Theme.h's SchematicPalette): every instance
 // shares the same flat neutral fill rather than an arbitrary per-category
@@ -295,10 +305,41 @@ ImVec2 SchematicView::portWorldPos(const InstanceShape& inst, const Port& port) 
 // Pin labels: inside a box, next to the pin (the box is sized
 // to hold them); a gate symbol's pins are unlabeled, as on a printed
 // schematic -- except a merged bus pin, whose range is labeled outside.
+// An expanded bus on a box: its bit pins are adjacent on one side, and a
+// bracket inside the box, before their names, ties them together. Drawn
+// while pin names are.
+static void drawBusBrackets(SchematicPainter* dl, const InstanceShape& inst,
+                            const SchematicView& sv,
+                            const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    if (labelFontSize(kPortLabelBaseSize, sv.transform.scale) <= 0.0f) return;
+    struct Span { float x, y0, y1; };
+    std::map<std::pair<int, bool>, Span> spans;  // (bus, left side)
+    for (const auto& p : inst.ports) {
+        if (p.busBracket < 0) continue;
+        const ImVec2 at = sv.worldToScreen(sv.portWorldPos(inst, p), canvasPos, canvasSize);
+        auto [it, fresh] = spans.try_emplace({ p.busBracket, p.lx < 0.0f }, Span{ at.x, at.y, at.y });
+        if (!fresh) {
+            it->second.y0 = std::min(it->second.y0, at.y);
+            it->second.y1 = std::max(it->second.y1, at.y);
+        }
+    }
+    const float s = sv.transform.scale;
+    for (const auto& [key, span] : spans) {
+        const float dir   = key.second ? 1.0f : -1.0f;  // into the box
+        const float x     = span.x + dir * kBusBracketInset * s;
+        const float serif = dir * kBusBracketSerif * s;
+        const float reach = kBusBracketReach * SchematicLayout::kPinPitch * s;
+        const ImVec2 pts[4] = { { x + serif, span.y0 - reach }, { x, span.y0 - reach },
+                                { x, span.y1 + reach },         { x + serif, span.y1 + reach } };
+        dl->AddPolyline(pts, 4, pal().frameLine, std::max(1.0f, 1.25f * s), 0);
+    }
+}
+
 static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
                       const SchematicView& sv,
                       const ImVec2& canvasPos, const ImVec2& canvasSize,
                       bool namesInside) {
+    if (namesInside) drawBusBrackets(dl, inst, sv, canvasPos, canvasSize);
     for (const auto& p : inst.ports) {
         float tickLen = zoomedSizeOrHidden(kPortTickBaseLen, sv.transform.scale, kMinPortTickLen);
         if (tickLen <= 0.0f) continue; // too small to matter at this zoom -- same fade policy as labels
@@ -358,9 +399,11 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
         float fontSize = labelFontSize(kPortLabelBaseSize, sv.transform.scale);
         if (fontSize <= 0.0f) continue;
         ImFont* font = ImGui::GetFont();
-        const float pad = 4.0f * sv.transform.scale;
+        // Plus room for the bracket of an expanded bus (drawBusBrackets()).
+        const float room = namesInside && p.busBracket >= 0 ? kBusBracketRoom * sv.transform.scale : 0.0f;
+        const float pad  = 4.0f * sv.transform.scale + room;
         // Inside: at most half the box, so left and right names never meet.
-        const float maxWidth = namesInside ? inst.w * 0.5f * sv.transform.scale - pad * 1.5f
+        const float maxWidth = namesInside ? inst.w * 0.5f * sv.transform.scale - (pad - room) * 1.5f - room
                                            : 90.0f * sv.transform.scale;
         // A gate's pins are unnamed on the canvas: its bus pin shows only its
         // range, "[7:0]" (the full name is in the pin's tooltip).
@@ -937,6 +980,59 @@ static void drawBoundaryPortInstance(SchematicPainter* dl, const InstanceShape& 
     }
 }
 
+// The screen x of a port flag's outer end, past its name: left of an
+// input's, right of an output's (as drawBoundaryPortInstance draws them).
+static float flagOuterScreenX(const InstanceShape& inst, const SchematicView& sv,
+                              const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    const Port& p = inst.ports[0];
+    const float halfH = std::max(kBoundaryPortHalfHBase * sv.transform.scale, kMinBoundaryPortHalfH);
+    const ImVec2 anchor = sv.worldToScreen(ImVec2(inst.x, inst.y), canvasPos, canvasSize);
+    const std::string& name = p.label.empty() ? p.name : p.label;
+    const float fontSize = labelFontSize(kInstanceLabelBaseSize, sv.transform.scale) > 0.0f
+        ? std::max(kMinLabelFontSize, labelFontSize(kPortLabelBaseSize, sv.transform.scale))
+        : 0.0f;
+    const float textW = fontSize > 0.0f && !name.empty()
+        ? ImGui::GetFont()->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, name.c_str()).x : 0.0f;
+    const float gap  = textW > 0.0f ? std::max(2.0f, kBoundaryPortLabelGap * sv.transform.scale) : 0.0f;
+    const float flag = halfH * (kBoundaryPortBodyHalfHs + 1.0f) + gap + textW;
+    return p.isInput ? anchor.x - flag : anchor.x + flag;
+}
+
+// An expanded top-level bus (SchematicView::PortBracket): a bracket on the
+// outer side of its bit flags, which are stacked together, and the bus's
+// name past it, turned to run along the bracket, centered on it.
+static void drawPortBrackets(SchematicPainter* dl, const SchematicView& sv,
+                             const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    const float s = sv.transform.scale;
+    const float halfH = std::max(kBoundaryPortHalfHBase * s, kMinBoundaryPortHalfH);
+    for (const auto& b : sv.portBrackets) {
+        float outer = b.isInput ? 1e30f : -1e30f, y0 = 1e30f, y1 = -1e30f;
+        for (int id : b.flagIds) {
+            const InstanceShape* inst = sv.findInstanceById(id);
+            if (!inst || inst->ports.empty()) continue;
+            const float x = flagOuterScreenX(*inst, sv, canvasPos, canvasSize);
+            outer = b.isInput ? std::min(outer, x) : std::max(outer, x);
+            const float y = sv.worldToScreen(ImVec2(inst->x, inst->y), canvasPos, canvasSize).y;
+            y0 = std::min(y0, y - halfH);
+            y1 = std::max(y1, y + halfH);
+        }
+        if (y0 > y1) continue;
+        const float dir   = b.isInput ? -1.0f : 1.0f;  // away from the flags
+        const float x     = outer + dir * kBusBracketInset * s;
+        const float serif = -dir * kBusBracketSerif * s;
+        const ImVec2 pts[4] = { { x + serif, y0 }, { x, y0 }, { x, y1 }, { x + serif, y1 } };
+        dl->AddPolyline(pts, 4, pal().frameLine, std::max(1.0f, 1.25f * s), 0);
+        const float fontSize = labelFontSize(kPortLabelBaseSize, s);
+        if (fontSize <= 0.0f || b.label.empty()) continue;
+        ImFont* font = ImGui::GetFont();
+        const ImVec2 size = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, b.label.c_str());
+        // Turned: size.y wide, size.x tall.
+        const float tx = b.isInput ? x - kBusBracketRoom * s - size.y : x + kBusBracketRoom * s;
+        dl->AddTextVertical(font, fontSize, ImVec2(tx, 0.5f * (y0 + y1) - 0.5f * size.x), pal().frameLabel,
+                            b.label.c_str());
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Hierarchy group frame — a hierarchical module enclosing some traced leaf
 // instances (see EquipotentialView's hierarchy grouping). Drawn under the
@@ -1303,6 +1399,20 @@ bool SchematicView::computeWorldBounds(ImVec2& outMin, ImVec2& outMax) const {
                 minX = std::min(minX, p.x); maxX = std::max(maxX, p.x);
                 minY = std::min(minY, p.y); maxY = std::max(maxY, p.y);
             }
+    // An expanded top-level bus's bracket and name (turned: a line high
+    // across), past its flags.
+    for (const auto& b : portBrackets) {
+        const float past = kBusBracketInset + kBusBracketRoom +
+            ImGui::GetFont()->CalcTextSizeA(kPortLabelBaseSize, FLT_MAX, 0.0f, b.label.c_str()).y;
+        for (int id : b.flagIds) {
+            const InstanceShape* inst = findInstanceById(id);
+            if (!inst || inst->ports.empty()) continue;
+            const Port& p = inst->ports[0];
+            const float flag = boundaryFlagWidth(p.label.empty() ? p.name : p.label);
+            if (b.isInput) minX = std::min(minX, inst->x - flag - past);
+            else           maxX = std::max(maxX, inst->x + flag + past);
+        }
+    }
     outMin = ImVec2(minX, minY);
     outMax = ImVec2(maxX, maxY);
     return true;
@@ -1578,6 +1688,7 @@ void SchematicView::render(SchematicPainter& painter, const ImVec2& canvasPos, c
     for (const auto& inst : instances) {
         if (inst.parentShapeId < 0 && !inst.isHierGroup) drawSubtree(inst);
     }
+    drawPortBrackets(dl, *this, canvasPos, canvasSize);
 
     dl->PopClipRect();
 }

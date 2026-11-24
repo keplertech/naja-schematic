@@ -34,6 +34,7 @@ class RasterPainter : public SchematicPainter {
     void AddCircle(const ImVec2& c, float r, ImU32 col, int segments, float thickness) override;
     void AddCircleFilled(const ImVec2& c, float r, ImU32 col) override;
     void AddText(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col, const char* text) override;
+    void AddTextVertical(ImFont* font, float fontSize, const ImVec2& pos, ImU32 col, const char* text) override;
     void PushClipRect(const ImVec2& rmin, const ImVec2& rmax) override;
     void PopClipRect() override;
 

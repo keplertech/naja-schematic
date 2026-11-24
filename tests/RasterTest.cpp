@@ -3,6 +3,8 @@
 // ImGui draw lists (RasterPainter).
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <cfloat>
 #include <cstring>
 #include <imgui.h>
 
@@ -207,6 +209,40 @@ TEST_F(Raster, DrawsTextFromTheAtlas) {
     for (int x = 0; x < 80; ++x)
       if (at(rgb, 80, x, y)[0] < 100) ++dark;
   EXPECT_GT(dark, 40);
+}
+
+// Turned text (the name of an expanded top-level bus): its ink is taller
+// than wide, inside the box it was given, and as much of it as level text.
+TEST_F(Raster, DrawsTurnedTextInItsBox) {
+  const char* text = "MMMMMM";
+  const ImVec2 size = ImGui::GetFont()->CalcTextSizeA(13.f, FLT_MAX, 0.f, text);
+  RasterPainter p(ImVec2(80.f, 80.f), 1.0f);
+  const ImVec2 at0(30.f, 10.f);
+  p.AddTextVertical(ImGui::GetFont(), 13.f, at0, IM_COL32(0, 0, 0, 255), text);
+  const auto rgb = p.rasterize();
+  int dark = 0, x0 = 80, x1 = -1, y0 = 80, y1 = -1;
+  for (int y = 0; y < 80; ++y)
+    for (int x = 0; x < 80; ++x)
+      if (at(rgb, 80, x, y)[0] < 100) {
+        ++dark;
+        x0 = std::min(x0, x); x1 = std::max(x1, x);
+        y0 = std::min(y0, y); y1 = std::max(y1, y);
+      }
+  EXPECT_GT(dark, 40);
+  EXPECT_GT(y1 - y0, 2 * (x1 - x0));
+  EXPECT_GE(x0, int(at0.x) - 1);
+  EXPECT_LE(x1, int(at0.x + size.y) + 1);
+  EXPECT_GE(y0, int(at0.y) - 1);
+  EXPECT_LE(y1, int(at0.y + size.x) + 1);
+
+  RasterPainter level(ImVec2(80.f, 80.f), 1.0f);
+  level.AddText(ImGui::GetFont(), 13.f, at0, IM_COL32(0, 0, 0, 255), text);
+  const auto rgbLevel = level.rasterize();
+  int darkLevel = 0;
+  for (int y = 0; y < 80; ++y)
+    for (int x = 0; x < 80; ++x)
+      if (at(rgbLevel, 80, x, y)[0] < 100) ++darkLevel;
+  EXPECT_NEAR(dark, darkLevel, darkLevel / 4);
 }
 
 TEST_F(Raster, PngDecodesToTheRaster) {
