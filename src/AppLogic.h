@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <string>
 
 #include <nlohmann/json.hpp>
@@ -28,6 +29,8 @@ struct AppState {
   bool              growSourcePanel    {false};
   bool              focusDiagnosisTab  {false};
   bool              focusPropertiesTab {false};
+  // Set when a design load fails: the Log tab says why.
+  bool              focusLogTab        {false};
   // The Review tab is the one shown: selecting a thread selects its
   // instance, whose properties_response then doesn't take the panel away
   // from the thread being read.
@@ -75,6 +78,19 @@ void setupFonts();
 bool appFrame(AppState& state);
 
 #ifndef __EMSCRIPTEN__
+class LocalSNLProvider;
+// Native only: load a design on a worker thread (`load` calls one of the
+// provider's loaders and returns its result) while the window shows a
+// "Loading design" dialog with naja's progress and a Cancel button. Once
+// it loaded, the tree and schematic are reloaded and `then` runs (on the
+// UI thread); a failed or cancelled load keeps the design shown and brings
+// the Log tab forward. Ignored while another load runs.
+void startDesignLoad(AppState& state, std::string title,
+                     std::function<bool(LocalSNLProvider&)> load,
+                     std::function<void()> then = {});
+// A load started by startDesignLoad() is running.
+bool designLoading();
+
 // Native only: load a diagnosis_response-shaped JSON file (a top-level
 // {"items": [...]} object, or a bare array) from disk and install it into
 // DiagnosisStore, replacing whatever diagnosis set is currently loaded.

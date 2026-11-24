@@ -2,6 +2,8 @@
 #ifndef __EMSCRIPTEN__
 
 #include "INetlistProvider.h"
+#include "NajaProgress.h"
+#include <atomic>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -26,14 +28,18 @@ class LocalSNLProvider : public INetlistProvider {
     void on_error(std::function<void(const std::string&)> callback) override;
     void start() override;
 
+    // The loaders below return whether the design loaded. One that fails
+    // (an error, or cancelled through the progress callback) keeps the
+    // design loaded before it, and logs why.
+
     // Load a pre-built SNL database (Cap'n Proto serialized directory).
-    void loadSNL(const std::string& path);
+    bool loadSNL(const std::string& path);
 
     // Load structural Verilog.  Liberty files define the primitive cell library.
     // `yosysSourceAttributes` decodes Yosys (* src *) attributes into source
     // origins (naja only does it when asked: nothing establishes Yosys
     // provenance otherwise).
-    void loadVerilog(const std::vector<std::string>& verilogFiles,
+    bool loadVerilog(const std::vector<std::string>& verilogFiles,
                      const std::vector<std::string>& libertyFiles,
                      bool yosysSourceAttributes = false);
 
@@ -42,13 +48,28 @@ class LocalSNLProvider : public INetlistProvider {
     // Flist entries are handed to slang's own "-f" command-file reader.
     // If topModule is non-empty, it is forced as the elaboration root (via
     // slang's "--top") instead of relying on findAndSetTop()'s heuristic.
-    void loadSystemVerilog(const std::vector<std::string>& sources,
+    bool loadSystemVerilog(const std::vector<std::string>& sources,
                            const std::string& topModule = "");
 
     // Load VHDL (naja's experimental frontend; files in any order). If
     // topEntity is empty, naja infers the unique uninstantiated entity.
-    void loadVHDL(const std::vector<std::string>& files,
+    bool loadVHDL(const std::vector<std::string>& files,
                   const std::string& topEntity = "");
+
+    // Called by the loaders with naja's progress (stage, detail, work done
+    // and to do), on the thread loading; returning false cancels the load.
+    // Empty: none (the default).
+    void setProgressCallback(naja::NajaProgressCallback callback) { progress_ = std::move(callback); }
+
+    // While set, requests are dropped unanswered: a load on another thread
+    // (DesignLoader) is replacing the DB they'd read. The viewer reloads
+    // its tree once the load is over.
+    void setLoading(bool loading) { loading_ = loading; }
+    bool loading() const { return loading_; }
+    // How many requests were dropped while loading, since the last call:
+    // after a failed load (the design kept), the viewer reloads its tree if
+    // any were, since they'll never be answered.
+    size_t takeDroppedRequests() { return dropped_.exchange(0); }
 
     // A terminal named for a human or a script -- {"id_path"|"path": the
     // containing instance (root excluded, [] = a top-level port),
@@ -84,6 +105,9 @@ class LocalSNLProvider : public INetlistProvider {
     std::function<void(const std::string&)> errCb_;
 
     naja::NL::NLDB* db_ {nullptr};
+    naja::NajaProgressCallback progress_;
+    std::atomic<bool> loading_ {false};
+    std::atomic<size_t> dropped_ {0};
     std::vector<std::string> sourceRoots_;
     // When the design was loaded (freshDB(), setDB()): naja recorded its
     // source ranges then, so a source file modified later is "stale".
@@ -92,6 +116,9 @@ class LocalSNLProvider : public INetlistProvider {
 
     // Reset the SNL universe to a clean state and return a fresh NLDB.
     naja::NL::NLDB* freshDB();
+    // Run one loader's body: on an exception (cancelled included) log it
+    // and put the design loaded before back.
+    bool runLoad(const std::string& what, const std::function<void()>& body);
 
     // Find the top design among user libraries and register it in the DB.
     void findAndSetTop();

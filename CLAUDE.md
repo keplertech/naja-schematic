@@ -227,6 +227,9 @@ VHDL via `--vhdl <path>...` (`NLDB.loadVHDL()`, files in any order).
 (`NLDB.loadGateLevelVerilog()`/`loadSystemVerilog()`/`loadVHDL()`/
 `loadLibertyPrimitives()`); `--top` reaches slang as
 `frontend_options={"slang": ["--top", name]}`.
+Each loader gets `progress=LoadProgress(...)` (`server.py`): a log line
+on stderr as each of naja's stages starts, and how far it is every 2 s
+within a long one, so a large design doesn't look stuck.
 `--py-primitives <file.py|module>` (repeatable; `load_python_primitives()`)
 calls the module's `load(db)` on the top NLDB before the design is loaded,
 after `--xilinx` (najaeda's own `primitives.xilinx`) and before Liberty:
@@ -1164,7 +1167,7 @@ path the host read, used by the native "Open in Editor".
 The main window (`appFrame()`) is two columns, each with its own
 horizontal splitter: on the left the hierarchy tree over the selection
 panel, on the right the schematic over the tabs (Equipotential, Traces,
-Review, Source, Properties). The selection panel
+Review, Source, Properties, Log). The selection panel
 (`NetlistTree::renderSelectionPanel()`) has a Pins and a Nets tab for
 the selected instance (Ports and Nets for the top, when none is): the
 tree's own term/net nodes for it, drawn by the same `NetlistTreeNode::render()`, so their
@@ -1192,7 +1195,32 @@ and a leaf reveal (review Go To) also selects the panel's tab
   `NetWire`, `RenderEquipotential`) as opposed to the wire-format types
   (`InstanceResponseJson`, `TermResponseJson`, `Equipotential`, ...) also
   defined there.
-- **`Console`** — in-app log/message panel.
+- **`Console`** — the app's log: `Log()`/`Warn()`/`Error()` echo where
+  they always did (stdout/stderr natively, the browser console in WASM)
+  and keep the last `kMaxEntries` lines, one entry per line, for the Log
+  tab; `record()` keeps a line without echoing it (naja's own messages,
+  which its logger already prints: `main_native.cpp` adds a
+  `naja::log::addCallbackSink()` for them). Thread-safe, since designs load
+  on a worker thread. `tests/ConsoleTest.cpp`.
+- **`LogView`** — the "Log" bottom-panel tab: `Console`'s lines filtered by
+  level, colored by `Theme::warningText`/`errorText`, Copy and Clear,
+  following new lines while scrolled to the bottom. The tab reads
+  "Log (n)" for errors since it was last shown, and comes forward when a
+  design load fails (`AppState::focusLogTab`).
+- **`DesignLoader`** (native) — runs one `LocalSNLProvider` load on a
+  worker thread so the window keeps drawing: `startDesignLoad()` in
+  `AppLogic.cpp` (File > Open and a design given on the command line; the
+  headless `--export` loads synchronously) shows a "Loading design" modal
+  with naja's progress (`NajaProgress`: stage, detail, current/total; an
+  indeterminate bar when total is 0) and Cancel, which makes naja's next
+  report throw `NajaCancelled`. While it runs the provider drops requests
+  (`LocalSNLProvider::setLoading()`): nothing else may touch naja. Once
+  done, `finishDesignLoad()` reloads the tree and schematic and runs the
+  caller's follow-up (the CLI's `--diagnosis`/`--style`). A load that fails
+  or is cancelled keeps the design loaded before (`runLoad()` puts the
+  previous DB back) and logs why. SystemVerilog loads write no
+  `naja_sv_diagnostics.log`: the diagnostics are logged, so they reach the
+  Log tab. `tests/provider/DesignLoaderTest.cpp`.
 - **`WebSocketClient`** — low-level Emscripten WebSocket binding used by
   `WebSocketProvider`.
 - **`DiagnosisStore`** — global static store (same pattern as

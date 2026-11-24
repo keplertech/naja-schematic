@@ -9,8 +9,11 @@
 #include <backends/imgui_impl_opengl3.h>
 #include <algorithm>
 #include <cstdlib>
+#include <functional>
 #include <iostream>
 #include <string>
+
+#include "NajaLog.h"
 
 #include "AppLogic.h"
 #include "Theme.h"
@@ -187,6 +190,10 @@ int main(int argc, char* argv[]) {
     return 1;
   }
 
+  // The design to load, run below: right away for an export, on a worker
+  // thread behind the "Loading design" dialog in the window.
+  std::function<bool(LocalSNLProvider&)> loadDesign;
+  std::string loadTitle;
   if (!designPath.empty()) {
     std::string ext = extension(designPath);
     if (ext == "sv") {
@@ -198,17 +205,23 @@ int main(int argc, char* argv[]) {
         std::cerr << "--yosys-src is only supported for .v designs\n";
         return 1;
       }
-      provider->loadSystemVerilog({designPath}, top);
+      loadTitle = "Loading SystemVerilog";
+      loadDesign = [designPath, top](LocalSNLProvider& p) { return p.loadSystemVerilog({designPath}, top); };
     } else if (isVHDL(designPath)) {
       if (!libertyPaths.empty() || yosysSrc) {
         std::cerr << "--liberty and --yosys-src are only supported for .v designs, not VHDL\n";
         return 1;
       }
-      provider->loadVHDL(designPaths, top);
+      loadTitle = "Loading VHDL";
+      loadDesign = [designPaths, top](LocalSNLProvider& p) { return p.loadVHDL(designPaths, top); };
     } else if (ext == "v") {
-      provider->loadVerilog({designPath}, libertyPaths, yosysSrc);
+      loadTitle = "Loading Verilog";
+      loadDesign = [designPath, libertyPaths, yosysSrc](LocalSNLProvider& p) {
+        return p.loadVerilog({designPath}, libertyPaths, yosysSrc);
+      };
     } else {
-      provider->loadSNL(designPath); // assume SNL directory
+      loadTitle = "Loading naja-if";  // assume an SNL directory
+      loadDesign = [designPath](LocalSNLProvider& p) { return p.loadSNL(designPath); };
     }
   }
 
@@ -223,6 +236,7 @@ int main(int argc, char* argv[]) {
       std::cerr << "--export/--png needs a design to load\n";
       return 1;
     }
+    loadDesign(*provider);
     exportOptions.diagnosisPath = diagnosisPath;
     exportOptions.stylePath     = stylePath;
     return runHeadlessExport(provider, exportOptions);
@@ -263,17 +277,30 @@ int main(int argc, char* argv[]) {
   state.showTopOnLoad = true;
   setupProvider(state);
 
-  // Load any requested diagnosis only after setupProvider() has completed
-  // its synchronous root-load handshake (provider->start() at the end of
-  // setupProvider fires it, which clears any previously-set diagnosis) --
-  // otherwise the diagnosis we just loaded would be wiped immediately.
-  if (!diagnosisPath.empty()) {
-    loadDiagnosisFile(diagnosisPath);
-  }
-  // Same for styles, cleared by a root load too.
-  if (!stylePath.empty()) {
-    loadStyleFile(stylePath);
-  }
+  // naja's own messages (load warnings, SystemVerilog diagnostics) in the
+  // Log tab too; its logger still prints them.
+  naja::log::addCallbackSink([](spdlog::level::level_enum level, std::string_view msg) {
+    const LogLevel l = level >= spdlog::level::err ? LogLevel::Error
+                     : level == spdlog::level::warn ? LogLevel::Warning
+                                                    : LogLevel::Info;
+    Console::record(l, "naja", msg);
+  });
+
+  // Load any requested diagnosis only after the design's root load
+  // (reloadNetlist() once it's loaded), which clears any previously-set
+  // diagnosis -- otherwise the diagnosis we just loaded would be wiped
+  // immediately.
+  auto loadAnnotations = [diagnosisPath, stylePath] {
+    if (!diagnosisPath.empty()) {
+      loadDiagnosisFile(diagnosisPath);
+    }
+    // Same for styles, cleared by a root load too.
+    if (!stylePath.empty()) {
+      loadStyleFile(stylePath);
+    }
+  };
+  if (loadDesign) startDesignLoad(state, loadTitle, loadDesign, loadAnnotations);
+  else            loadAnnotations();
 
   while (appFrame(state)) {
     // loop until the window is closed

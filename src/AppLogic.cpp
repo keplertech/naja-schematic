@@ -33,12 +33,14 @@ using json = nlohmann::json;
 #include "ShowNetStore.h"
 #include "TraceView.h"
 #include "PropertiesView.h"
+#include "LogView.h"
 #include "ReviewStore.h"
 #include "ReviewView.h"
 
 #ifndef __EMSCRIPTEN__
 #include <fstream>
 #include "LocalSNLProvider.h"
+#include "DesignLoader.h"
 #include "NativeFileDialog.h"
 #else
 #include <emscripten.h>
@@ -170,6 +172,98 @@ static void renderShortcutsWindow(bool& open) {
 // Per-frame rendering — identical for both WASM and native entry points.
 // ---------------------------------------------------------------------------
 
+#ifndef __EMSCRIPTEN__
+namespace {
+DesignLoader g_designLoader;
+std::function<void()> g_afterDesignLoad;
+}  // namespace
+
+void startDesignLoad(AppState& state, std::string title,
+                     std::function<bool(LocalSNLProvider&)> load,
+                     std::function<void()> then) {
+  auto* provider = dynamic_cast<LocalSNLProvider*>(state.provider);
+  if (!provider) return;
+  if (!g_designLoader.start(*provider, std::move(title), std::move(load))) {
+    Console::Warn("A design is already loading");
+    return;
+  }
+  g_afterDesignLoad = std::move(then);
+}
+
+bool designLoading() { return g_designLoader.active(); }
+
+// The load started by startDesignLoad(), once it's over: the new design
+// shown, or the Log tab saying why not.
+static void finishDesignLoad(AppState& state) {
+  bool ok = false;
+  if (!g_designLoader.takeResult(ok)) return;
+  auto then = std::move(g_afterDesignLoad);
+  g_afterDesignLoad = nullptr;
+  if (!ok) {
+    state.focusLogTab = true;
+    // The design shown is kept, but a request the tree made meanwhile was
+    // dropped (setLoading()) and will never be answered: start it over.
+    auto* provider = dynamic_cast<LocalSNLProvider*>(state.provider);
+    if (provider && provider->takeDroppedRequests() > 0) reloadNetlist(state);
+    return;
+  }
+  char took[64];
+  std::snprintf(took, sizeof(took), ": done in %.1f s", g_designLoader.elapsedSeconds());
+  Console::Log(g_designLoader.title() + took);
+  reloadNetlist(state);
+  if (then) then();
+}
+
+// The modal shown while a design loads: naja's stage and what it's on, a
+// bar (moving back and forth when naja can't tell how much is left), the
+// time spent, and Cancel.
+static void renderDesignLoadDialog() {
+  const char* kTitle = "Loading design";
+  const bool active = g_designLoader.active();
+  if (!active && !ImGui::IsPopupOpen(kTitle)) return;
+  if (active && !ImGui::IsPopupOpen(kTitle)) ImGui::OpenPopup(kTitle);
+  const float em = ImGui::GetFontSize();
+  ImGui::SetNextWindowSize(ImVec2(em * 28, 0), ImGuiCond_Always);
+  ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
+    return;
+  if (!active) {   // over (finishDesignLoad(), earlier this frame)
+    ImGui::CloseCurrentPopup();
+    ImGui::EndPopup();
+    return;
+  }
+  const DesignLoader::Progress p = g_designLoader.progress();
+  ImGui::TextUnformatted(g_designLoader.title().c_str());
+  ImGui::Spacing();
+  ImGui::Text("%s", DesignLoader::stageLabel(p.stage).c_str());
+  // The file or design being read; long paths keep their end.
+  std::string detail = p.detail;
+  const float room = ImGui::GetContentRegionAvail().x;
+  for (size_t cut = 1; cut < p.detail.size() && ImGui::CalcTextSize(detail.c_str()).x > room; ++cut)
+    detail = "..." + p.detail.substr(cut);
+  ImGui::TextDisabled("%s", detail.empty() ? " " : detail.c_str());
+  if (p.total > 0) {
+    const float fraction = float(double(std::min(p.current, p.total)) / double(p.total));
+    const std::string count = std::to_string(p.current) + " / " + std::to_string(p.total);
+    ImGui::ProgressBar(fraction, ImVec2(-1, 0), count.c_str());
+  } else {
+    ImGui::ProgressBar(-1.0f * float(ImGui::GetTime()), ImVec2(-1, 0), "");
+  }
+  ImGui::Text("%.1f s", g_designLoader.elapsedSeconds());
+  ImGui::Spacing();
+  if (g_designLoader.cancelling()) {
+    ImGui::BeginDisabled();
+    ImGui::Button("Cancelling...", ImVec2(em * 7, 0));
+    ImGui::EndDisabled();
+  } else if (ImGui::Button("Cancel", ImVec2(em * 7, 0))) {
+    g_designLoader.cancel();
+  }
+  if (ImGui::IsItemHovered())
+    ImGui::SetTooltip("Stop loading; the design shown before stays");
+  ImGui::EndPopup();
+}
+#endif
+
 bool appFrame(AppState& state) {
   SDL_Event event;
   bool quit = false;
@@ -191,6 +285,10 @@ bool appFrame(AppState& state) {
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL2_NewFrame();
   ImGui::NewFrame();
+
+#ifndef __EMSCRIPTEN__
+  finishDesignLoad(state);
+#endif
 
   // A review thread clicked last frame: its object in the tree (down to a
   // term/net row) and in the schematic (added if not shown). Net threads
@@ -232,10 +330,11 @@ bool appFrame(AppState& state) {
   if (ImGui::BeginMainMenuBar()) {
     if (ImGui::BeginMenu("File")) {
 #ifndef __EMSCRIPTEN__
-      if (ImGui::MenuItem("Open naja-if...",        "")) { snlDialogOpen = true; snlPathBuf[0] = '\0'; }
-      if (ImGui::MenuItem("Open Verilog...",        "")) { vrlDialogOpen = true; vrlFilesBuf[0] = '\0'; vrlLibertyBuf[0] = '\0'; }
-      if (ImGui::MenuItem("Open SystemVerilog...",  "")) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; svTopBuf[0] = '\0'; }
-      if (ImGui::MenuItem("Open VHDL...",           "")) { vhdlDialogOpen = true; vhdlFilesBuf[0] = '\0'; vhdlTopBuf[0] = '\0'; }
+      const bool canOpen = !designLoading();
+      if (ImGui::MenuItem("Open naja-if...",        "", false, canOpen)) { snlDialogOpen = true; snlPathBuf[0] = '\0'; }
+      if (ImGui::MenuItem("Open Verilog...",        "", false, canOpen)) { vrlDialogOpen = true; vrlFilesBuf[0] = '\0'; vrlLibertyBuf[0] = '\0'; }
+      if (ImGui::MenuItem("Open SystemVerilog...",  "", false, canOpen)) { svDialogOpen  = true; svFilesBuf[0]  = '\0'; svTopBuf[0] = '\0'; }
+      if (ImGui::MenuItem("Open VHDL...",           "", false, canOpen)) { vhdlDialogOpen = true; vhdlFilesBuf[0] = '\0'; vhdlTopBuf[0] = '\0'; }
       ImGui::Separator();
       // Diagnosis UI temporarily hidden — see DiagnosisStore.cpp kDiagnosisUIHidden.
       // if (ImGui::MenuItem("Load Diagnosis JSON...", "")) {
@@ -376,8 +475,6 @@ bool appFrame(AppState& state) {
     }
   };
 
-  auto* localProvider = dynamic_cast<LocalSNLProvider*>(state.provider);
-
   // ==== Open naja-if dialog ====
   if (snlDialogOpen) { ImGui::OpenPopup("Open naja-if"); snlDialogOpen = false; }
   ImGui::SetNextWindowSize(ImVec2(dialogWidth(32), 0), ImGuiCond_Always);
@@ -396,7 +493,8 @@ bool appFrame(AppState& state) {
                                ImGuiInputTextFlags_EnterReturnsTrue);
     ImGui::Spacing();
     if ((ImGui::Button("Open", ImVec2(buttonWidth(),0)) || ok) && snlPathBuf[0]) {
-      if (localProvider) { localProvider->loadSNL(snlPathBuf); reloadNetlist(state); }
+      startDesignLoad(state, "Loading naja-if",
+                      [path = std::string(snlPathBuf)](LocalSNLProvider& p) { return p.loadSNL(path); });
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
@@ -430,10 +528,11 @@ bool appFrame(AppState& state) {
                         "lists the RTL each gate came from");
     ImGui::Spacing();
     if (ImGui::Button("Open", ImVec2(buttonWidth(),0)) && vrlFilesBuf[0]) {
-      if (localProvider) {
-        localProvider->loadVerilog(splitLines(vrlFilesBuf), splitLines(vrlLibertyBuf), vrlYosysSrc);
-        reloadNetlist(state);
-      }
+      startDesignLoad(state, "Loading Verilog",
+                      [files = splitLines(vrlFilesBuf), liberty = splitLines(vrlLibertyBuf),
+                       yosysSrc = vrlYosysSrc](LocalSNLProvider& p) {
+                        return p.loadVerilog(files, liberty, yosysSrc);
+                      });
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
@@ -463,10 +562,10 @@ bool appFrame(AppState& state) {
     ImGui::InputText("##svtop", svTopBuf, sizeof(svTopBuf));
     ImGui::Spacing();
     if (ImGui::Button("Open", ImVec2(buttonWidth(),0)) && svFilesBuf[0]) {
-      if (localProvider) {
-        localProvider->loadSystemVerilog(splitLines(svFilesBuf), svTopBuf);
-        reloadNetlist(state);
-      }
+      startDesignLoad(state, "Loading SystemVerilog",
+                      [files = splitLines(svFilesBuf), top = std::string(svTopBuf)](LocalSNLProvider& p) {
+                        return p.loadSystemVerilog(files, top);
+                      });
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
@@ -492,16 +591,18 @@ bool appFrame(AppState& state) {
     ImGui::TextDisabled("naja's VHDL frontend is experimental (bit/bit_vector subset).");
     ImGui::Spacing();
     if (ImGui::Button("Open", ImVec2(buttonWidth(),0)) && vhdlFilesBuf[0]) {
-      if (localProvider) {
-        localProvider->loadVHDL(splitLines(vhdlFilesBuf), vhdlTopBuf);
-        reloadNetlist(state);
-      }
+      startDesignLoad(state, "Loading VHDL",
+                      [files = splitLines(vhdlFilesBuf), top = std::string(vhdlTopBuf)](LocalSNLProvider& p) {
+                        return p.loadVHDL(files, top);
+                      });
       ImGui::CloseCurrentPopup();
     }
     ImGui::SameLine();
     if (ImGui::Button("Cancel", ImVec2(buttonWidth(),0))) ImGui::CloseCurrentPopup();
     ImGui::EndPopup();
   }
+
+  renderDesignLoadDialog();
 #endif
 
   // ==== Main layout ====
@@ -684,9 +785,20 @@ bool appFrame(AppState& state) {
             PropertiesView::render();
             ImGui::EndTabItem();
           }
+          // "Log (2)": errors since the tab was last shown. A fixed ID, so
+          // the tab stays put as the count changes.
+          const size_t unseen = LogView::unseenErrors();
+          std::string logTab = unseen ? "Log (" + std::to_string(unseen) + ")###Log"
+                                      : std::string("Log###Log");
+          ImGuiTabItemFlags logFlags = state.focusLogTab ? ImGuiTabItemFlags_SetSelected : 0;
+          if (ImGui::BeginTabItem(logTab.c_str(), nullptr, logFlags)) {
+            LogView::render();
+            ImGui::EndTabItem();
+          }
           state.focusDiagnosisTab  = false;
           state.focusSourceTab     = false;
           state.focusPropertiesTab = false;
+          state.focusLogTab        = false;
           ImGui::EndTabBar();
         }
       }

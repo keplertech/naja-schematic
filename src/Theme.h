@@ -83,6 +83,8 @@ struct Theme {
     ImVec4 scrollFrame, scrollGrab, scrollGrabActive;
     // The About dialog's title.
     ImVec4 titleText;
+    // The Log tab's warning and error lines.
+    ImU32  warningText, errorText;
 };
 
 inline constexpr int kThemeCount = 3;

@@ -1,6 +1,7 @@
 import asyncio
 import io
 import json
+import logging
 import socket
 import subprocess
 import sys
@@ -114,3 +115,39 @@ def test_cli_loads_design(flag, files, top, tmp_path):
                          capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip().splitlines()[-1] == top
+
+
+def test_load_progress_logs_each_stage_and_long_ones_periodically(caplog):
+    now = [0.0]
+    progress = server.LoadProgress("Verilog", interval=2.0, clock=lambda: now[0])
+    with caplog.at_level(logging.INFO, logger="naja_schematic"):
+        assert progress(stage="parse", detail="big.v", current=0, total=0) is True
+        now[0] = 1.0
+        progress(stage="parse", detail="big.v", current=10, total=0)   # too soon
+        now[0] = 3.5
+        progress(stage="parse", detail="big.v", current=20, total=0)
+        progress(stage="construct", detail="", current=0, total=40)
+        now[0] = 6.0
+        progress(stage="construct", detail="top", current=30, total=40)
+        progress(stage="done", detail="", current=0, total=0)          # not logged
+    assert [r.getMessage() for r in caplog.records] == [
+        "Verilog: parsing (big.v)",
+        "Verilog: parsing, 20 (big.v)",
+        "Verilog: building the netlist",
+        "Verilog: building the netlist, 30/40 (top)",
+    ]
+
+
+def test_cli_load_reports_progress(tmp_path):
+    data = Path(__file__).parents[2] / "tests" / "data"
+    script = (
+        "import logging, sys\n"
+        "from naja_schematic import server\n"
+        "logging.basicConfig(stream=sys.stderr, format='%(message)s', level=logging.INFO)\n"
+        "args = server.build_arg_parser().parse_args(sys.argv[1:])\n"
+        "server.load_design(args)\n")
+    run = subprocess.run([sys.executable, "-c", script, "--sv", str(data / "sv/operators.sv")],
+                         cwd=tmp_path, capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    for stage in ("parsing", "elaborating", "building the netlist"):
+        assert f"SystemVerilog: {stage}" in run.stderr

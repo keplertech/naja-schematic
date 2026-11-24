@@ -24,9 +24,10 @@ log = logging.getLogger("naja_schematic")
 # (SNLDesign.getNetByID, SNLNet.getID), for review anchors.
 # 0.7.35: content hashes (NLUniverse.getContentHash), review snapshot ids.
 # 0.8.1: equipotential graphs (SNLEquipotential keep_graph/getGraph, from
-# 0.8.0) with bus-net bits keeping their type; the release the C++ viewer
-# is built against (thirdparty/naja).
-MIN_NAJAEDA_VERSION = (0, 8, 1)  # keep in step with pyproject.toml
+# 0.8.0) with bus-net bits keeping their type.
+# 0.8.2: load progress (the loaders' progress= callback, LoadProgress in
+# server.py); the release the C++ viewer is built against (thirdparty/naja).
+MIN_NAJAEDA_VERSION = (0, 8, 2)  # keep in step with pyproject.toml
 
 
 def check_najaeda_version():
