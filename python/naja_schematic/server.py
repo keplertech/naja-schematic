@@ -25,6 +25,7 @@ import secrets
 import socket
 import sys
 import threading
+import time
 import urllib.parse
 import webbrowser
 from concurrent.futures import ThreadPoolExecutor
@@ -778,6 +779,46 @@ def _top_db():
     return db
 
 
+# How naja's load stages read (the native app's "Loading design" dialog
+# says the same, DesignLoader::stageLabel()).
+_STAGE_LABELS = {
+    "parse": "parsing",
+    "first_pass": "reading modules",
+    "second_pass": "building the netlist",
+    "elaborate": "elaborating",
+    "construct": "building the netlist",
+    "liberty": "reading Liberty",
+}
+
+
+class LoadProgress:
+    """naja's progress callback for a load from the command line: a line
+    on the log (stderr) as each stage starts, and how far it is every
+    `interval` seconds within a long one -- so a large design shows it's
+    being worked on rather than looking stuck."""
+
+    def __init__(self, what, interval=2.0, clock=time.monotonic):
+        self.what = what
+        self.interval = interval
+        self.clock = clock
+        self.stage = None
+        self.last = 0.0
+
+    def __call__(self, *, stage, detail, current, total):
+        now = self.clock()
+        label = _STAGE_LABELS.get(stage, stage)
+        where = f" ({detail})" if detail else ""
+        if stage != self.stage:
+            self.stage, self.last = stage, now
+            if stage != "done":
+                log.info("%s: %s%s", self.what, label, where)
+        elif now - self.last >= self.interval:
+            self.last = now
+            amount = f"{current}/{total}" if total else str(current)
+            log.info("%s: %s, %s%s", self.what, label, amount, where)
+        return True
+
+
 def load_design(args):
     """Load the liberty files and the Verilog/SystemVerilog/VHDL design
     named by the parsed CLI arguments into the NLUniverse, through najaeda's
@@ -802,12 +843,13 @@ def load_design(args):
             else:
                 expanded_liberty_files.append(lib)
         log.info("Loading liberty files: %s", ", ".join(expanded_liberty_files))
-        db.loadLibertyPrimitives(expanded_liberty_files)
+        db.loadLibertyPrimitives(expanded_liberty_files, progress=LoadProgress("Liberty"))
 
     if args.vhdl:
         log.info("Loading VHDL: %s", ", ".join(args.vhdl))
         db.loadVHDL(args.vhdl, top=args.top,
-                    diagnostics_report_path="naja_vhdl_diagnostics.log")
+                    diagnostics_report_path="naja_vhdl_diagnostics.log",
+                    progress=LoadProgress("VHDL"))
     elif is_sv:
         sv_files = args.systemverilog or []
         sources = sv_files + ([f"-f {args.flist}"] if args.flist else [])
@@ -816,13 +858,15 @@ def load_design(args):
             sv_files, flist=args.flist, defines=args.define,
             diagnostics_report_path="naja_sv_diagnostics.log",
             blackbox_unknown_modules=bool(args.allow_unknown_designs),
-            frontend_options={"slang": ["--top", args.top]} if args.top else None)
+            frontend_options={"slang": ["--top", args.top]} if args.top else None,
+            progress=LoadProgress("SystemVerilog"))
     else:
         log.info("Loading Verilog netlist: %s", args.verilog)
         db.loadGateLevelVerilog(
             [args.verilog],
             blackbox_unknown_modules=bool(args.allow_unknown_designs),
-            yosys_source_attributes=args.yosys_src)
+            yosys_source_attributes=args.yosys_src,
+            progress=LoadProgress("Verilog"))
     top = naja.NLUniverse.get().getTopDesign()
     log.info("Design loaded: %s", top.getName() if top else None)
     return top

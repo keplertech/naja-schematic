@@ -38,15 +38,18 @@ const Theme& themeData(int i) {
         { ThemeId::Classic, "classic", "Classic (dark panels, white sheet)", false, SchematicPalette{},
           IM_COL32(255, 0, 0, 255), IM_COL32(0, 255, 0, 255), IM_COL32(255, 255, 0, 255),
           ImVec4(0.12f, 0.12f, 0.12f, 1), ImVec4(0.45f, 0.45f, 0.45f, 1), ImVec4(0.65f, 0.65f, 0.65f, 1),
-          ImVec4(0.9f, 0.9f, 1.0f, 1.0f) },
+          ImVec4(0.9f, 0.9f, 1.0f, 1.0f),
+          IM_COL32(255, 200, 60, 255), IM_COL32(255, 90, 90, 255) },
         { ThemeId::Light, "light", "Light", true, SchematicPalette{},
           IM_COL32(200, 30, 30, 255), IM_COL32(20, 135, 40, 255), IM_COL32(165, 120, 0, 255),
           ImVec4(0.86f, 0.86f, 0.86f, 1), ImVec4(0.62f, 0.62f, 0.62f, 1), ImVec4(0.45f, 0.45f, 0.45f, 1),
-          ImVec4(0.1f, 0.15f, 0.35f, 1.0f) },
+          ImVec4(0.1f, 0.15f, 0.35f, 1.0f),
+          IM_COL32(160, 100, 0, 255), IM_COL32(190, 20, 20, 255) },
         { ThemeId::Dark, "dark", "Dark", false, darkSchematic(),
           IM_COL32(255, 95, 95, 255), IM_COL32(95, 225, 120, 255), IM_COL32(240, 215, 80, 255),
           ImVec4(0.12f, 0.12f, 0.12f, 1), ImVec4(0.45f, 0.45f, 0.45f, 1), ImVec4(0.65f, 0.65f, 0.65f, 1),
-          ImVec4(0.9f, 0.9f, 1.0f, 1.0f) },
+          ImVec4(0.9f, 0.9f, 1.0f, 1.0f),
+          IM_COL32(240, 200, 80, 255), IM_COL32(255, 105, 105, 255) },
     };
     return kThemes[i];
 }

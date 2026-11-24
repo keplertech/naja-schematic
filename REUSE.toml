@@ -144,6 +144,10 @@ path = [
   "src/TraceStore.h",
   "src/TraceView.cpp",
   "src/TraceView.h",
+  "src/LogView.cpp",
+  "src/LogView.h",
+  "src/DesignLoader.cpp",
+  "src/DesignLoader.h",
   "src/VerilogLanguage.cpp",
   "src/VerilogLanguage.h",
   "src/Types.cpp",
@@ -157,6 +161,7 @@ path = [
   "src/main_render.cpp",
   "src/main_wasm.cpp",
   "tests/DiagnosisStoreTest.cpp",
+  "tests/ConsoleTest.cpp",
   "tests/EquipotentialViewTest.cpp",
   "tests/FakeNetlistProvider.h",
   "tests/GUIDataTest.cpp",
@@ -195,6 +200,7 @@ path = [
   "tests/data/vhdl/leaf.vhd",
   "tests/data/vhdl/top.vhd",
   "tests/provider/LocalSNLProviderProtocolTest.cpp",
+  "tests/provider/DesignLoaderTest.cpp",
 ]
 SPDX-FileCopyrightText = "2026 najaeda contributors"
 SPDX-License-Identifier = "Apache-2.0"

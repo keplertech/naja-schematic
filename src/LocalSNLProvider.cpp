@@ -525,21 +525,39 @@ bool LocalSNLProvider::setTopByName(const std::string& name) {
 // Loading
 // ---------------------------------------------------------------------------
 
-void LocalSNLProvider::loadSNL(const std::string& path) {
-  Console::Log("LocalSNLProvider: loading SNL from " + path);
+bool LocalSNLProvider::runLoad(const std::string& what, const std::function<void()>& body) {
+  NLDB* previous = db_;
+  const auto previousLoadedAt = loadedAt_;
   try {
+    body();
+    return true;
+  } catch (const naja::NajaCancelled&) {
+    Console::Warn(what + " cancelled" + (previous ? ": the design loaded before is kept" : ""));
+  } catch (const std::exception& e) {
+    Console::Error(what + " failed: " + e.what());
+  }
+  // The half-built DB stays in the universe (no public single-DB removal),
+  // unused; the one before is whole.
+  db_ = previous;
+  loadedAt_ = previousLoadedAt;
+  return false;
+}
+
+bool LocalSNLProvider::loadSNL(const std::string& path) {
+  Console::Log("LocalSNLProvider: loading SNL from " + path);
+  return runLoad("Loading naja-if", [&] {
+    SNLCapnP::LoadingConfiguration config;
+    config.progress = progress_;
     db_ = nullptr; // old DB remains in universe (no public removal API)
-    db_ = SNLCapnP::load(std::filesystem::path(path));
+    db_ = SNLCapnP::load(std::filesystem::path(path), config);
+    loadedAt_ = std::filesystem::file_time_type::clock::now();
     if (!db_->getTopDesign())
       findAndSetTop();
     Console::Log("LocalSNLProvider: SNL loaded");
-  } catch (const std::exception& e) {
-    Console::Error("loadSNL failed: " + std::string(e.what()));
-    db_ = nullptr;
-  }
+  });
 }
 
-void LocalSNLProvider::loadVerilog(
+bool LocalSNLProvider::loadVerilog(
     const std::vector<std::string>& verilogFiles,
     const std::vector<std::string>& libertyFiles,
     bool yosysSourceAttributes)
@@ -547,12 +565,13 @@ void LocalSNLProvider::loadVerilog(
   Console::Log("LocalSNLProvider: loading Verilog (" +
                std::to_string(verilogFiles.size()) + " files, " +
                std::to_string(libertyFiles.size()) + " liberty)");
-  try {
+  return runLoad("Loading Verilog", [&] {
     db_ = freshDB();
 
     if (!libertyFiles.empty()) {
       auto* primLib = NLLibrary::create(db_, NLLibrary::Type::Primitives, NLName("primitives"));
       SNLLibertyConstructor libCtor(primLib);
+      libCtor.setProgressCallback(progress_);
       std::vector<std::filesystem::path> paths(libertyFiles.begin(), libertyFiles.end());
       libCtor.construct(paths);
     }
@@ -563,15 +582,13 @@ void LocalSNLProvider::loadVerilog(
     cfg.yosysSourceAttributes_  = yosysSourceAttributes;
     SNLVRLConstructor vrlCtor(userLib);
     vrlCtor.config_ = cfg;
+    vrlCtor.setProgressCallback(progress_);
     std::vector<std::filesystem::path> paths(verilogFiles.begin(), verilogFiles.end());
     vrlCtor.construct(paths);
 
     findAndSetTop();
     Console::Log("LocalSNLProvider: Verilog loaded");
-  } catch (const std::exception& e) {
-    Console::Error("loadVerilog failed: " + std::string(e.what()));
-    db_ = nullptr;
-  }
+  });
 }
 
 // Heuristic: does this path look like a manifest/command file (as opposed to
@@ -589,11 +606,11 @@ static bool looksLikeFlist(const std::filesystem::path& p) {
   return name.find("flist") != std::string::npos;
 }
 
-void LocalSNLProvider::loadSystemVerilog(const std::vector<std::string>& sources,
+bool LocalSNLProvider::loadSystemVerilog(const std::vector<std::string>& sources,
                                          const std::string& topModule) {
   Console::Log("LocalSNLProvider: loading SystemVerilog (" +
                std::to_string(sources.size()) + " source entries)");
-  try {
+  return runLoad("Loading SystemVerilog", [&] {
     db_ = freshDB();
 
     // Pass .sv/.v files through directly; hand manifest/command files
@@ -623,37 +640,37 @@ void LocalSNLProvider::loadSystemVerilog(const std::vector<std::string>& sources
 
     auto* userLib = NLLibrary::create(db_, NLName("work"));
     SNLSVConstructor svCtor(userLib);
-    svCtor.construct(paths);
+    svCtor.setProgressCallback(progress_);
+    // No report file in the current directory: the diagnostics are logged,
+    // so they reach the Log tab.
+    SNLSVConstructor::ConstructOptions options;
+    options.diagnosticsReportPath.reset();
+    svCtor.construct(paths, options);
 
     if (topModule.empty() || !setTopByName(topModule)) {
       findAndSetTop();
     }
     Console::Log("LocalSNLProvider: SystemVerilog loaded (" +
                  std::to_string(paths.size()) + " files)");
-  } catch (const std::exception& e) {
-    Console::Error("loadSystemVerilog failed: " + std::string(e.what()));
-    db_ = nullptr;
-  }
+  });
 }
 
-void LocalSNLProvider::loadVHDL(const std::vector<std::string>& files,
+bool LocalSNLProvider::loadVHDL(const std::vector<std::string>& files,
                                 const std::string& topEntity) {
   Console::Log("LocalSNLProvider: loading VHDL (" + std::to_string(files.size()) + " files)");
-  try {
+  return runLoad("Loading VHDL", [&] {
     db_ = freshDB();
     std::vector<std::filesystem::path> paths(files.begin(), files.end());
     auto* userLib = NLLibrary::create(db_, NLName("work"));
     VHDLConstructor vhdlCtor(userLib);
+    vhdlCtor.setProgressCallback(progress_);
     if (auto* top = vhdlCtor.constructFiles(paths, topEntity)) {
       db_->setTopDesign(top);
       Console::Log("Top design: " + designName(top));
     } else {
       findAndSetTop();
     }
-  } catch (const std::exception& e) {
-    Console::Error("loadVHDL failed: " + std::string(e.what()));
-    db_ = nullptr;
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -662,6 +679,8 @@ void LocalSNLProvider::loadVHDL(const std::vector<std::string>& files,
 
 void LocalSNLProvider::handleRequest(const std::string& jsonRequest) {
   if (!msgCb_) return;
+  // A load on another thread is replacing the DB (setLoading()).
+  if (loading_) { ++dropped_; return; }
 
   json req;
   try { req = json::parse(jsonRequest); }

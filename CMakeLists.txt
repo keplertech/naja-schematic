@@ -96,6 +96,7 @@ set(CORE_SOURCES
   src/SelectionStore.cpp
   src/TraceStore.cpp
   src/TraceView.cpp
+  src/LogView.cpp
   src/ShowNetStore.cpp
   src/StyleStore.cpp
   src/ReviewStore.cpp
@@ -272,6 +273,7 @@ else()
   add_executable(naja-schematic-standalone
     ${CORE_SOURCES}
     src/LocalSNLProvider.cpp
+    src/DesignLoader.cpp
     src/HeadlessView.cpp
     src/HeadlessExport.cpp
     ${PLATFORM_FILE_DIALOG_SOURCE}
@@ -355,6 +357,7 @@ if(NOT EMSCRIPTEN_BUILD)
       src/StyleStore.cpp
       src/ReviewStore.cpp
       src/ReviewView.cpp
+      src/LogView.cpp
       src/GenerationProvider.cpp
       src/SchematicLayout.cpp
       src/SchematicInteraction.cpp
@@ -388,7 +391,9 @@ if(NOT EMSCRIPTEN_BUILD)
       src/Console.cpp
       src/Types.cpp
       src/LocalSNLProvider.cpp
+      src/DesignLoader.cpp
       tests/provider/LocalSNLProviderProtocolTest.cpp
+      tests/provider/DesignLoaderTest.cpp
     )
     target_link_libraries(naja-schematic-provider-tests PRIVATE
       gtest_main
