@@ -735,16 +735,58 @@ TEST(RouteNets, ASpineDetoursAroundABoxInTheWay) {
   }
 }
 
-TEST(RouteNets, ATrunkStaysRightOfANameInItsChannel) {
-  // A box with a name row reaching 100 past its right edge: the channel
-  // (and so every trunk) starts after the name, not after the box.
+TEST(RouteNets, ATrunkLevelWithANameStaysRightOfIt) {
+  // A box with a name row reaching 100 past its right edge, and a receiver
+  // above: the trunk runs level with the name, so it starts after it.
   const RouteRect box{0.f, 40.f, 60.f, 80.f}, name{0.f, 20.f, 160.f, 40.f};
   const RouteRect rcv{250.f, 0.f, 310.f, 120.f};
-  auto r = routeNets({{{{60.f, 60.f}, true}, {{{250.f, 100.f}, false}}}}, {box, name, rcv});
+  auto r = routeNets({{{{60.f, 60.f}, true}, {{{250.f, 10.f}, false}}}}, {box, name, rcv});
   ASSERT_EQ(r.size(), 1u);
   for (const auto& s : r[0].segments)
     if (std::abs(s.a.x - s.b.x) < 0.5f && std::abs(s.a.y - s.b.y) > 0.5f)
       EXPECT_GT(s.a.x, name.x1);
+}
+
+TEST(RouteNets, ATrunkBelowANameNeverCrossesIt) {
+  // The same name, a receiver below: the trunk may run under the name's
+  // span, never through the name.
+  const RouteRect box{0.f, 40.f, 60.f, 80.f}, name{0.f, 20.f, 160.f, 40.f};
+  const RouteRect rcv{250.f, 0.f, 310.f, 120.f};
+  auto r = routeNets({{{{60.f, 60.f}, true}, {{{250.f, 100.f}, false}}}}, {box, name, rcv});
+  ASSERT_EQ(r.size(), 1u);
+  for (const auto& s : r[0].segments) EXPECT_FALSE(crosses(s, name));
+}
+
+TEST(RouteNets, ABoxAtAnotherHeightDoesNotSqueezeATrunk) {
+  // A wide box far above makes the strip free of boxes over the whole sheet
+  // a 3-wide sliver next to the receivers' column. The trunk, which runs
+  // nowhere near that box, still keeps clear of the receivers' pin ticks.
+  const RouteRect far{0.f, 0.f, 97.f, 40.f};
+  const RouteRect drv{0.f, 200.f, 40.f, 240.f}, rcv{100.f, 200.f, 140.f, 300.f};
+  auto r = routeNets({{{{40.f, 220.f}, true}, {{{100.f, 220.f}, false}, {{100.f, 280.f}, false}}}},
+                     {far, drv, rcv});
+  ASSERT_EQ(r.size(), 1u);
+  const float x = trunkX(r[0], 40.f, 100.f);
+  ASSERT_FALSE(std::isnan(x));
+  EXPECT_GE(x, 40.f + kPinTick);
+  EXPECT_LE(x, 100.f - kPinTick);
+}
+
+TEST(RouteNets, ACrowdedChannelKeepsItsTrunksClearOfThePinTicks) {
+  // Twenty nets in one 60-wide channel, each with a receiver far below its
+  // driver: twenty tracks. None may run under a pin's tick, which is drawn
+  // kPinTick out of its box -- the wire would seem to meet the tick halfway.
+  std::vector<RouteNet> nets;
+  for (int i = 0; i < 20; ++i)
+    nets.push_back({{{40.f, 10.f * float(i)}, true}, {{{100.f, 400.f + 10.f * float(i)}, false}}});
+  const std::vector<RouteRect> boxes = {{0.f, 0.f, 40.f, 600.f}, {100.f, 0.f, 140.f, 600.f}};
+  auto r = routeNets(nets, boxes);
+  for (const auto& net : r) {
+    const float x = trunkX(net, 40.f, 100.f);
+    ASSERT_FALSE(std::isnan(x));
+    EXPECT_GE(x, 40.f + kPinTick);
+    EXPECT_LE(x, 100.f - kPinTick);
+  }
 }
 
 TEST(RouteNets, TwoSpinesDoNotShareAHeight) {

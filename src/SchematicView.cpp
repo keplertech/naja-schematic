@@ -43,7 +43,7 @@ constexpr float kMaxLabelFontSize      = 30.0f;
 // Schematic-style pin: a short tick line flush with the box edge rather than a
 // filled dot -- direction is read from position/wire, not from a red/green
 // fill, matching the "color is reserved for highlighting" convention below.
-constexpr float kPortTickBaseLen  = 10.0f; // world-space "1x zoom" tick length
+constexpr float kPortTickBaseLen  = SchematicLayout::kPinTick; // world-space "1x zoom" tick length
 constexpr float kMinPortTickLen   = 2.5f;
 constexpr float kWireBaseThickness = 2.0f; // world-space "1x zoom" wire thickness
 constexpr float kMinWireThickness  = 0.75f;

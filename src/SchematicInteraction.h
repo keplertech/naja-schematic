@@ -24,7 +24,7 @@ namespace SchematicInteraction {
 // zoom), the nearest pin wins, not whichever was built first.
 inline constexpr float kPinHitRadiusPx = 18.0f;
 inline constexpr float kPinHitMaxWorld = 20.0f;
-inline constexpr float kPinTickWorld   = 10.0f;
+inline constexpr float kPinTickWorld   = SchematicLayout::kPinTick;
 // Zero-size shapes are top-level port flags: the flag body extends right of
 // the anchor (see drawBoundaryPortInstance), so that's where they're grabbed.
 inline constexpr float kFlagHitLenWorld = 30.0f;

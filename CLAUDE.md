@@ -1351,7 +1351,9 @@ and a leaf reveal (review Go To) also selects the panel's tab
     result is exactly the unhinted layout (`StablePlacement` tests).
   - `stackPorts()`: top-level ports on the sheet's left/right edges.
   - `routeNets()`: one orthogonal tree per driving pin. Trunks go in the
-    box-free channels between columns, on distinct tracks that respect
+    box-free channels between columns (each as wide where its trunks run
+    as the boxes level with them allow, a box far above or below never
+    squeezing it; clear of the pin ticks), on distinct tracks that respect
     channel routing's vertical constraints, plus a spine that detours around
     boxes, labels and other spines. Junction dots mark real branch points.
   - `layoutHierarchyGroups()`: module frames (with room for their pins,
