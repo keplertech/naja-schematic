@@ -1728,3 +1728,101 @@ TEST_F(SchematicClicks, ANetWithoutAGraphCrossesFramesAsBefore) {
   EXPECT_TRUE(f->ports.empty());
   EXPECT_EQ(sv().routes.size(), 1u);
 }
+
+// ---------------------------------------------------------------------------
+// Pin ticks: a pin's tick is drawn kPinTick out of its box, and a vertical
+// wire must never run under one -- the wire would seem to meet the tick
+// halfway rather than at its tip.
+// ---------------------------------------------------------------------------
+namespace {
+
+void expectNoTrunkUnderAPinTick(const SchematicView& sv) {
+  using SchematicLayout::kPinTick;
+  for (const auto& route : sv.routes)
+    for (const auto& seg : route.segments) {
+      if (std::abs(seg.a.x - seg.b.x) > 1e-3f || std::abs(seg.a.y - seg.b.y) < 1e-3f) continue;
+      const float x = seg.a.x, y0 = std::min(seg.a.y, seg.b.y), y1 = std::max(seg.a.y, seg.b.y);
+      for (const auto& s : sv.instances) {
+        if (s.isHierGroup || s.w <= 0.f || s.h <= 0.f) continue;
+        for (const auto& p : s.ports) {
+          if (p.framePin) continue;
+          const ImVec2 at = portAnchor(s, p);
+          const float lo = p.lx < 0.f ? at.x - kPinTick : at.x;
+          const float hi = p.lx < 0.f ? at.x : at.x + kPinTick;
+          EXPECT_FALSE(x > lo + 0.5f && x < hi - 0.5f && at.y >= y0 - 0.5f && at.y <= y1 + 0.5f)
+              << "a vertical wire at x=" << x << " under " << s.name << "." << p.name << "'s tick";
+        }
+      }
+    }
+}
+
+// An occurrence of a leaf inside module m.
+InstTermOccurrence inM(const std::string& inst, unsigned instId, const std::string& term,
+                       unsigned termId, Direction dir) {
+  InstTermOccurrence o = occ(inst, instId, term, termId, dir, 4);
+  o.path       = {{5, "m"}, {instId, inst}};
+  o.pathIds    = {5, instId};
+  o.pathModels = {"mid", ""};
+  return o;
+}
+
+} // namespace
+
+TEST_F(SchematicClicks, AWireIntoAModuleFrameNextToALeafReachesThePinTips) {
+  // As reported on a real design: u1.Y at the top drives a top-level leaf
+  // t and enters m through its pin "reset" to r0.B and r1.B. t and m are
+  // in one column, t about as wide as m's edge to its leaves: the strip
+  // free of boxes over the whole sheet is a sliver next to r0 and r1.
+  const InstancePath m{{5, "m"}};
+  const unsigned n = 2;
+  Equipotential reset{true, {}, {}};
+  reset.occurrences.push_back(occ("u1", 1, "Y", 1, Direction::Output, 2));
+  reset.occurrences.push_back(occ("t", 2, "A", 0, Direction::Input, 2));
+  reset.occurrences.push_back(inM("r0", 30, "B", 2, Direction::Input));
+  reset.occurrences.push_back(inM("r1", 31, "B", 2, Direction::Input));
+  NetGraph graph;
+  graph.nodes = { {{}, "rst", {0, 1}, {}}, {m, "reset", {2, 3}, {}} };
+  graph.edges = { framePort(0, 1, m, "mid", "reset", 0, Direction::Input) };
+  reset.graph = graph;
+  add(reset);
+  frame(3);
+
+  const InstanceShape* f = frameShape(sv(), m);
+  ASSERT_NE(f, nullptr);
+  ASSERT_NE(framePinPort(*f, "reset", true), nullptr);
+  const InstanceShape* t = shape(InstancePath{{2, "t"}});
+  ASSERT_NE(t, nullptr);
+  EXPECT_FLOAT_EQ(t->x, f->x);  // the arrangement that made the sliver
+  expectNoTrunkUnderAPinTick(sv());
+  // Every receiver pin is reached by a wire ending at it (not one passing
+  // under its tick): a horizontal segment ending on the pin's anchor.
+  for (unsigned r = 0; r < n; ++r) {
+    const InstancePath p{{5, "m"}, {30 + r, "r" + std::to_string(r)}};
+    for (const std::string& term : {std::string("B")}) {
+      const Port* port = pin(p, term);
+      ASSERT_NE(port, nullptr) << "r" << r << "." << term;
+      const ImVec2 at = portAnchor(*shape(p), *port);
+      bool reached = false;
+      for (const auto& route : sv().routes)
+        for (const auto& s : route.segments)
+          for (const ImVec2& e : {s.a, s.b})
+            if (std::abs(e.x - at.x) < 1e-3f && std::abs(e.y - at.y) < 1e-3f &&
+                std::abs(s.a.y - s.b.y) < 1e-3f && std::abs(s.a.x - s.b.x) >= SchematicLayout::kPinTick)
+              reached = true;
+      EXPECT_TRUE(reached) << "r" << r << "." << term;
+    }
+  }
+}
+
+TEST_F(SchematicClicks, NoTrunkRunsUnderAPinTickInAFlatOrFramedCone) {
+  for (const std::vector<std::string>& prefix : {std::vector<std::string>{}, std::vector<std::string>{"core"}}) {
+    EquipotentialView::resetLayout();
+    for (auto* eq : eqs) delete eq;
+    eqs.clear();
+    std::vector<Equipotential> cone;
+    addFlopCone(cone, prefix);
+    for (auto& e : cone) add(std::move(e));
+    frame(3);
+    expectNoTrunkUnderAPinTick(sv());
+  }
+}

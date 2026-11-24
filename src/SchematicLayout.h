@@ -32,6 +32,7 @@ inline constexpr float kPinPitch   = 20.0f;  // distance between neighboring pin
 inline constexpr float kRowSpacing = 30.0f;  // vertical gap between boxes in a column
 inline constexpr float kLeftMargin = 20.0f;
 inline constexpr float kChannelMin = 50.0f;  // narrowest routing channel between columns
+inline constexpr float kPinTick    = 10.0f;  // a pin's tick, drawn out of its box
 inline constexpr float kTrackPitch = 10.0f;  // extra channel width per vertical wire track
 inline constexpr float kPortGap    = 50.0f;  // top-level ports -> nearest box
 inline constexpr float kBandGap    = kRowSpacing + 2.0f * kPinPitch;  // between two drivers' sink bands

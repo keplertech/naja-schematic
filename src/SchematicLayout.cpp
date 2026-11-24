@@ -885,6 +885,24 @@ int channelOf(const std::vector<Channel>& channels, const RoutePin& pin) {
     return 0;
 }
 
+// Channel `c` where it runs from y0 to y1: widened over the spans bounding
+// it to the nearest one level with that band (the first and last channels
+// keep their outer side), never past the next channel.
+Channel localChannel(const std::vector<Channel>& channels, const std::vector<RouteRect>& spans,
+                     int c, float y0, float y1) {
+    constexpr float clearance = 4.f, eps = 0.5f;
+    Channel w = channels[size_t(c)];
+    const float leftLimit  = c > 0 ? channels[size_t(c) - 1].x1 : w.x0;
+    const float rightLimit = c + 1 < int(channels.size()) ? channels[size_t(c) + 1].x0 : w.x1;
+    float x0 = leftLimit, x1 = rightLimit;
+    for (const auto& r : spans) {
+        if (r.y1 <= y0 - clearance || r.y0 >= y1 + clearance) continue;
+        if (r.x1 <= w.x0 + eps && r.x1 > leftLimit - eps) x0 = std::max(x0, r.x1);
+        if (r.x0 >= w.x1 - eps && r.x0 < rightLimit + eps) x1 = std::min(x1, r.x0);
+    }
+    return { std::min(x0, w.x0), std::max(x1, w.x1) };
+}
+
 // Something a spine must not run along: a box, a label, or another net's
 // wire (net >= 0; a net's own wires don't block it).
 struct Blocker {
@@ -1082,12 +1100,34 @@ std::vector<RoutedNet> routeNets(const std::vector<RouteNet>& nets,
     // Tracks, spread evenly across each channel. A straight pass-through
     // (a zero-length trunk) takes part too: where its wire meets others'
     // stubs still depends on its position.
+    //
+    // A channel is a strip free of boxes over the whole sheet, so a box far
+    // above or below can make it a sliver -- a leaf next to a module frame,
+    // in the same column as the frame's contents. Where its trunks run, it
+    // can be wider: over the spans that bound it, up to the first thing
+    // level with them (never into the next channel). Trunks in one band
+    // (overlapping vertically, chained) share that width, so their order
+    // holds. A side against a box leaves room for the pin ticks drawn out
+    // of it (a quarter of a narrow channel at most), so no trunk runs
+    // under one.
     std::map<int, std::vector<Trunk*>> byChannel;
     for (auto& t : trunks) byChannel[t.channel].push_back(&t);
     for (auto& [c, ts] : byChannel) {
-        const float n  = float(assignTracks(ts));
-        const float x0 = channels[c].x0, w = channels[c].x1 - channels[c].x0;
-        for (auto* t : ts) t->x = x0 + w * float(t->track + 1) / (n + 1.f);
+        const float n = float(assignTracks(ts));
+        std::vector<Trunk*> sorted = ts;
+        std::sort(sorted.begin(), sorted.end(), [](const Trunk* a, const Trunk* b) { return a->y0 < b->y0; });
+        for (size_t i = 0; i < sorted.size();) {
+            float y0 = sorted[i]->y0, y1 = sorted[i]->y1;
+            size_t j = i + 1;
+            for (; j < sorted.size() && sorted[j]->y0 < y1 + kGrid; ++j) y1 = std::max(y1, sorted[j]->y1);
+            const Channel w = localChannel(channels, spans, c, y0, y1);
+            const float d   = std::min(kPinTick, 0.25f * (w.x1 - w.x0));
+            const float x0  = w.x0 + (c > 0 ? d : 0.f);
+            const float x1  = w.x1 - (c + 1 < int(channels.size()) ? d : 0.f);
+            for (size_t k = i; k < j; ++k)
+                sorted[k]->x = x0 + (x1 - x0) * float(sorted[k]->track + 1) / (n + 1.f);
+            i = j;
+        }
     }
 
     // Segments, then junctions where three or more directions meet.
