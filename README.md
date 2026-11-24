@@ -299,7 +299,7 @@ Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 | Right or middle drag | Pan |
 | Click an open (hollow) pin or port | Add its net to the schematic |
 | Click a bus pin or bus port (`d[7:0]`) | Add the nets of all its bits; the pin stays one, and a bus joined bit for bit to another is drawn as one thick wire |
-| Double-click a bus pin or bus port | Show its bits, one pin each; double-click a bit to merge them back (also *Expand Bus* / *Collapse Bus* in the pin's menu) |
+| Double-click a bus pin or bus port | Show its bits, one pin each; double-click a bit to merge them back (also *Expand Bus* / *Collapse Bus* in the pin's menu). A bus port whose bits lead to different pins always shows its bits |
 | Double-click a dashed box | Show all of its pins |
 | Click a box | Select the instance (also in the design tree; its pins and nets in the panel below the tree) |
 | Click a stacked (summary) box | Show the sinks it gathers (a net's sinks past *View > Fanout*'s limit) |

@@ -2000,8 +2000,35 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     auto busKey = [&](const TermDir& td) {
         return BusGroupKey{ InstancePath{}, busBase[td], td.second == Direction::Input };
     };
+    // A bus is one flag only when its wired bits all lead to the same pins
+    // (a merged bus pin, say): their wires are then one bus wire. Bits going
+    // to different pins would share one wire tree from the flag, drawn as
+    // if their nets were joined: those get a flag per bit (in a bracketed
+    // block), as if the bus were expanded.
+    std::set<TermDir> splitBuses;
+    {
+        using Ends = std::set<std::pair<InstancePath, std::string>>;
+        std::map<TermDir, std::optional<Ends>> endsOf;  // the first wired bit's
+        for (const auto* stubs : { &leftStubs, &rightStubs })
+            for (const auto& st : *stubs) {
+                auto it = g_portEquiByPortId.find(st.portId);
+                if (it == g_portEquiByPortId.end() || !it->second.bit) continue;
+                Ends ends;
+                for (const auto& we : equiEnds[st.ei]) {
+                    if (we.isTerm && we.portId == st.portId) continue;
+                    if (we.isTerm) ends.insert({ InstancePath{}, stripBusIndex(we.term) });
+                    else           ends.insert({ we.path, std::to_string(renderedPort(we.portId)) });
+                }
+                const TermDir td{ it->second.termId, st.direction };
+                auto& first = endsOf[td];
+                if (!first) first = std::move(ends);
+                else if (*first != ends) splitBuses.insert(td);
+            }
+    }
     auto isBusTerm  = [&](const TermDir& td) { return busBits[td].size() > 1; };
-    auto mergedBus  = [&](const TermDir& td) { return isBusTerm(td) && !g_expandedBuses.count(busKey(td)); };
+    auto mergedBus  = [&](const TermDir& td) {
+        return isBusTerm(td) && !g_expandedBuses.count(busKey(td)) && !splitBuses.count(td);
+    };
     auto busStub = [&](const TermDir& td, float wantY) {
         const std::set<int>& bits = busBits[td];
         PortStub bus{ kNoEqui, busLabel(busBase[td], std::vector<int>(bits.begin(), bits.end())),

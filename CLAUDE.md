@@ -613,7 +613,10 @@ so bits joined to another merged bus pin are one bus wire; a double-click
 toggles the bus (`toggleBus()`): a merged pin splits into its bits, a bit
 merges them back. A top-level bus is one flag the same way, wired bits
 included (`PortStub::members`, their wires reach the flag through
-`logicalToRenderedPortId`). An expanded bus's bits stay tied together by
+`logicalToRenderedPortId`) -- but only while its wired bits all lead to
+the same pins: bits going apart would be one wire tree from the flag,
+drawn as if their nets were joined, so such a bus gets a flag per bit,
+bracketed (`splitBuses`; a double-click can't merge it). An expanded bus's bits stay tied together by
 a bracket: on a box, inside it before their names (`Port::busBracket`,
 `drawBusBrackets()`; the box is a grid step wider); on the sheet's edge,
 its bit flags are stacked as one block (`stackPorts()`' `blocks`, ordered
@@ -760,7 +763,7 @@ because a page of thousands of gates reads as nothing: a large flat
 netlist gets its ports, explored by clicking them (`showTopPorts()`, open
 `Port`s on port flags with `PortStub::ei == kNoEqui`, replaced by the
 flag of a net that reaches the port; a bus is one flag, `d[7:0]`
-(its wired bits too), loaded by a click and split by a double-click like
+(its wired bits too, while they lead to the same pins), loaded by a click and split by a double-click like
 a box's bus pin, key
 `BusGroupKey{{}, base, isInput}` in `g_expandedBuses`) or tracing from them. Sent on every
 first `root_response` with `"auto": true` when `AppState::showTopOnLoad`

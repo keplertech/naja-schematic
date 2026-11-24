@@ -857,11 +857,12 @@ TEST_F(SchematicClicks, AClickOnATopBusLoadsEveryBitAndADoubleClickShowsThem) {
   EXPECT_NE(portFlag(sv(), "d[3:0]"), nullptr);
   EXPECT_EQ(portFlag(sv(), "d[0]"), nullptr);
 
-  // ...also once the nets are drawn: every bit's wire reaches it.
+  // ...also once the nets are drawn, bit for bit into one bus pin: every
+  // bit's wire reaches it, one bus wire.
   for (int b = 0; b < 4; ++b) {
     Equipotential e{true, {}, {}};
     e.terms.push_back(BitTerm{"d", 4, Direction::Input, b});
-    e.occurrences.push_back(occ("u" + std::to_string(b), unsigned(b + 1), "A", 10, Direction::Input, 1));
+    e.occurrences.push_back(occ("u1", 1, "A", 10, Direction::Input, 4, b));
     add(e);
   }
   frame(3);
@@ -869,9 +870,9 @@ TEST_F(SchematicClicks, AClickOnATopBusLoadsEveryBitAndADoubleClickShowsThem) {
   ASSERT_NE(bus, nullptr);
   EXPECT_FALSE(bus->ports[0].open);
   EXPECT_EQ(portFlag(sv(), "d[2]"), nullptr);
-  int fromBus = 0;
-  for (const auto& n : sv().nets) fromBus += n.srcInstance == bus->id || n.dstInstance == bus->id;
-  EXPECT_EQ(fromBus, 4);
+  ASSERT_EQ(sv().nets.size(), 1u);
+  EXPECT_EQ(sv().nets[0].srcInstance, bus->id);
+  EXPECT_TRUE(sv().nets[0].isBus);
 
   // A double-click shows the bits, one flag each...
   frame(30);  // long after the click above
@@ -908,6 +909,27 @@ TEST_F(SchematicClicks, AClickOnATopBusLoadsEveryBitAndADoubleClickShowsThem) {
   EXPECT_EQ(portFlag(sv(), "d[2]"), nullptr);
   EXPECT_TRUE(sv().portBrackets.empty());
   EXPECT_EQ(sent("load_equipotential").size(), 4u);  // nothing more to load
+}
+
+// A top-level bus whose bits lead to different pins isn't one flag: their
+// wires would be one tree from it, drawn as if the nets were joined. Each
+// bit gets its own flag, bracketed together.
+TEST_F(SchematicClicks, ATopBusWhoseBitsGoApartIsAFlagPerBit) {
+  for (int b = 0; b < 2; ++b) {
+    Equipotential e{true, {}, {}};
+    e.terms.push_back(BitTerm{"d", 4, Direction::Input, b});
+    e.occurrences.push_back(occ("u" + std::to_string(b), unsigned(b + 1), "A", 10, Direction::Input, 1));
+    add(e);
+  }
+  frame(3);
+  EXPECT_EQ(portFlag(sv(), "d[1:0]"), nullptr);
+  const InstanceShape* d0 = portFlag(sv(), "d[0]");
+  const InstanceShape* d1 = portFlag(sv(), "d[1]");
+  ASSERT_NE(d0, nullptr);
+  ASSERT_NE(d1, nullptr);
+  ASSERT_EQ(sv().routes.size(), 2u);  // a wire tree per bit
+  ASSERT_EQ(sv().portBrackets.size(), 1u);
+  EXPECT_EQ(sv().portBrackets[0].label, "d[1:0]");
 }
 
 TEST_F(SchematicClicks, AWiredBitStaysInItsBusFlag) {
