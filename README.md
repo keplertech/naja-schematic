@@ -74,7 +74,9 @@ your own tool).
 - **Design tree**, loaded lazily so large netlists open fast: instances,
   ports, nets and bus bits. The panel below it lists the selected
   instance's pins and nets (the top's ports and nets when nothing is
-  selected).
+  selected). By default the tree shows the hierarchy alone (instances and
+  primitives); its **Show** menu (top right) adds each instance's pins
+  and nets to it.
 - **Show Sources**: where an instance, pin or net is declared and, for
   synthesized logic, the RTL it came from (e.g. Yosys `src` attributes),
   opened at the highlighted line.
@@ -310,7 +312,11 @@ Cmd in the macOS desktop app (Ctrl in a browser, on any OS).
 | Right-click | Menu: trace to driver, sources, properties, comment, open / close instance, fit, clear |
 
 In the design tree, or in the Pins (Ports for the top) and Nets tabs below
-it, right-click a row (an instance, a pin or a net) for its menu. With a
+it, right-click a row (an instance, a pin or a net) for its menu. The
+**Show** dropdown at the tree's top right checks what the tree lists under
+each instance: by default only instances and primitives; check **Pins**
+and **Nets** to list those too. The selected instance's pins and nets are
+in the tabs below either way. With a
 review loaded (`--review DIR`), **Add Comment...** in these menus starts a
 review thread on that object; the **Review** tab lists the threads, to
 reply to them and resolve them. Clicking a thread there goes to its

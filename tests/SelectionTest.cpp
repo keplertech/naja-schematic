@@ -379,9 +379,25 @@ TEST_F(TreeReveal, RevealsASelectionMadeElsewhereOnRender) {
   ImGui::DestroyContext();
 }
 
+namespace {
+
+// The filter is static: each test puts it back.
+struct TreeFilterReset {
+  bool terms = NetlistTree::showTermsInTree;
+  bool nets  = NetlistTree::showNetsInTree;
+  ~TreeFilterReset() {
+    NetlistTree::showTermsInTree = terms;
+    NetlistTree::showNetsInTree  = nets;
+  }
+};
+
+}  // namespace
+
 // Choosing a context-menu entry must not select the tree row that happens
 // to lie under the menu item: the click belongs to the menu.
 TEST_F(TreeReveal, ContextMenuClickDoesNotSelectTheRowUnderIt) {
+  TreeFilterReset reset;  // rows are clicked by position: the Terms group drawn
+  NetlistTree::showTermsInTree = true;
   ImGui::CreateContext();
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(800.f, 600.f);
@@ -666,4 +682,97 @@ TEST_F(SelectionPanel, ALeafRevealSelectsItsTab) {
   ImGui::End();
   ImGui::Render();
   EXPECT_FALSE(netTree.selectionPanelFocus().has_value());
+}
+
+// ---------------------------------------------------------------------------
+// The tree's Show menu: Pins and Nets unchecked leave the hierarchy alone.
+// ---------------------------------------------------------------------------
+
+
+// Hidden by default.
+TEST(TreeFilter, PinsAndNetsAreHiddenByDefault) {
+  EXPECT_FALSE(NetlistTree::showTermsInTree);
+  EXPECT_FALSE(NetlistTree::showNetsInTree);
+}
+
+TEST_F(TreeReveal, HiddenPinsAndNetsAreNotDrawnInTheTree) {
+  TreeFilterReset reset;
+  NetlistTree::showTermsInTree = NetlistTree::showNetsInTree = true;
+  FakeNetlistProvider netProvider;
+  NetlistTree netTree{&netProvider};
+  netTree.createRootNode("top", design(0), /*hasTerms=*/true, /*hasPrimitives=*/false,
+                         /*hasInstances=*/true, /*hasNets=*/true);
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(800.f, 600.f);
+  io.DeltaTime   = 1.f / 60.f;
+  io.IniFilename = nullptr;
+  unsigned char* px; int w, h;
+  io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+  auto frame = [&] {
+    ImGui::NewFrame();
+    ImGui::Begin("Tree");
+    netTree.render();
+    ImGui::End();
+    ImGui::Render();
+  };
+  SelectionStore::clear();
+  netTree.reveal(InstancePath{{1, "u1"}});
+  netTree.advanceReveal();
+  auto req = nlohmann::json::parse(netProvider.sent.back());
+  ASSERT_EQ(req["request"], "load_instances");
+  NetlistTreeNode* group = netTree.getNode(req["gui_id"].get<unsigned>());
+  group->createChildren();
+  // A cell: pins and nets only.
+  group->createInstanceNode("u1", "M", 1, design(1), /*hasTerms=*/true, /*hasPrimitives=*/false,
+                            /*hasInstances=*/false, /*hasNets=*/true);
+  frame();
+  frame();
+  ASSERT_FALSE(netTree.isRevealPending());
+  NetlistTreeNode* u1 = netTree.findInstance(InstancePath{{1, "u1"}});
+  ASSERT_NE(u1, nullptr);
+  // top, Ports, Nets, Instances, u1.
+  EXPECT_EQ(netTree.rowsDrawnForTesting(), 5u);
+  EXPECT_FALSE(u1->isLeaf());
+
+  NetlistTree::showTermsInTree = false;
+  frame();
+  EXPECT_EQ(netTree.rowsDrawnForTesting(), 4u);  // no Ports
+  EXPECT_FALSE(u1->isLeaf());
+  NetlistTree::showNetsInTree = false;
+  frame();
+  EXPECT_EQ(netTree.rowsDrawnForTesting(), 3u);  // top, Instances, u1
+  EXPECT_TRUE(u1->isLeaf());                     // nothing left under it
+  EXPECT_FALSE(netTree.getRoot()->isLeaf());
+
+  // Shown again: as before.
+  NetlistTree::showTermsInTree = NetlistTree::showNetsInTree = true;
+  frame();
+  EXPECT_EQ(netTree.rowsDrawnForTesting(), 5u);
+
+  SelectionStore::clear();
+  ImGui::DestroyContext();
+}
+
+// A leaf reveal (review Go To a pin) with pins hidden from the tree still
+// finds the row, for the selection panel, which shows them either way.
+TEST_F(TreeReveal, ALeafRevealWithPinsHiddenGoesToThePanel) {
+  TreeFilterReset reset;
+  NetlistTree::showTermsInTree = false;
+  tree.reveal(InstancePath{{11, "u1"}},
+              NetlistTree::RevealLeaf{NetlistTree::RevealLeaf::Kind::Term, 5, 1});
+  tree.advanceReveal();
+  answer(take("load_instances")[0]["gui_id"], {{"u1", 11, true}});
+  answer(take("load_primitives")[0]["gui_id"], {});
+  tree.advanceReveal();
+  auto terms = take("load_terms");
+  ASSERT_EQ(terms.size(), 1u);
+  NetlistTreeNode* group = tree.getNode(terms[0]["gui_id"].get<unsigned>());
+  group->createChildren();
+  group->createTermNode("d", 5, Direction::Input, 3, 0);
+  tree.advanceReveal();
+  EXPECT_FALSE(tree.isRevealPending());
+  ASSERT_NE(tree.highlightedNode(), nullptr);
+  EXPECT_EQ(tree.highlightedNode()->getBusBit(), 1);
+  EXPECT_EQ(tree.selectionPanelFocus(), NetlistTree::RevealLeaf::Kind::Term);
 }

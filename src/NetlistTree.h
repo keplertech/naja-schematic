@@ -12,6 +12,8 @@ class NetlistTreeNode;
 class INetlistProvider;
 
 
+class NetlistTreeGroupNode;
+
 class NetlistTree {
   public:
     struct TermID {
@@ -65,6 +67,21 @@ class NetlistTree {
 
     void render();
     void insertNodeInMap(NetlistTreeNode* node);
+
+    // Which groups the tree shows under each instance: with either unset,
+    // its Pins (Ports for the top) or Nets groups are left out, so the tree
+    // is the hierarchy alone (instances and primitives). Only the tree:
+    // the selection panel shows the selected instance's pins and nets
+    // either way. Kept across design reloads (a new NetlistTree each).
+    // Both off by default: the panel below the tree lists them.
+    inline static bool showTermsInTree = false;
+    inline static bool showNetsInTree  = false;
+    // The "Show" dropdown at the tree panel's top right, checking Pins and
+    // Nets; drawn on the current line, right-aligned.
+    static void renderFilterMenu();
+    // Whether the tree draws a group of this type (instances and
+    // primitives: always).
+    static bool showsInTree(const NetlistTreeGroupNode& group);
 
     // A term or net of the revealed instance, to open the tree down to:
     // by id (a term's child id, a net's net id), and a bus bit's row when
@@ -298,8 +315,11 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual void getPath(NetlistTree::Path& path) const override;
     virtual InstancePath getInstancePath() const override;
     virtual unsigned getChildID() const override { return childID_; }
+    // In the tree: no arrow on an instance whose only groups are hidden.
     virtual bool isLeaf() const override {
-      return !(hasTerms_ || hasPrimitives_ || hasInstances_ || hasNets_);
+      return !(hasPrimitives_ || hasInstances_ ||
+               (hasTerms_ && NetlistTree::showTermsInTree) ||
+               (hasNets_ && NetlistTree::showNetsInTree));
     }
     virtual NetlistTreeInstanceNode* getInstanceNode() const override {
       return const_cast<NetlistTreeInstanceNode*>(this);

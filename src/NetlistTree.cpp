@@ -126,6 +126,47 @@ void NetlistTree::render() {
   }
 }
 
+bool NetlistTree::showsInTree(const NetlistTreeGroupNode& group) {
+  switch (group.getType()) {
+    case NetlistTreeGroupNode::Type::Terms: return showTermsInTree;
+    case NetlistTreeGroupNode::Type::Nets:  return showNetsInTree;
+    default:                                return true;
+  }
+}
+
+void NetlistTree::renderFilterMenu() {
+  const char* preview = showTermsInTree && showNetsInTree ? "Pins, Nets"
+                        : showTermsInTree                 ? "Pins"
+                        : showNetsInTree                  ? "Nets"
+                                                          : "Hierarchy";
+  const ImGuiStyle& style = ImGui::GetStyle();
+  const float width = ImGui::CalcTextSize("Pins, Nets").x + ImGui::GetFrameHeight() +
+                      2.f * style.FramePadding.x;
+  ImGui::SameLine();
+  // Right-aligned, unless the panel is too narrow for it.
+  const float avail = ImGui::GetContentRegionAvail().x;
+  if (avail > width) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - width);
+  ImGui::SetNextItemWidth(width);
+  if (ImGui::BeginCombo("##TreeShow", preview)) {
+    // Both items stay open, to set them together.
+    ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
+    ImGui::MenuItem("Pins", nullptr, &showTermsInTree);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Each instance's Pins group (the top's Ports).\n"
+                        "Unchecked, the tree shows only the hierarchy; the\n"
+                        "selected instance's pins stay in the panel below.");
+    ImGui::MenuItem("Nets", nullptr, &showNetsInTree);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Each instance's Nets group.\n"
+                        "Unchecked, the selected instance's nets stay in the\n"
+                        "panel below.");
+    ImGui::PopItemFlag();
+    ImGui::EndCombo();
+  }
+  if (ImGui::IsItemHovered() && !ImGui::IsPopupOpen("##TreeShow"))
+    ImGui::SetTooltip("What the tree shows under each instance");
+}
+
 void NetlistTree::renderRows(const std::vector<NetlistTreeNode*>& rows, RevealView& view) {
   ImGuiWindow* window = ImGui::GetCurrentWindow();
   // A closed row is one line of text (TreeNodeEx with no frame padding).
@@ -249,25 +290,30 @@ void NetlistTree::advanceReveal() {
                      (node->getInstancePath().empty() ? node->getLabel()
                                                       : displayPath(node->getInstancePath())));
     } else {
-      toOpen.push_back(node);
-      toOpen.push_back(group);
-      target = row;
+      NetlistTreeNode* leaf = row;
       if (revealLeaf_->bit && (row->isBus() || row->isBusNet())) {
         row->expand();
         for (auto* b : *row->children_) {
           if (b->isBusBit() && b->getBusBit() == *revealLeaf_->bit) {
-            toOpen.push_back(row);
-            target = b;
+            leaf = b;
             break;
           }
         }
       }
-      highlighted_ = target->guiID_;
+      // A group hidden from the tree: the tree stops at the instance, the
+      // row is shown in the selection panel only.
+      if (showsInTree(*group)) {
+        toOpen.push_back(node);
+        toOpen.push_back(group);
+        if (leaf != row) toOpen.push_back(row);
+        target = leaf;
+      }
+      highlighted_ = leaf->guiID_;
       // The selection panel shows the instance's rows at its top level:
       // only a bus row to open there.
       panelView_ = RevealView{};
-      if (target != row) panelView_.forceOpen.insert(row->guiID_);
-      panelView_.scrollTo = target->guiID_;
+      if (leaf != row) panelView_.forceOpen.insert(row->guiID_);
+      panelView_.scrollTo = leaf->guiID_;
       panelFocus_ = revealLeaf_->kind;
     }
   }
@@ -552,7 +598,16 @@ void NetlistTreeNode::render(NetlistTree::RevealView& view) {
   window->DC.CursorMaxPos.x = std::max(maxX, window->DC.CursorMaxPos.x);
   if (isOpen and not isLeaf()) {
     if (children_ != nullptr) {
-      NetlistTree::renderRows(*children_, view);
+      if (isInstanceNode() && !(NetlistTree::showTermsInTree && NetlistTree::showNetsInTree)) {
+        Children shown;
+        for (auto* child : *children_) {
+          auto* g = dynamic_cast<NetlistTreeGroupNode*>(child);
+          if (!g || NetlistTree::showsInTree(*g)) shown.push_back(child);
+        }
+        NetlistTree::renderRows(shown, view);
+      } else {
+        NetlistTree::renderRows(*children_, view);
+      }
     } else {
       auto flags = ImGuiTreeNodeFlags_Leaf;
       ImGui::TreeNodeEx("Loading...", flags);
