@@ -1205,6 +1205,16 @@ and a leaf reveal (review Go To) also selects the panel's tab
   horizontal extent doesn't shrink as long names scroll away. Tests:
   `TreeReveal.OffScreenRowsAreSkippedAtTheirHeight`,
   `TreeReveal.OffScreenRowsKeepTheirWidth`.
+  The panel's **Show** dropdown (`NetlistTree::renderFilterMenu()`, top
+  right) hides each instance's Pins/Ports and Nets groups from the tree
+  (`showTermsInTree`/`showNetsInTree`, both off by default, static so a
+  reload keeps them), leaving the hierarchy alone; the nodes still exist and the selection
+  panel shows them either way. Filtered when drawn (`showsInTree()`), an
+  instance with nothing else left is drawn as a leaf, and a leaf reveal
+  with its group hidden stops the tree at the instance (the panel still
+  goes to the row). Tests: `TreeFilter.PinsAndNetsAreHiddenByDefault`,
+  `TreeReveal.HiddenPinsAndNetsAreNotDrawnInTheTree`,
+  `TreeReveal.ALeafRevealWithPinsHiddenGoesToThePanel`.
 - **`GUIData`** — top-level UI state container (the netlist tree plus the list
   of currently-displayed `Equipotential`s).
 - **`SchematicView`** / **`EquipotentialView`** — the two main render panels;
