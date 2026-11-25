@@ -130,25 +130,28 @@ bool NetlistTree::showsInTree(const NetlistTreeGroupNode& group) {
   switch (group.getType()) {
     case NetlistTreeGroupNode::Type::Terms: return showTermsInTree;
     case NetlistTreeGroupNode::Type::Nets:  return showNetsInTree;
+    case NetlistTreeGroupNode::Type::Primitives: return showPrimitivesInTree;
     default:                                return true;
   }
 }
 
 void NetlistTree::renderFilterMenu() {
-  const char* preview = showTermsInTree && showNetsInTree ? "Pins, Nets"
-                        : showTermsInTree                 ? "Pins"
-                        : showNetsInTree                  ? "Nets"
-                                                          : "Hierarchy";
+  // What's checked, or "Modules" for the module hierarchy alone.
+  std::string preview;
+  for (auto [shown, name] : {std::pair{showTermsInTree, "Pins"}, std::pair{showNetsInTree, "Nets"},
+                             std::pair{showPrimitivesInTree, "Primitives"}})
+    if (shown) preview += (preview.empty() ? "" : ", ") + std::string(name);
+  if (preview.empty()) preview = "Modules";
   const ImGuiStyle& style = ImGui::GetStyle();
-  const float width = ImGui::CalcTextSize("Pins, Nets").x + ImGui::GetFrameHeight() +
+  const float width = ImGui::CalcTextSize(preview.c_str()).x + ImGui::GetFrameHeight() +
                       2.f * style.FramePadding.x;
   ImGui::SameLine();
   // Right-aligned, unless the panel is too narrow for it.
   const float avail = ImGui::GetContentRegionAvail().x;
   if (avail > width) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail - width);
   ImGui::SetNextItemWidth(width);
-  if (ImGui::BeginCombo("##TreeShow", preview)) {
-    // Both items stay open, to set them together.
+  if (ImGui::BeginCombo("##TreeShow", preview.c_str())) {
+    // The menu stays open, to set several together.
     ImGui::PushItemFlag(ImGuiItemFlags_AutoClosePopups, false);
     ImGui::MenuItem("Pins", nullptr, &showTermsInTree);
     if (ImGui::IsItemHovered())
@@ -160,6 +163,10 @@ void NetlistTree::renderFilterMenu() {
       ImGui::SetTooltip("Each instance's Nets group.\n"
                         "Unchecked, the selected instance's nets stay in the\n"
                         "panel below.");
+    ImGui::MenuItem("Primitives", nullptr, &showPrimitivesInTree);
+    if (ImGui::IsItemHovered())
+      ImGui::SetTooltip("Each instance's Primitives group (its leaf cells).\n"
+                        "Unchecked, the tree is the module hierarchy alone.");
     ImGui::PopItemFlag();
     ImGui::EndCombo();
   }
@@ -215,6 +222,10 @@ void NetlistTree::advanceReveal() {
   if (!revealPath_ || !root_) return;
   NetlistTreeNode* node = root_;
   std::vector<NetlistTreeNode*> toOpen;
+  // Where the tree stops: the parent of an instance in a hidden group (a
+  // primitive with Primitives unchecked). The walk goes on for the
+  // selection panel, which shows it either way.
+  NetlistTreeNode* treeStop = nullptr;
   for (const auto& ref : *revealPath_) {
     node->expand();  // an instance node's groups are created locally
     std::vector<NetlistTreeGroupNode*> groups;
@@ -254,11 +265,17 @@ void NetlistTree::advanceReveal() {
       }
       return;
     }
-    toOpen.push_back(node);
-    toOpen.push_back(via);
+    if (!treeStop) {
+      if (showsInTree(*via)) {
+        toOpen.push_back(node);
+        toOpen.push_back(via);
+      } else {
+        treeStop = node;
+      }
+    }
     node = next;
   }
-  NetlistTreeNode* target = node;
+  NetlistTreeNode* target = treeStop ? treeStop : node;
   if (revealLeaf_) {
     // On into the instance's Terms or Nets group, to the row.
     const bool isTerm = revealLeaf_->kind == RevealLeaf::Kind::Term;
@@ -302,7 +319,7 @@ void NetlistTree::advanceReveal() {
       }
       // A group hidden from the tree: the tree stops at the instance, the
       // row is shown in the selection panel only.
-      if (showsInTree(*group)) {
+      if (!treeStop && showsInTree(*group)) {
         toOpen.push_back(node);
         toOpen.push_back(group);
         if (leaf != row) toOpen.push_back(row);
@@ -598,7 +615,8 @@ void NetlistTreeNode::render(NetlistTree::RevealView& view) {
   window->DC.CursorMaxPos.x = std::max(maxX, window->DC.CursorMaxPos.x);
   if (isOpen and not isLeaf()) {
     if (children_ != nullptr) {
-      if (isInstanceNode() && !(NetlistTree::showTermsInTree && NetlistTree::showNetsInTree)) {
+      if (isInstanceNode() && !(NetlistTree::showTermsInTree && NetlistTree::showNetsInTree &&
+                                NetlistTree::showPrimitivesInTree)) {
         Children shown;
         for (auto* child : *children_) {
           auto* g = dynamic_cast<NetlistTreeGroupNode*>(child);

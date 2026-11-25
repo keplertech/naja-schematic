@@ -142,7 +142,7 @@ static void renderShortcutsWindow(bool& open) {
     {"Click a review badge",         "Open its thread in the Review tab"},
     {"Right-click",                  "Context menu: trace, sources, properties, comment, open/close, fit, clear"},
     {"Right-click a tree, pin or net row", "Its menu; Add Comment... starts a review thread (with --review)"},
-    {"Tree's Show menu (top right)", "Check Pins / Nets to list them in the tree too (off: instances, primitives only)"},
+    {"Tree's Show menu (top right)", "Check Pins / Nets to list them in the tree; uncheck Primitives for modules only"},
   };
   auto table = [](const char* id, const Row* rows, size_t n) {
     if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) return;

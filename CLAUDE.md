@@ -1206,15 +1206,18 @@ and a leaf reveal (review Go To) also selects the panel's tab
   `TreeReveal.OffScreenRowsAreSkippedAtTheirHeight`,
   `TreeReveal.OffScreenRowsKeepTheirWidth`.
   The panel's **Show** dropdown (`NetlistTree::renderFilterMenu()`, top
-  right) hides each instance's Pins/Ports and Nets groups from the tree
-  (`showTermsInTree`/`showNetsInTree`, both off by default, static so a
-  reload keeps them), leaving the hierarchy alone; the nodes still exist and the selection
-  panel shows them either way. Filtered when drawn (`showsInTree()`), an
-  instance with nothing else left is drawn as a leaf, and a leaf reveal
-  with its group hidden stops the tree at the instance (the panel still
-  goes to the row). Tests: `TreeFilter.PinsAndNetsAreHiddenByDefault`,
+  right) hides each instance's Pins/Ports, Nets and Primitives groups
+  from the tree (`showTermsInTree`/`showNetsInTree`, off by default,
+  `showPrimitivesInTree`, on; static so a reload keeps them); the nodes
+  still exist and the selection panel shows pins and nets either way.
+  Filtered when drawn (`showsInTree()`), an instance with nothing else
+  left is drawn as a leaf. A reveal through a hidden group stops the tree
+  where it's hidden -- at the parent of a primitive, at the instance for
+  a pin or net row -- and goes on for the panel. Tests:
+  `TreeFilter.PinsAndNetsAreHiddenByDefault`,
   `TreeReveal.HiddenPinsAndNetsAreNotDrawnInTheTree`,
-  `TreeReveal.ALeafRevealWithPinsHiddenGoesToThePanel`.
+  `TreeReveal.ALeafRevealWithPinsHiddenGoesToThePanel`,
+  `TreeReveal.HiddenPrimitivesLeaveTheModuleHierarchy`.
 - **`GUIData`** — top-level UI state container (the netlist tree plus the list
   of currently-displayed `Equipotential`s).
 - **`SchematicView`** / **`EquipotentialView`** — the two main render panels;
