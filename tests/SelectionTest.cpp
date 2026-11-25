@@ -383,11 +383,13 @@ namespace {
 
 // The filter is static: each test puts it back.
 struct TreeFilterReset {
-  bool terms = NetlistTree::showTermsInTree;
-  bool nets  = NetlistTree::showNetsInTree;
+  bool terms      = NetlistTree::showTermsInTree;
+  bool nets       = NetlistTree::showNetsInTree;
+  bool primitives = NetlistTree::showPrimitivesInTree;
   ~TreeFilterReset() {
-    NetlistTree::showTermsInTree = terms;
-    NetlistTree::showNetsInTree  = nets;
+    NetlistTree::showTermsInTree      = terms;
+    NetlistTree::showNetsInTree       = nets;
+    NetlistTree::showPrimitivesInTree = primitives;
   }
 };
 
@@ -693,6 +695,7 @@ TEST_F(SelectionPanel, ALeafRevealSelectsItsTab) {
 TEST(TreeFilter, PinsAndNetsAreHiddenByDefault) {
   EXPECT_FALSE(NetlistTree::showTermsInTree);
   EXPECT_FALSE(NetlistTree::showNetsInTree);
+  EXPECT_TRUE(NetlistTree::showPrimitivesInTree);
 }
 
 TEST_F(TreeReveal, HiddenPinsAndNetsAreNotDrawnInTheTree) {
@@ -775,4 +778,65 @@ TEST_F(TreeReveal, ALeafRevealWithPinsHiddenGoesToThePanel) {
   ASSERT_NE(tree.highlightedNode(), nullptr);
   EXPECT_EQ(tree.highlightedNode()->getBusBit(), 1);
   EXPECT_EQ(tree.selectionPanelFocus(), NetlistTree::RevealLeaf::Kind::Term);
+}
+
+// Primitives unchecked: the module hierarchy alone. A module whose only
+// contents are primitives has no arrow, and a primitive revealed (a
+// schematic click on a gate) stops the tree at its parent; the panel still
+// finds the primitive.
+TEST_F(TreeReveal, HiddenPrimitivesLeaveTheModuleHierarchy) {
+  TreeFilterReset reset;
+  NetlistTree::showPrimitivesInTree = false;
+  ImGui::CreateContext();
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(800.f, 600.f);
+  io.DeltaTime   = 1.f / 60.f;
+  io.IniFilename = nullptr;
+  unsigned char* px; int w, h;
+  io.Fonts->GetTexDataAsRGBA32(&px, &w, &h);
+  auto frame = [&] {
+    ImGui::NewFrame();
+    ImGui::Begin("Tree");
+    tree.render();
+    ImGui::End();
+    ImGui::Render();
+  };
+  SelectionStore::clear();
+  tree.reveal(InstancePath{{11, "u1"}, {20, "g"}});
+  tree.advanceReveal();
+  const unsigned topInstances = take("load_instances")[0]["gui_id"].get<unsigned>();
+  answer(topInstances, {{"u1", 11, true}});
+  answer(take("load_primitives")[0]["gui_id"], {{"r", 12, false}});
+  tree.advanceReveal();
+  // u1's primitives are still loaded, for the walk.
+  auto inst = take("load_instances");
+  auto prim = take("load_primitives");
+  ASSERT_EQ(prim.size(), 1u);
+  answer(inst[0]["gui_id"], {});
+  answer(prim[0]["gui_id"], {{"g", 20, false}});
+  tree.advanceReveal();
+  EXPECT_FALSE(tree.isRevealPending());
+  ASSERT_NE(tree.findInstance(InstancePath{{11, "u1"}, {20, "g"}}), nullptr);
+  frame();
+  frame();
+  // top, its Instances, u1, where the reveal stopped (not opened: g is
+  // hidden); no Primitives group, so no r.
+  EXPECT_EQ(tree.rowsDrawnForTesting(), 3u);
+
+  // A module holding only primitives: a leaf in the tree.
+  NetlistTreeNode* u1 = tree.findInstance(InstancePath{{11, "u1"}});
+  ASSERT_NE(u1, nullptr);
+  NetlistTreeNode* group = tree.getNode(topInstances);
+  ASSERT_NE(group, nullptr);
+  group->createInstanceNode("u2", "M_u2", 13, design(13), /*hasTerms=*/true,
+                            /*hasPrimitives=*/true, /*hasInstances=*/false, /*hasNets=*/false);
+  NetlistTreeNode* u2 = tree.findInstance(InstancePath{{13, "u2"}});
+  ASSERT_NE(u2, nullptr);
+  EXPECT_TRUE(u2->isLeaf());
+  EXPECT_FALSE(u1->isLeaf());
+  NetlistTree::showPrimitivesInTree = true;
+  EXPECT_FALSE(u2->isLeaf());
+
+  SelectionStore::clear();
+  ImGui::DestroyContext();
 }

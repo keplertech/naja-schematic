@@ -68,19 +68,19 @@ class NetlistTree {
     void render();
     void insertNodeInMap(NetlistTreeNode* node);
 
-    // Which groups the tree shows under each instance: with either unset,
-    // its Pins (Ports for the top) or Nets groups are left out, so the tree
-    // is the hierarchy alone (instances and primitives). Only the tree:
-    // the selection panel shows the selected instance's pins and nets
-    // either way. Kept across design reloads (a new NetlistTree each).
-    // Both off by default: the panel below the tree lists them.
-    inline static bool showTermsInTree = false;
-    inline static bool showNetsInTree  = false;
-    // The "Show" dropdown at the tree panel's top right, checking Pins and
-    // Nets; drawn on the current line, right-aligned.
+    // Which groups the tree shows under each instance: an unset one's
+    // Pins (Ports for the top), Nets or Primitives groups are left out.
+    // Pins and Nets off (the default) leave the hierarchy with its
+    // primitives; Primitives off too, the module hierarchy alone. Only the
+    // tree: the selection panel shows the selected instance's pins and
+    // nets either way. Kept across design reloads (a new NetlistTree each).
+    inline static bool showTermsInTree      = false;
+    inline static bool showNetsInTree       = false;
+    inline static bool showPrimitivesInTree = true;
+    // The "Show" dropdown at the tree panel's top right, checking Pins,
+    // Nets and Primitives; drawn on the current line, right-aligned.
     static void renderFilterMenu();
-    // Whether the tree draws a group of this type (instances and
-    // primitives: always).
+    // Whether the tree draws a group of this type (instances: always).
     static bool showsInTree(const NetlistTreeGroupNode& group);
 
     // A term or net of the revealed instance, to open the tree down to:
@@ -317,7 +317,8 @@ class NetlistTreeInstanceNode : public NetlistTreeNode {
     virtual unsigned getChildID() const override { return childID_; }
     // In the tree: no arrow on an instance whose only groups are hidden.
     virtual bool isLeaf() const override {
-      return !(hasPrimitives_ || hasInstances_ ||
+      return !(hasInstances_ ||
+               (hasPrimitives_ && NetlistTree::showPrimitivesInTree) ||
                (hasTerms_ && NetlistTree::showTermsInTree) ||
                (hasNets_ && NetlistTree::showNetsInTree));
     }
