@@ -35,7 +35,12 @@ class LocalSNLProvider : public INetlistProvider {
     // Load a pre-built SNL database (Cap'n Proto serialized directory).
     bool loadSNL(const std::string& path);
 
-    // Load structural Verilog.  Liberty files define the primitive cell library.
+    // Liberty files, for every HDL loader below, define the primitive cell
+    // library: loaded first, so the design's instances of their cells bind
+    // to them (naja matches SystemVerilog names exactly, VHDL's basic
+    // identifiers case-insensitively).
+
+    // Load structural Verilog.
     // `yosysSourceAttributes` decodes Yosys (* src *) attributes into source
     // origins (naja only does it when asked: nothing establishes Yosys
     // provenance otherwise).
@@ -49,12 +54,14 @@ class LocalSNLProvider : public INetlistProvider {
     // If topModule is non-empty, it is forced as the elaboration root (via
     // slang's "--top") instead of relying on findAndSetTop()'s heuristic.
     bool loadSystemVerilog(const std::vector<std::string>& sources,
-                           const std::string& topModule = "");
+                           const std::string& topModule = "",
+                           const std::vector<std::string>& libertyFiles = {});
 
     // Load VHDL (naja's experimental frontend; files in any order). If
     // topEntity is empty, naja infers the unique uninstantiated entity.
     bool loadVHDL(const std::vector<std::string>& files,
-                  const std::string& topEntity = "");
+                  const std::string& topEntity = "",
+                  const std::vector<std::string>& libertyFiles = {});
 
     // Called by the loaders with naja's progress (stage, detail, work done
     // and to do), on the thread loading; returning false cancels the load.
@@ -119,6 +126,8 @@ class LocalSNLProvider : public INetlistProvider {
     // Run one loader's body: on an exception (cancelled included) log it
     // and put the design loaded before back.
     bool runLoad(const std::string& what, const std::function<void()>& body);
+    // Liberty files into a primitives library of db_ (nothing if none).
+    void loadLiberty(const std::vector<std::string>& libertyFiles);
 
     // Find the top design among user libraries and register it in the DB.
     void findAndSetTop();

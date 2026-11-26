@@ -77,15 +77,9 @@ def test_websocket_server_serves_page_and_protocol(top, tmp_path, monkeypatch):
     assert second == {"response": "diagnosis_response", "items": DIAGNOSIS, "generation": 0}
 
 
-def test_cli_rejects_liberty_with_systemverilog():
-    with pytest.raises(SystemExit):
-        server.main(["--sv", "a.sv", "--liberty", "x.lib"])
-
-
 @pytest.mark.parametrize("argv", [
     ["--vhdl", "a.vhd", "--verilog", "b.v"],
     ["--vhdl", "a.vhd", "--sv", "b.sv"],
-    ["--vhdl", "a.vhd", "--liberty", "cells.lib"],
     ["--vhdl", "a.vhd", "--yosys-src"],
     ["--vhdl", "a.vhd", "-D", "X"],
     ["--verilog", "b.v", "--top", "t"],
@@ -115,6 +109,29 @@ def test_cli_loads_design(flag, files, top, tmp_path):
                          capture_output=True, text=True)
     assert run.returncode == 0, run.stderr
     assert run.stdout.strip().splitlines()[-1] == top
+
+
+@pytest.mark.parametrize("flag, design", [
+    ("--sv", "sv/liberty_cells.sv"),
+    ("--vhdl", "vhdl/liberty_cells.vhd"),   # components in lower case
+])
+def test_cli_loads_hdl_over_liberty_cells(flag, design, tmp_path):
+    # The Liberty cells are loaded first: the design's instances are
+    # them, drawn from their modeling.
+    data = Path(__file__).parents[2] / "tests" / "data"
+    argv = [flag, str(data / design), "--liberty", str(data / "liberty" / "cells.lib")]
+    script = (
+        "import sys\n"
+        "from naja_schematic import protocol, server\n"
+        "args = server.build_arg_parser().parse_args(sys.argv[1:])\n"
+        "for i in server.load_design(args).getInstances():\n"
+        "    print(i.getName(), i.getModel().getName(),\n"
+        "          protocol.get_primitive_type(i.getModel()))\n")
+    run = subprocess.run([sys.executable, "-c", script, *argv], cwd=tmp_path,
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    instances = set(run.stdout.strip().splitlines())
+    assert {"u_nand NAND2X1 nand", "u_inv INVX1 inv", "u_ff DFFX1 dff"} <= instances
 
 
 def test_load_progress_logs_each_stage_and_long_ones_periodically(caplog):

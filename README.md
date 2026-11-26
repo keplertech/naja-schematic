@@ -88,8 +88,8 @@ your own tool).
   SVG exports.
 - **SVG export** of the schematic, from the File menu or headless (no
   browser, no display) from the command line or Python.
-- Loads gate-level Verilog (with Liberty), SystemVerilog, VHDL
-  (experimental) or naja SNL netlists. Muxes are drawn as muxes, and the
+- Loads gate-level Verilog, SystemVerilog, VHDL (experimental), each
+  optionally over Liberty cells, or naja SNL netlists. Muxes are drawn as muxes, and the
   adders, multipliers and shifters SystemVerilog becomes as operator boxes.
 
 ## Command-line options
@@ -104,7 +104,7 @@ plus options, in any order. Their flags differ slightly:
 | | `--flist design.f`, `-D NAME=VALUE` | SystemVerilog command file, defines |
 | `a.vhd b.vhd --top top` | `--vhdl a.vhd b.vhd --top top` | Load VHDL, files in any order (naja's experimental frontend) |
 | `snl_dir/` | | Load a naja-if (SNL) netlist directory |
-| `--liberty a.lib --liberty b.lib` | `--liberty a.lib b.lib` | Liberty cell libraries (Verilog only) |
+| `--liberty a.lib --liberty b.lib` | `--liberty a.lib b.lib` | Liberty cell libraries, loaded before the design (Verilog, SystemVerilog or VHDL), whose instances of their cells bind to them |
 | | `--py-primitives prims.py` | Primitives defined in Python: a `.py` file or module whose `load(db)` builds them (repeatable) |
 | `--diagnosis report.json` | `--diagnosis report.json` | Show a diagnosis report on the design |
 | `--style styles.json` | `--style styles.json` | Color, widen, fill and label nets, instances and pins (see [Style files](#style-files)) |

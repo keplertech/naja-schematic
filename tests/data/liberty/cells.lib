@@ -1,0 +1,18 @@
+/* A small cell library for loading HDL designs over Liberty cells. */
+library(cells) {
+  cell(NAND2X1) {
+    pin(A) { direction : input; }
+    pin(B) { direction : input; }
+    pin(Y) { direction : output; function : "!(A & B)"; }
+  }
+  cell(INVX1) {
+    pin(A) { direction : input; }
+    pin(Y) { direction : output; function : "!A"; }
+  }
+  cell(DFFX1) {
+    ff(IQ, IQN) { clocked_on : "CK"; next_state : "D"; }
+    pin(CK) { direction : input; clock : true; }
+    pin(D) { direction : input; }
+    pin(Q) { direction : output; function : "IQ"; }
+  }
+}

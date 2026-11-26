@@ -557,6 +557,15 @@ bool LocalSNLProvider::loadSNL(const std::string& path) {
   });
 }
 
+void LocalSNLProvider::loadLiberty(const std::vector<std::string>& libertyFiles) {
+  if (libertyFiles.empty()) return;
+  auto* primLib = NLLibrary::create(db_, NLLibrary::Type::Primitives, NLName("primitives"));
+  SNLLibertyConstructor libCtor(primLib);
+  libCtor.setProgressCallback(progress_);
+  std::vector<std::filesystem::path> paths(libertyFiles.begin(), libertyFiles.end());
+  libCtor.construct(paths);
+}
+
 bool LocalSNLProvider::loadVerilog(
     const std::vector<std::string>& verilogFiles,
     const std::vector<std::string>& libertyFiles,
@@ -567,14 +576,7 @@ bool LocalSNLProvider::loadVerilog(
                std::to_string(libertyFiles.size()) + " liberty)");
   return runLoad("Loading Verilog", [&] {
     db_ = freshDB();
-
-    if (!libertyFiles.empty()) {
-      auto* primLib = NLLibrary::create(db_, NLLibrary::Type::Primitives, NLName("primitives"));
-      SNLLibertyConstructor libCtor(primLib);
-      libCtor.setProgressCallback(progress_);
-      std::vector<std::filesystem::path> paths(libertyFiles.begin(), libertyFiles.end());
-      libCtor.construct(paths);
-    }
+    loadLiberty(libertyFiles);
 
     auto* userLib = NLLibrary::create(db_, NLName("work"));
     SNLVRLConstructor::Config cfg;
@@ -607,11 +609,14 @@ static bool looksLikeFlist(const std::filesystem::path& p) {
 }
 
 bool LocalSNLProvider::loadSystemVerilog(const std::vector<std::string>& sources,
-                                         const std::string& topModule) {
+                                         const std::string& topModule,
+                                         const std::vector<std::string>& libertyFiles) {
   Console::Log("LocalSNLProvider: loading SystemVerilog (" +
-               std::to_string(sources.size()) + " source entries)");
+               std::to_string(sources.size()) + " source entries, " +
+               std::to_string(libertyFiles.size()) + " liberty)");
   return runLoad("Loading SystemVerilog", [&] {
     db_ = freshDB();
+    loadLiberty(libertyFiles);
 
     // Pass .sv/.v files through directly; hand manifest/command files
     // ("-f"/"-flist"/"Flist.*"-style paths) to slang's own "-f" command-file
@@ -656,10 +661,13 @@ bool LocalSNLProvider::loadSystemVerilog(const std::vector<std::string>& sources
 }
 
 bool LocalSNLProvider::loadVHDL(const std::vector<std::string>& files,
-                                const std::string& topEntity) {
-  Console::Log("LocalSNLProvider: loading VHDL (" + std::to_string(files.size()) + " files)");
+                                const std::string& topEntity,
+                                const std::vector<std::string>& libertyFiles) {
+  Console::Log("LocalSNLProvider: loading VHDL (" + std::to_string(files.size()) + " files, " +
+               std::to_string(libertyFiles.size()) + " liberty)");
   return runLoad("Loading VHDL", [&] {
     db_ = freshDB();
+    loadLiberty(libertyFiles);
     std::vector<std::filesystem::path> paths(files.begin(), files.end());
     auto* userLib = NLLibrary::create(db_, NLName("work"));
     VHDLConstructor vhdlCtor(userLib);

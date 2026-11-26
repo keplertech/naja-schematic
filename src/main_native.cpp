@@ -38,9 +38,8 @@ int main(int argc, char* argv[]) {
   // <design> is loaded by extension (.sv/.v/.vhd/.vhdl/otherwise-assumed-SNL-directory);
   // only VHDL takes several, all .vhd/.vhdl, in any order;
   // --top (.sv and VHDL) forces the top module/entity instead of inferring it;
-  // --liberty defines the primitive cell library for a .v design (repeatable,
-  // once per file) -- it is not supported for .sv or VHDL, since loadSystemVerilog()/
-  // SNLSVConstructor and loadVHDL()/VHDLConstructor have no liberty hook;
+  // --liberty defines the primitive cell library (repeatable, once per file),
+  // loaded before the design so its instances of those cells bind to them;
   // --diagnosis pre-loads a diagnosis_response-shaped JSON so an external
   // caller (a script, or naja-agent's skill, after an edit-check cycle) can
   // open a fully annotated view in one command instead of requiring a human
@@ -197,23 +196,23 @@ int main(int argc, char* argv[]) {
   if (!designPath.empty()) {
     std::string ext = extension(designPath);
     if (ext == "sv") {
-      if (!libertyPaths.empty()) {
-        std::cerr << "--liberty is only supported for .v designs, not .sv\n";
-        return 1;
-      }
       if (yosysSrc) {
         std::cerr << "--yosys-src is only supported for .v designs\n";
         return 1;
       }
       loadTitle = "Loading SystemVerilog";
-      loadDesign = [designPath, top](LocalSNLProvider& p) { return p.loadSystemVerilog({designPath}, top); };
+      loadDesign = [designPath, top, libertyPaths](LocalSNLProvider& p) {
+        return p.loadSystemVerilog({designPath}, top, libertyPaths);
+      };
     } else if (isVHDL(designPath)) {
-      if (!libertyPaths.empty() || yosysSrc) {
-        std::cerr << "--liberty and --yosys-src are only supported for .v designs, not VHDL\n";
+      if (yosysSrc) {
+        std::cerr << "--yosys-src is only supported for .v designs, not VHDL\n";
         return 1;
       }
       loadTitle = "Loading VHDL";
-      loadDesign = [designPaths, top](LocalSNLProvider& p) { return p.loadVHDL(designPaths, top); };
+      loadDesign = [designPaths, top, libertyPaths](LocalSNLProvider& p) {
+        return p.loadVHDL(designPaths, top, libertyPaths);
+      };
     } else if (ext == "v") {
       loadTitle = "Loading Verilog";
       loadDesign = [designPath, libertyPaths, yosysSrc](LocalSNLProvider& p) {
