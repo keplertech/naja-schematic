@@ -95,10 +95,10 @@ positional files, in any order -- naja resolves the units across them),
 otherwise treated as an SNL directory), `--top <name>` (`.sv`/VHDL only:
 forces the top module/entity instead of inferring it), `--liberty <path>`
 (repeatable, once per file — defines the
-primitive cell library for a `.v` design; not supported for `.sv` or VHDL,
-since `LocalSNLProvider::loadSystemVerilog()`/`SNLSVConstructor` and
-`loadVHDL()` have no liberty hook, and the CLI fails loudly rather than
-silently ignoring it), a
+primitive cell library, for `.v`, `.sv` and VHDL alike: every loader
+calls `LocalSNLProvider::loadLiberty()` into the fresh DB first, and
+naja binds the design's instances of those cells to them, SystemVerilog
+by exact name, VHDL case-insensitively), a
 diagnosis JSON to pre-load (`--diagnosis <path>` — see
 `loadDiagnosisFile()` in `AppLogic.cpp`), a style JSON to pre-load
 (`--style <path>`, `loadStyleFile()`; see `style_response`), a UI scale
@@ -234,10 +234,10 @@ within a long one, so a large design doesn't look stuck.
 calls the module's `load(db)` on the top NLDB before the design is loaded,
 after `--xilinx` (najaeda's own `primitives.xilinx`) and before Liberty:
 primitives built in Python, like kepler-formal's `py_tech_files`. Allowed with every design kind.
+`--liberty` is loaded before any design kind, so SystemVerilog and VHDL
+instances of its cells bind to them (as natively).
 `--top` applies to SystemVerilog and VHDL, `--define`/`-D` only to
-SystemVerilog, and `--liberty`/`--yosys-src` are rejected with SV and VHDL —
-same restriction as the native CLI, since those loaders have no liberty
-hook.
+SystemVerilog, and `--yosys-src` only to `--verilog`.
 `--allow_unknown_designs` maps to the loaders' `blackbox_unknown_modules`.
 
 Note the flag shapes are *not* symmetric with the native CLI above: the

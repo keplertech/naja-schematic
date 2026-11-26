@@ -520,6 +520,32 @@ TEST(ProviderLoading, BadVHDLLeavesNoDesign) {
   EXPECT_FALSE(p.provider.hasDesign());
 }
 
+// Liberty cells are loaded before an HDL design, whose instances of them are
+// them: drawn from the cells' modeling. VHDL names them case-insensitively.
+TEST(ProviderLoading, SystemVerilogInstancesBindToLibertyCells) {
+  LoadedProvider p;
+  ASSERT_TRUE(p.provider.loadSystemVerilog({testData("sv/liberty_cells.sv")}, "",
+                                           {testData("liberty/cells.lib")}));
+  json root = p.ask({{"request", "load_root"}})["root"];
+  EXPECT_EQ(root["name"], "cells_top");
+  auto types = p.primitiveTypes(root["design_ref"]);
+  EXPECT_EQ(types["NAND2X1"], "nand");
+  EXPECT_EQ(types["INVX1"], "inv");
+  EXPECT_EQ(types["DFFX1"], "dff");
+}
+
+TEST(ProviderLoading, VHDLComponentsBindToLibertyCells) {
+  LoadedProvider p;
+  ASSERT_TRUE(p.provider.loadVHDL({testData("vhdl/liberty_cells.vhd")}, "",
+                                  {testData("liberty/cells.lib")}));
+  json root = p.ask({{"request", "load_root"}})["root"];
+  EXPECT_EQ(root["name"], "cells_top");
+  auto types = p.primitiveTypes(root["design_ref"]);
+  EXPECT_EQ(types["NAND2X1"], "nand");
+  EXPECT_EQ(types["INVX1"], "inv");
+  EXPECT_EQ(types["DFFX1"], "dff");
+}
+
 // The word-level operators SystemVerilog lowers to are drawn as such, from
 // NLDB0's own identification of the model (never its name).
 // The gates naja builds for SystemVerilog operators have unnamed terms: sent

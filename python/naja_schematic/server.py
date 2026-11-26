@@ -696,7 +696,9 @@ def add_design_arguments(parser):
                              "primitives.xilinx)")
     parser.add_argument("--allow_unknown_designs", action="store_true",
                         help="Allow unknown designs when loading the design.")
-    parser.add_argument("--liberty", nargs="*", help="List of liberty files to load")
+    parser.add_argument("--liberty", nargs="*",
+                        help="Liberty files defining the primitive cells, loaded before the "
+                             "design (any kind), whose instances of them bind to them")
     parser.add_argument("--verilog", type=str,
                         help="Verilog netlist to load")
     parser.add_argument("--yosys-src", action="store_true",
@@ -729,11 +731,6 @@ def check_design_arguments(parser, args, review=False):
         parser.error("--top only applies to --systemverilog/--flist/--vhdl")
     if args.define and not is_sv:
         parser.error("--define only applies to --systemverilog/--flist")
-    if (is_sv or args.vhdl) and args.liberty:
-        # Same restriction as the native standalone: the SystemVerilog and
-        # VHDL loaders have no liberty hook, so fail loudly rather than
-        # silently ignore it.
-        parser.error("--liberty only applies to --verilog")
     if (is_sv or args.vhdl) and args.yosys_src:
         parser.error("--yosys-src only applies to --verilog")
     return designs

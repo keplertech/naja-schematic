@@ -26,8 +26,11 @@ log = logging.getLogger("naja_schematic")
 # 0.8.1: equipotential graphs (SNLEquipotential keep_graph/getGraph, from
 # 0.8.0) with bus-net bits keeping their type.
 # 0.8.2: load progress (the loaders' progress= callback, LoadProgress in
-# server.py); the release the C++ viewer is built against (thirdparty/naja).
-MIN_NAJAEDA_VERSION = (0, 8, 2)  # keep in step with pyproject.toml
+# server.py).
+# 0.8.3: Liberty cells preloaded for SystemVerilog and VHDL designs (--liberty
+# with any design kind); the release the C++ viewer is built against
+# (thirdparty/naja).
+MIN_NAJAEDA_VERSION = (0, 8, 3)  # keep in step with pyproject.toml
 
 
 def check_najaeda_version():
