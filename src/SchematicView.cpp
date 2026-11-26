@@ -415,7 +415,16 @@ static void drawPorts(SchematicPainter* dl, const InstanceShape& inst,
         ImVec2 textSize = font->CalcTextSizeA(fontSize, FLT_MAX, 0.0f, label.c_str());
         ImVec2 lblPos;
         // A clock pin's name starts past drawDffInstance()'s notch.
-        const float notch = p.clock ? 7.0f * sv.transform.scale : 0.0f;
+        float notch = p.clock ? 7.0f * sv.transform.scale : 0.0f;
+        // On a scan flop, a select pin's name is right of its riser, and a
+        // pin going past the mux has its name in the flop.
+        if (namesInside && isLeft && inst.scanMux) {
+            const auto group = SchematicLayout::scanPinGroup(p.role);
+            if (group == SchematicLayout::ScanPinGroup::Select)
+                notch += inst.scanMux->selectX * sv.transform.scale;
+            else if (group == SchematicLayout::ScanPinGroup::Other)
+                notch += inst.scanMux->flopX * sv.transform.scale;
+        }
         if (namesInside)
             lblPos = isLeft ? ImVec2(screenP.x + pad + notch, screenP.y - textSize.y * 0.5f)
                             : ImVec2(screenP.x - pad - textSize.x, screenP.y - textSize.y * 0.5f);
@@ -853,6 +862,80 @@ static void drawMuxInstance(SchematicPainter* dl, const InstanceShape& inst,
 }
 
 // ---------------------------------------------------------------------------
+// Scan flop — a mux feeding a flop, in one symbol (InstanceShape::scanMux,
+// laid out by SchematicLayout::symbolGeometry()): the data and scan inputs
+// on the mux's left edge, the scan enable's lead rising into its bottom, its
+// output into the flop's box, which has the clock notch and the other pins.
+// ---------------------------------------------------------------------------
+static void drawScanDffInstance(SchematicPainter* dl, const InstanceShape& inst,
+                                const SchematicView& sv,
+                                const ImVec2& canvasPos, const ImVec2& canvasSize) {
+    if (!inst.scanMux) {
+        drawDffInstance(dl, inst, sv, canvasPos, canvasSize);
+        return;
+    }
+    const ScanMuxGeometry& m = *inst.scanMux;
+    auto at = [&](float x, float y) {
+        return sv.worldToScreen(ImVec2(inst.x + x, inst.y + y), canvasPos, canvasSize);
+    };
+    ImVec2 rmin, rmax;
+    sv.worldRectToScreen(inst.x, inst.y, inst.w, inst.h, canvasPos, canvasSize, rmin, rmax);
+    const float line = 1.25f;
+    const ImU32 fill = fillOf(inst, pal().instanceFill);
+
+    // The leads inside the symbol, under the bodies: a select pin's along
+    // its row and up into the mux, the others' past the mux to the flop.
+    const float slant = SchematicLayout::muxSlant(m.bottom - m.top, 1);
+    for (const auto& p : inst.ports) {
+        if (p.lx >= 0.0f) continue;
+        const float y = sv.portWorldPos(inst, p).y - inst.y;
+        switch (SchematicLayout::scanPinGroup(p.role)) {
+            case SchematicLayout::ScanPinGroup::Select: {
+                // Where the mux's slanted bottom edge is at selectX.
+                const float yb = m.bottom - slant * (m.selectX / m.right);
+                dl->AddLine(at(0.0f, y), at(m.selectX, y), pal().instanceLine, line);
+                dl->AddLine(at(m.selectX, y), at(m.selectX, yb), pal().instanceLine, line);
+                break;
+            }
+            case SchematicLayout::ScanPinGroup::Other:
+                dl->AddLine(at(0.0f, y), at(m.flopX, y), pal().instanceLine, line);
+                break;
+            default:
+                break;
+        }
+    }
+    const float mid = 0.5f * (m.top + m.bottom);
+    dl->AddLine(at(m.right, mid), at(m.flopX, mid), pal().instanceLine, line);
+
+    // The mux.
+    std::vector<ImVec2> mux = { at(0.0f, m.top), at(m.right, m.top + slant),
+                                at(m.right, m.bottom - slant), at(0.0f, m.bottom) };
+    dl->AddConvexPolyFilled(mux.data(), int(mux.size()), fill);
+    dl->AddPolyline(mux.data(), int(mux.size()), pal().instanceLine, line, ImDrawFlags_Closed);
+
+    // The flop, its border dashed when only some pins are shown.
+    const ImVec2 fmin = at(m.flopX, 0.0f), fmax = rmax;
+    dl->AddRectFilled(fmin, fmax, fill, 0.0f);
+    if (inst.partialInterface) addDashedRect(dl, fmin, fmax, pal().instanceLine, line);
+    else                       dl->AddRect(fmin, fmax, pal().instanceLine, 0.0f, 0, line);
+    for (const auto& p : inst.ports) {
+        if (!p.clock || p.lx >= 0.0f) continue;
+        const float y = sv.portWorldPos(inst, p).y - inst.y;
+        const float notchH = std::min(inst.h * 0.3f, 10.0f);
+        dl->AddLine(at(m.flopX, y - notchH * 0.5f), at(m.flopX + notchH * 0.6f, y), pal().instanceLine, line);
+        dl->AddLine(at(m.flopX + notchH * 0.6f, y), at(m.flopX, y + notchH * 0.5f), pal().instanceLine, line);
+        break;
+    }
+
+    if (inst.diagOutline != 0)
+        dl->AddRect(rmin, rmax, pal().ink(inst.diagOutline), 0.0f, 0, outlineThickness(inst, sv.transform.scale, 3.5f));
+    if (inst.selected) addSelectionOutline(dl, rmin, rmax);
+    drawInstanceName(dl, inst, sv, rmin);
+    drawHierToggle(dl, inst, sv, canvasPos, canvasSize);
+    drawPorts(dl, inst, sv, canvasPos, canvasSize, /*namesInside=*/true);
+}
+
+// ---------------------------------------------------------------------------
 // Word-level operator (add, sub, mul, shifts, divmod) — a box, with its
 // operator in a circle between the two columns of pin names, in the room
 // symbolGeometry() left for it (kOperatorGlyphW).
@@ -1149,6 +1232,9 @@ void SchematicView::drawInstance(SchematicPainter* dl, const InstanceShape& inst
             break;
         case PrimitiveType::Dff:
             drawDffInstance(dl, inst, *this, canvasPos, canvasSize);
+            break;
+        case PrimitiveType::ScanDff:
+            drawScanDffInstance(dl, inst, *this, canvasPos, canvasSize);
             break;
         case PrimitiveType::Mux:
             drawMuxInstance(dl, inst, *this, canvasPos, canvasSize);

@@ -101,16 +101,33 @@ struct SymbolGeometry {
     float              w = 0.f, h = 0.f;
     std::vector<float> leftY;   // one per left (input) pin, in order
     std::vector<float> rightY;  // one per right (output/inout) pin, in order
+    std::optional<ScanMuxGeometry> scanMux;  // ScanDff only
 };
+
+// Where a scan flop's input pin goes (PrimitiveType::ScanDff), by its naja
+// role: onto the mux ("data_input", "scan_input"), onto the mux's select
+// ("scan_enable"), or straight to the flop (anything else, a pin with no
+// role included: only pins naja marks go on the mux). Never from the pin's
+// name.
+enum class ScanPinGroup { MuxInput, Select, Other };
+ScanPinGroup scanPinGroup(const std::string& role);
 
 // True for the types drawn as a gate symbol rather than a box.
 bool isGateSymbol(PrimitiveType type);
 
 // A gate with more than one right-side pin can't be drawn as its symbol and
 // falls back to a box.
+//
+// A scan flop (ScanDff) is a mux feeding a flop, in one box-sized symbol:
+// `leftGroups` (one per left pin, scanPinGroup(); absent = Other) puts the
+// mux inputs at the top, on the mux, then the select pins, whose leads rise
+// into the mux's bottom, then the rest, whose leads run past the mux to the
+// flop. The mux always spans at least two pin rows, so it reads as a mux
+// even while only one of its inputs is shown.
 SymbolGeometry symbolGeometry(PrimitiveType type,
                               const std::vector<std::string>& leftNames,
-                              const std::vector<std::string>& rightNames);
+                              const std::vector<std::string>& rightNames,
+                              const std::vector<ScanPinGroup>& leftGroups = {});
 
 // A mux is a box whose right side is narrowed to a trapezoid: its inputs run
 // down from the top (the select pin, last, at the bottom), its outputs are

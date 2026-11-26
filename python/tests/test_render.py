@@ -439,8 +439,9 @@ def test_term_roles_shared_protocol_case(roles, case):
 
 
 def test_term_role_names_cover_every_naja_role():
-    # Every non-data role naja has is sent by name (termRoleName() in C++).
-    data = {"DataInput", "DataOutput", "Other"}
+    # Every role naja has but DataOutput and Other (unset) is sent by name
+    # (termRoleName() in C++).
+    data = {"DataOutput", "Other"}
     naja_roles = {r for r in dir(naja.SNLTermRole) if not r.startswith("_")} - data
     assert naja_roles <= set(protocol._TERM_ROLE_NAMES)
 

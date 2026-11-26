@@ -17,6 +17,7 @@ class EquipotentialView {
       unsigned             childId   = 0;      // term child_id on the model
       std::optional<int>   bit;                // set for bus bits
       bool                 clock = false;      // a sequential cell's clock pin
+      std::string          role;               // naja's term role, "" = data
       // The host found nothing else on its net ("unconnected": true): drawn
       // with the no-connect cross at once (markUnconnected()).
       bool                 unconnected = false;

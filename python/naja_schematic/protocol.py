@@ -100,7 +100,7 @@ def get_primitive_type(model):
     if model.isAssign():
         return "assign"
     if model.isSequential():
-        return "dff"
+        return "scan_dff" if has_scan_mux(model) else "dff"
     if model.isAddSub():
         return "sub" if model.isSubtract() else "add"
     if model.isMultiply():
@@ -120,6 +120,13 @@ def get_primitive_type(model):
             return ptype
     return "unknown"
 
+def has_scan_mux(model):
+    # A sequential cell with a scan input and a scan enable (naja's term
+    # roles, e.g. Liberty's nextstate_type): drawn as a mux feeding the
+    # flop. Kept in step with hasScanMux() in LocalSNLProvider.cpp.
+    roles = {term_role(term) for term in model.getBitTerms()}
+    return {"scan_input", "scan_enable"} <= roles
+
 def output_bit_count(model):
     return sum(1 for term in model.getBitTerms()
                if term.getDirection() != naja.SNLTerm.Direction.Input)
@@ -127,13 +134,13 @@ def output_bit_count(model):
 # naja's term roles (SNLDesignModeling::SNLTermRole), as sent in "role".
 # Kept in step with termRoleName() in LocalSNLProvider.cpp.
 _TERM_ROLE_NAMES = {
-    "Clock": "clock", "AsyncReset": "async_reset", "AsyncSet": "async_set",
+    "Clock": "clock", "DataInput": "data_input", "AsyncReset": "async_reset", "AsyncSet": "async_set",
     "SyncReset": "sync_reset", "SyncSet": "sync_set", "Enable": "enable",
     "MemoryReadAddress": "memory_read_address", "MemoryReadData": "memory_read_data",
     "MemoryWriteAddress": "memory_write_address", "MemoryWriteData": "memory_write_data",
     "MemoryWriteEnable": "memory_write_enable", "ScanInput": "scan_input",
     "ScanEnable": "scan_enable",
-    # DataInput, DataOutput and Other (unset) are data: no "role".
+    # DataOutput and Other (unset): no "role".
 }
 
 
@@ -145,8 +152,8 @@ def _term_role_names():
 
 def term_role(term):
     """The pin's naja role (SNLBitTerm/SNLInstTerm.getRole()) as sent in
-    "role" ("clock", "async_reset", "enable", ...), or None for a data pin
-    (DataInput, DataOutput, or no role set). An SNLInstTerm also sees the
+    "role" ("clock", "data_input", "async_reset", ...), or None for
+    DataOutput or no role set. An SNLInstTerm also sees the
     roles a parameterized primitive takes from its instance's parameters."""
     get_role = getattr(term, "getRole", None)
     if get_role is None:
@@ -156,8 +163,8 @@ def term_role(term):
 
 def with_clock(entry, term, inst_term=None):
     # Only sent when set: "clock" marks a flip-flop's clock pin (see
-    # drawDffInstance), "role" a pin naja gives a non-data role (fanout
-    # summaries grouped by role).
+    # drawDffInstance), "role" a pin naja gives a role other than
+    # DataOutput (fanout summaries grouped by role; a scan flop's mux).
     if term.isClock():
         entry["clock"] = True
     role = term_role(inst_term if inst_term is not None else term)

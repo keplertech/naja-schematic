@@ -69,6 +69,9 @@ enum class PrimitiveType {
   Inv,
   Buf,
   Dff,
+  // A flop with a scan mux in front (naja's ScanInput/ScanEnable term
+  // roles on a sequential cell): drawn as a mux feeding the flop.
+  ScanDff,
   Assign,
   Tie0,    // constant-0 cell (Liberty function "0", e.g. TIEL)
   Tie1,    // constant-1 cell (Liberty function "1", e.g. TIEH)
@@ -94,6 +97,7 @@ inline const char* toString(PrimitiveType t) {
     case PrimitiveType::Inv:    return "inv";
     case PrimitiveType::Buf:    return "buf";
     case PrimitiveType::Dff:    return "dff";
+    case PrimitiveType::ScanDff: return "scan_dff";
     case PrimitiveType::Assign: return "assign";
     case PrimitiveType::Tie0:   return "tie0";
     case PrimitiveType::Tie1:   return "tie1";
@@ -119,6 +123,7 @@ inline PrimitiveType primitiveTypeFromString(const std::string& s) {
   if (s == "inv")    return PrimitiveType::Inv;
   if (s == "buf")    return PrimitiveType::Buf;
   if (s == "dff")    return PrimitiveType::Dff;
+  if (s == "scan_dff") return PrimitiveType::ScanDff;
   if (s == "assign") return PrimitiveType::Assign;
   if (s == "tie0")   return PrimitiveType::Tie0;
   if (s == "tie1")   return PrimitiveType::Tie1;
@@ -197,8 +202,8 @@ struct BitTerm {
   Direction direction = Direction::Inout;
   std::optional<int> bit;
   bool clock = false;  // a sequential cell's clock pin (naja's isClock)
-  // naja's term role ("clock", "async_reset", "enable", ...; SNLTermRole),
-  // "" for a data pin (DataInput/DataOutput, or none set).
+  // naja's term role ("clock", "data_input", "async_reset", ...;
+  // SNLTermRole), "" for DataOutput or none set.
   std::string role;
   // Equipotential pins only: the net the pin is on at its own level ("net",
   // "name[bit]" for a bus bit; displayNetLabel()) and its id, when the host
@@ -489,6 +494,9 @@ struct Port {
     // A sequential cell's clock pin, as naja models it (never guessed from
     // the pin name) -- drawDffInstance() marks it with the clock notch.
     bool clock = false;
+    // naja's term role ("scan_input", "scan_enable", "clock", ...; "" for a
+    // data pin): places a scan flop's pins on its mux (scanPinGroup()).
+    std::string role;
     // The host found nothing else on this pin's net (EquipotentialView::
     // markUnconnected()): drawn with a no-connect cross, never "open".
     bool unconnected = false;
@@ -515,6 +523,17 @@ struct Port {
     // the inner one (its wire goes into the frame), which isn't drawn.
     bool framePin  = false;
     bool innerFace = false;
+};
+
+// A scan flop's mux (PrimitiveType::ScanDff), as SchematicLayout::
+// symbolGeometry() lays it out: offsets from the symbol's top-left, world
+// units. The mux's body runs from the left edge to `right`, `top` to
+// `bottom`; a select pin's lead runs along its row to `selectX` and rises
+// into the mux's bottom, its name right of the riser; the flop's box runs
+// from `flopX` to the symbol's right edge, the other inputs' leads reaching
+// it past the mux.
+struct ScanMuxGeometry {
+    float right = 0.0f, top = 0.0f, bottom = 0.0f, selectX = 0.0f, flopX = 0.0f;
 };
 
 struct InstanceShape {
@@ -558,6 +577,8 @@ struct InstanceShape {
     // current net).  The renderer draws a dashed border so the user knows
     // the instance can be expanded to reveal its full interface.
     bool partialInterface = false;
+    // Set on a ScanDff box: where its mux and flop are drawn.
+    std::optional<ScanMuxGeometry> scanMux;
     // Severity color from DiagnosisStore::instanceColor(), else the trace
     // convergence color when two visible traces go through it, 0 if neither.
     // Drawn as an extra outline so it doesn't fight partialInterface's dash.
