@@ -416,7 +416,10 @@ if(NOT EMSCRIPTEN_BUILD)
     option(NAJA_SCHEMATIC_COVERAGE "Instrument the tests for coverage (gcc/clang --coverage)" OFF)
     if(NAJA_SCHEMATIC_COVERAGE)
       foreach(t naja-schematic-tests naja-schematic-provider-tests)
-        target_compile_options(${t} PRIVATE --coverage -O0 -g)
+        # Atomic counters: the tests run code on several threads (Console,
+        # DesignLoader), and racing non-atomic updates leave negative
+        # branch counts that gcovr refuses to parse.
+        target_compile_options(${t} PRIVATE --coverage -fprofile-update=atomic -O0 -g)
         target_link_options(${t} PRIVATE --coverage)
       endforeach()
     endif()
