@@ -5,7 +5,7 @@ netlists: the [naja-schematic](https://github.com/keplertech/naja-schematic)
 WASM viewer, packaged with the Python backend that answers it from a live
 najaeda netlist.
 
-![naja-schematic demo on a gate-level RISC-V core: two driver traces overlaid across the core module boundary, shared wires striped in both colors, then Show Sources on a gate](https://raw.githubusercontent.com/keplertech/naja-schematic/main/docs/demo.gif)
+![naja-schematic demo on a gate-level RISC-V core: a fan-in trace across module boundaries, gate symbols from Liberty, two overlaid traces with striped shared wires, a net followed through the hierarchy, a 4,000-pin clock net summarized, then Show Sources on a gate](https://raw.githubusercontent.com/keplertech/naja-schematic/main/docs/demo.gif)
 
 ```bash
 pip install naja-schematic

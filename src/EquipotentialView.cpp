@@ -662,6 +662,8 @@ void EquipotentialView::setProvider(INetlistProvider* p) { g_provider = p; }
 
 bool EquipotentialView::showHierarchy() { return g_showHierarchy; }
 
+static std::optional<std::pair<ImVec2, ImVec2>> g_cameraRect;
+void EquipotentialView::setCameraRect(std::optional<std::pair<ImVec2, ImVec2>> rect) { g_cameraRect = rect; }
 const SchematicView& EquipotentialView::schematicForTesting() { return g_schematic; }
 ImVec2 EquipotentialView::canvasOriginForTesting() { return g_canvasOrigin; }
 ImVec2 EquipotentialView::canvasSizeForTesting()   { return g_canvasSize; }
@@ -877,7 +879,8 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         for (auto& net : s_openedView.nets) equipotentials.push_back(&net);
         g_boundaryPins = s_openedView.boundary;
     }
-    const float scrollSz = ImGui::GetFrameHeight();
+    // No scrollbars while a recording drives the camera.
+    const float scrollSz = g_cameraRect ? 0.0f : ImGui::GetFrameHeight();
     ImVec2 avail = ImGui::GetContentRegionAvail();
     ImVec2 csz   = ImVec2(std::max(10.f, avail.x - scrollSz),
                           std::max(10.f, avail.y - scrollSz));
@@ -2554,6 +2557,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         }
         g_pendingZoomGroup.reset();
     }
+    if (g_cameraRect) g_schematic.requestFitRect(g_cameraRect->first, g_cameraRect->second);
     g_schematic.updateFitIfNeeded(cpos, inner, 60.f);
     advanceFocus(inner);
 
@@ -2705,6 +2709,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
     ImGui::EndChild();
 
     // Scrollbars
+    if (g_cameraRect) return;
     ImVec2 wMin(-500.f, -500.f), wMax(500.f, 500.f);
     if (g_schematic.computeWorldBounds(wMin, wMax)) {
         wMin.x -= 120.f; wMin.y -= 120.f; wMax.x += 120.f; wMax.y += 120.f;

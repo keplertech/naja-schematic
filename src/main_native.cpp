@@ -3,6 +3,7 @@
 #ifndef __EMSCRIPTEN__
 
 #include <SDL.h>
+#include "DemoRecorder.h"
 #include <SDL_opengl.h>
 #include <imgui.h>
 #include <backends/imgui_impl_sdl2.h>
@@ -83,6 +84,7 @@ int main(int argc, char* argv[]) {
   bool yosysSrc = false;
   HeadlessExportOptions exportOptions;
   bool exporting = false;
+  std::string recordScript;  // --record: a scripted video (DemoRecorder)
   for (int i = 1; i < argc; ++i) {
     std::string arg(argv[i]);
     std::string error;
@@ -132,6 +134,8 @@ int main(int argc, char* argv[]) {
       auto spec = parseTermArg(argv[++i], error);
       if (!spec) { std::cerr << arg << ": " << error << "\n"; return 1; }
       (arg == "--trace" ? exportOptions.traces : exportOptions.equipotentials).push_back(*spec);
+    } else if (arg == "--record" && i + 1 < argc) {
+      recordScript = argv[++i];
     } else if (arg == "--diagnosis" && i + 1 < argc) {
       diagnosisPath = argv[++i];
     } else if (arg == "--theme" && i + 1 < argc) {
@@ -247,12 +251,14 @@ int main(int argc, char* argv[]) {
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
   SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
+  const bool recording = !recordScript.empty();
+  if (recording && !DemoRecorder::load(recordScript)) return 1;
   AppState state;
   state.window = SDL_CreateWindow(
     "najaeda Netlist Viewer (Standalone)",
     SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-    1280, 720,
-    SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+    recording ? DemoRecorder::width() : 1280, recording ? DemoRecorder::height() : 720,
+    recording ? SDL_WINDOW_OPENGL | SDL_WINDOW_HIDDEN : SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
   if (!state.window) {
     std::cerr << "SDL_CreateWindow failed: " << SDL_GetError() << "\n";
     return 1;
@@ -260,7 +266,7 @@ int main(int argc, char* argv[]) {
 
   state.glContext = SDL_GL_CreateContext(state.window);
   SDL_GL_MakeCurrent(state.window, state.glContext);
-  SDL_GL_SetSwapInterval(1); // vsync
+  SDL_GL_SetSwapInterval(recording ? 0 : 1); // vsync
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -272,6 +278,7 @@ int main(int argc, char* argv[]) {
   ImGui_ImplOpenGL3_Init("#version 330 core");
 
   state.guiData  = new GUIData();
+  if (recording) DemoRecorder::install(state);
 
   state.provider = provider;
   state.showTopOnLoad = true;
@@ -304,6 +311,7 @@ int main(int argc, char* argv[]) {
 
   while (appFrame(state)) {
     // loop until the window is closed
+    if (recording && DemoRecorder::done()) break;
   }
 
   ImGui_ImplOpenGL3_Shutdown();
@@ -312,7 +320,7 @@ int main(int argc, char* argv[]) {
   SDL_GL_DeleteContext(state.glContext);
   SDL_DestroyWindow(state.window);
   SDL_Quit();
-  return 0;
+  return recording ? DemoRecorder::status() : 0;
 }
 
 #endif // __EMSCRIPTEN__

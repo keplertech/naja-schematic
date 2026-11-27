@@ -286,7 +286,9 @@ bool appFrame(AppState& state) {
   ImGuiIO& io = ImGui::GetIO();
   ImGui_ImplOpenGL3_NewFrame();
   ImGui_ImplSDL2_NewFrame();
+  if (state.hooks.beforeNewFrame) state.hooks.beforeNewFrame();
   ImGui::NewFrame();
+  if (state.hooks.afterNewFrame) state.hooks.afterNewFrame();
 
 #ifndef __EMSCRIPTEN__
   finishDesignLoad(state);
@@ -623,7 +625,7 @@ bool appFrame(AppState& state) {
     // selection panel (the selected instance's terms and nets), the right
     // one the schematic over the tabs. Each column has its own horizontal
     // splitter.
-    static float leftWidth       = 300.0f;
+    static float leftWidth       = state.initialLeftWidth;
     static float treeHeight      = -1.0f;
     static float schematicHeight = -1.0f;
     const float  minPanelW = 0.0f;
@@ -631,7 +633,11 @@ bool appFrame(AppState& state) {
     const float  minPanelH = 40.0f;
     float totalH = ImGui::GetContentRegionAvail().y;
     if (treeHeight < 0.0f)      treeHeight      = totalH * 0.65f;
-    if (schematicHeight < 0.0f) schematicHeight = totalH * 0.65f;
+    if (schematicHeight < 0.0f) schematicHeight = totalH * state.initialSchematicShare;
+    if (state.requestedSchematicShare > 0.0f) {
+      schematicHeight = totalH * state.requestedSchematicShare;
+      state.requestedSchematicShare = -1.0f;
+    }
     // Show Sources: the reference list plus readable code need more than
     // the default bottom panel. Grow it to this share of the height, once
     // per Show Sources, and only if it's smaller: a panel the user made
@@ -675,6 +681,7 @@ bool appFrame(AppState& state) {
     };
 
     // === Left column: tree / hsplitter / selection panel ===
+    if (state.showLeftColumn) {
     // A child width of 0 means "fill the rest": keep a collapsed column at 1.
     ImGui::BeginChild("LeftColumn", ImVec2(std::max(leftWidth, 1.0f), 0), false,
       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -710,9 +717,10 @@ bool appFrame(AppState& state) {
     ImGui::EndChild();
 
     vSplitter("##VSplit", leftWidth);
+    ImGui::SameLine();
+    }
 
     // === Right column: schematic / hsplitter / tabs ===
-    ImGui::SameLine();
     ImGui::BeginChild("RightColumn", ImVec2(0, 0), false,
       ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
     {
@@ -866,11 +874,13 @@ bool appFrame(AppState& state) {
   }
 
   // === GL render ===
+  if (state.hooks.beforeRender) state.hooks.beforeRender();
   ImGui::Render();
   glViewport(0, 0, (int)io.DisplaySize.x, (int)io.DisplaySize.y);
   glClearColor(0.1f, 0.1f, 0.2f, 1.0f);
   glClear(GL_COLOR_BUFFER_BIT);
   ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+  if (state.hooks.afterDraw) state.hooks.afterDraw();
   SDL_GL_SwapWindow(state.window);
 
   return !quit;

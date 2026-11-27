@@ -1,6 +1,8 @@
 #pragma once
 
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 #include "Types.h"
 
@@ -138,6 +140,9 @@ class EquipotentialView {
     // and the screen position of its canvas's top-left corner -- enough for a
     // headless ImGui test to turn a pin's world position into a mouse
     // position (see tests/EquipotentialViewTest.cpp).
+    // Scripted recording: while set, every frame shows this world rect
+    // (fitted like View > Fit), whatever else asks for a fit.
+    static void setCameraRect(std::optional<std::pair<ImVec2, ImVec2>> rect);
     static const SchematicView& schematicForTesting();
     static ImVec2 canvasOriginForTesting();
     static ImVec2 canvasSizeForTesting();

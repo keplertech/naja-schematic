@@ -276,6 +276,7 @@ else()
     src/DesignLoader.cpp
     src/HeadlessView.cpp
     src/HeadlessExport.cpp
+    src/DemoRecorder.cpp
     ${PLATFORM_FILE_DIALOG_SOURCE}
     src/main_native.cpp
   )

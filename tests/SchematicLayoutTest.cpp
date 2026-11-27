@@ -908,6 +908,18 @@ TEST(HierarchyGroups, OneModuleFrameWrapsItsLeaves) {
   EXPECT_EQ(g2.label, "g2");
 }
 
+TEST(HierarchyGroups, AStyledLabelSurvivesInsideAFrame) {
+  HierFixture fx({{{"core", "g1"}, {"Core", "AND2"}, 0, 0.f},
+                  {{"core", "g2"}, {"Core", "OR2"}, 1, 0.f}});
+  // A host style labeled g1 (applyInstanceStyle() runs before the frames).
+  for (auto& s : fx.shapes)
+    if (s.path == P({"core", "g1"})) s.label = "copy 0";
+  fx.run();
+
+  EXPECT_EQ(byPath(fx.shapes, {"core", "g1"}).label, "copy 0");
+  EXPECT_EQ(byPath(fx.shapes, {"core", "g2"}).label, "g2");
+}
+
 TEST(HierarchyGroups, FrameLabelFallsBackToInstanceNameWithoutModel) {
   HierFixture fx({{{"core", "g1"}, {}, 0, 0.f}});
   auto frames = fx.run();

@@ -157,6 +157,21 @@ naja-schematic-standalone design.v --liberty cells.lib --export cone.svg \
   --trace '{"terminal":"y"}' --focus '["u1","u2"]'
 ```
 
+**Scripted demo video.** `--record <script.json>` plays a script of steps
+(actions such as traces, opened instances, selection, styles, Show
+Sources; a camera on the whole view or on instances by naja id; a cut,
+eased move or crossfade from the step before; a duration and a caption)
+in a hidden window at a fixed size and time step, and pipes every frame
+to `ffmpeg` (H.264, must be on `PATH`), then exits: 0 once the video is
+written (`DemoRecorder.cpp`, whose header comment is the script format).
+It's how the README's `docs/demo.gif` is made, deterministic and
+loopable, with no cursor. It hooks the frame loop through
+`AppState::hooks` (`FrameHooks`, empty otherwise) and holds the camera
+with `EquipotentialView::setCameraRect()`. `scripts/demo_script.py
+OUT_DIR` writes the demo's script, on `scripts/tinyrocket.v` with its two
+Liberty files (the command is in its docstring); its ids are naja's, so
+re-check them when the design or naja's id assignment changes.
+
 ### Headless renderer (`naja-schematic-render`)
 
 The viewer with no window, no SDL/GL and **no naja** (`src/main_render.cpp`
