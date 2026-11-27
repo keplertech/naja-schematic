@@ -18,16 +18,35 @@ name: Python Package
 # The `colab` job guards the README's Open-in-Colab badge (see below); the
 # weekly run catches it breaking without a push here (a new najaeda or
 # anywidget, naja's tutorial benchmarks moving).
+#
+# Fewer PyPI downloads of najaeda: every pip install here counts in
+# najaeda's public download numbers, so the workflow only runs when
+# something the package is built or tested from changes, a newer push to
+# a pull request cancels the older run, the oldest-najaeda check runs on
+# one runner, and the test and colab jobs keep pip's cache (keyed on the
+# najaeda release, so a new najaeda is fetched once, then cached).
 
 on:
   push:
     branches: [ main ]
     tags: [ "v*" ]
+    paths: &package-paths
+      - "python/**"
+      - "src/**"
+      - "tests/data/**"
+      - "thirdparty/**"
+      - "CMakeLists.txt"
+      - ".github/workflows/python-package.yml"
   pull_request:
     branches: [ main ]
+    paths: *package-paths
   schedule:
     - cron: "0 6 * * 1"
   workflow_dispatch:
+
+concurrency:
+  group: python-package-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   build:
@@ -215,8 +234,13 @@ jobs:
         # One runner per platform wheel: each tests the wheel built for it.
         os: [ ubuntu-24.04, ubuntu-24.04-arm, macos-latest, windows-latest ]
         python-version: [ "3.10", "3.13" ]
-        # Oldest najaeda the package declares support for, and the newest.
-        najaeda: [ "==0.8.3", "" ]
+        # The newest najaeda everywhere ...
+        najaeda: [ "" ]
+        include:
+          # ... and the oldest the package declares support for, once.
+          - os: ubuntu-24.04
+            python-version: "3.10"
+            najaeda: "==0.8.3"
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -224,6 +248,19 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
+
+      - name: Key pip's cache on the najaeda release
+        # The JSON API is not a file download: it doesn't count as one.
+        id: pip-cache
+        shell: bash
+        run: |
+          echo "dir=$(python -m pip cache dir)" >> "$GITHUB_OUTPUT"
+          echo "najaeda=$(python -c "import json, urllib.request; print(json.load(urllib.request.urlopen('https://pypi.org/pypi/najaeda/json'))['info']['version'])")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pip-cache.outputs.dir }}
+          key: pip-${{ runner.os }}-${{ runner.arch }}-py${{ matrix.python-version }}-najaeda${{ matrix.najaeda || steps.pip-cache.outputs.najaeda }}-${{ hashFiles('python/pyproject.toml') }}
 
       - uses: actions/download-artifact@v7
         with:
@@ -300,8 +337,6 @@ jobs:
       !cancelled() && (needs.publish.result == 'success' ||
       (needs.publish.result == 'skipped' && !startsWith(github.ref, 'refs/tags/v')))
     runs-on: ubuntu-24.04
-    env:
-      PIP_NO_CACHE_DIR: "1"
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -310,6 +345,20 @@ jobs:
         with:
           # Colab's runtime Python.
           python-version: "3.12"
+
+      - name: Key pip's cache on the najaeda release
+        # pip still resolves every install against PyPI's index, as Colab
+        # does (a new naja-schematic is a new file, fetched); the cache
+        # only spares downloading the same wheels again.
+        id: pip-cache
+        run: |
+          echo "dir=$(python -m pip cache dir)" >> "$GITHUB_OUTPUT"
+          echo "najaeda=$(python -c "import json, urllib.request; print(json.load(urllib.request.urlopen('https://pypi.org/pypi/najaeda/json'))['info']['version'])")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pip-cache.outputs.dir }}
+          key: pip-colab-najaeda${{ steps.pip-cache.outputs.najaeda }}
 
       - name: Install the notebook runner only
         run: python -m pip install pytest nbformat nbclient ipykernel
