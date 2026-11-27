@@ -14,7 +14,7 @@ a Jupyter/Colab/VSCode notebook.
 
 > **Note:** This is a beta. Expect rough edges and breaking changes.
 
-![naja-schematic demo on a gate-level RISC-V core: two driver traces overlaid across the core module boundary, shared wires striped in both colors, then Show Sources on a gate](docs/demo.gif)
+![naja-schematic demo on a gate-level RISC-V core: a fan-in trace across module boundaries, gate symbols from Liberty, two overlaid traces with striped shared wires, a net followed through the hierarchy, a 4,000-pin clock net summarized, then Show Sources on a gate](docs/demo.gif)
 
 ## Quick start
 

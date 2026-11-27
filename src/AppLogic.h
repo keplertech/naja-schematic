@@ -56,6 +56,24 @@ struct AppState {
   // The root_response's "server": what answers the viewer (name, version,
   // naja, naja_git), shown in Help > About.
   nlohmann::json    serverInfo;
+  // Scripted recording (DemoRecorder): called around each frame when set.
+  // beforeNewFrame runs after the platform backend's NewFrame and before
+  // ImGui::NewFrame (to set the display size, time step, mouse); afterNewFrame
+  // at the start of the UI; beforeRender after the UI, before ImGui::Render
+  // (overlays); afterDraw once the frame is drawn, before the buffer swap
+  // (capture).
+  struct FrameHooks {
+    std::function<void()> beforeNewFrame, afterNewFrame, beforeRender, afterDraw;
+  } hooks;
+  // The panels' first sizes: the left column's width, and the schematic's
+  // share of the right column's height.
+  float             initialLeftWidth       {300.0f};
+  float             initialSchematicShare  {0.65f};
+  // Set to resize the schematic to this share of the right column's height
+  // at the next frame (then reset to a negative value).
+  float             requestedSchematicShare {-1.0f};
+  // The hierarchy column (tree and selection panel) is drawn.
+  bool              showLeftColumn         {true};
 };
 
 // Wire all provider callbacks (on_open, on_message, on_close, on_error)
