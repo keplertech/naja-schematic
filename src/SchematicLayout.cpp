@@ -1528,8 +1528,10 @@ void measureGroup(GroupNode& node, bool isRoot, const NameWidthFn& nameWidth) {
     }
     for (auto [leaf, level] : node.leaves) {
         // The frame already names the module: a leaf in it shows its own name.
-        // (A fanout summary keeps its own label: its path is made up.)
-        if (!isRoot && !leaf->path.empty() && !leaf->isSummary) leaf->label = displayName(leaf->path.back());
+        // (A fanout summary keeps its own label: its path is made up; so
+        // does a box a host style labels.)
+        if (!isRoot && !leaf->path.empty() && !leaf->isSummary && leaf->label.empty())
+            leaf->label = displayName(leaf->path.back());
         float lv = float(level);
         elems.push_back({ nullptr, leaf, lv, leaf->y, footprintWidth(*leaf, nameWidth),
                           footprintHeight(*leaf, nameWidth) });
