@@ -369,6 +369,12 @@ executable is gitignored, like the bundle, and only included when present).
 `test` runs on one runner per platform wheel (ubuntu, ubuntu arm, macOS,
 Windows) and installs the wheel pip picks there from the built ones; its
 `renderer_path()` check fails if that's the pure wheel.
+The workflow keeps najaeda's public download count honest: it runs only
+when the package's inputs change (`paths:`; tags always run), cancels a
+pull request's superseded runs, tests the oldest supported najaeda on one
+runner only, and the `test` and `colab` jobs keep pip's cache, keyed on
+the latest najaeda release (read from PyPI's JSON API, not a download).
+Don't add an uncached `pip install` of najaeda to CI.
 
 The viewer bundle `static/naja-schematic.js` is **not** checked in: it's the
 WASM target configured with `-DNAJA_SCHEMATIC_WASM_MODULE=ON` (single file,
