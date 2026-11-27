@@ -150,10 +150,24 @@ static size_t outputBitCount(const SNLDesign* model) {
   return count;
 }
 
+// A sequential cell with a scan input and a scan enable (naja's term roles,
+// e.g. Liberty's nextstate_type): drawn as a mux feeding the flop.
+static bool hasScanMux(const SNLDesign* model) {
+  using Role = SNLDesignModeling::SNLTermRole;
+  bool scanInput = false, scanEnable = false;
+  for (auto* term : model->getBitTerms()) {
+    const auto role = SNLDesignModeling::getTermRole(term);
+    scanInput  = scanInput  || role == Role::ScanInput;
+    scanEnable = scanEnable || role == Role::ScanEnable;
+  }
+  return scanInput && scanEnable;
+}
+
 static PrimitiveType getPrimitiveType(const SNLDesign* model) {
   if (!model) return PrimitiveType::Unknown;
   if (NLDB0::isAssign(model)) return PrimitiveType::Assign;
-  if (SNLDesignModeling::isSequential(model)) return PrimitiveType::Dff;
+  if (SNLDesignModeling::isSequential(model))
+    return hasScanMux(model) ? PrimitiveType::ScanDff : PrimitiveType::Dff;
   if (NLDB0::isAddSub(model))
     return NLDB0::isSubtract(model) ? PrimitiveType::Sub : PrimitiveType::Add;
   if (NLDB0::isMultiply(model)) return PrimitiveType::Mul;
@@ -235,6 +249,7 @@ static const char* termRoleName(SNLDesignModeling::SNLTermRole role) {
   using Role = SNLDesignModeling::SNLTermRole;
   switch (role) {
     case Role::Clock:              return "clock";
+    case Role::DataInput:          return "data_input";
     case Role::AsyncReset:         return "async_reset";
     case Role::AsyncSet:           return "async_set";
     case Role::SyncReset:          return "sync_reset";
@@ -251,8 +266,9 @@ static const char* termRoleName(SNLDesignModeling::SNLTermRole role) {
   }
 }
 
-// Only sent when set, like "clock": a pin naja gives a non-data role
-// (fanout summaries grouped by role).
+// Only sent when set, like "clock": a pin naja gives a role other than
+// DataOutput (fanout summaries grouped by role; "data_input" puts a scan
+// flop's data pin on its mux, see scanPinGroup()).
 template <typename Term>
 static void setTermRole(json& t, const Term* term) {
   if (const char* role = termRoleName(SNLDesignModeling::getTermRole(term))) t["role"] = role;

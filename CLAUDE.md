@@ -722,7 +722,7 @@ occurrence's enclosing modules.
 Instance entries (`instances_response`/`primitives_response` children,
 equipotential occurrences, `instance_resolved`'s `instance`) carry a
 `primitive_type` (`"and"`, `"nand"`, `"or"`, `"nor"`, `"xor"`, `"xnor"`,
-`"inv"`, `"buf"`, `"dff"`, `"assign"`, `"tie0"`, `"tie1"`, `"mux"`,
+`"inv"`, `"buf"`, `"dff"`, `"scan_dff"`, `"assign"`, `"tie0"`, `"tie1"`, `"mux"`,
 `"add"`, `"sub"`, `"mul"`, `"shl"`, `"shr"`, `"ashr"`, `"divmod"`,
 `"unknown"`) that picks the gate
 symbol `SchematicView::drawInstance()` draws, and term entries carry
@@ -730,10 +730,16 @@ symbol `SchematicView::drawInstance()` draws, and term entries carry
 Both come from naja's modeling of the cell -- `SNLDesignModeling`'s
 truth-table checks (`isAnd`, ..., `isConst0`/`isConst1` for tie cells, whose
 Liberty `function` is `"0"`/`"1"`; `isMux`, at any width, since a bus mux
-is one NLDB0 mux2), `isSequential` and `isClock` -- and
+is one NLDB0 mux2), `isSequential` and `isClock`, and term roles (a
+sequential cell with a `ScanInput` and a `ScanEnable` term is `"scan_dff"`:
+`hasScanMux()`/`has_scan_mux()`) -- and
 **never from a cell or pin name**: a cell naja has no model for (e.g.
 gate-level Verilog without Liberty) is `"unknown"` and draws as a box. A
-mux is a trapezoid (`SchematicLayout::muxSlant()`), the word-level
+mux is a trapezoid (`SchematicLayout::muxSlant()`); a scan flop is a mux
+feeding a flop in one symbol (`InstanceShape::scanMux`, laid out by
+`symbolGeometry()`): only pins naja marks `data_input`/`scan_input` go on
+the mux, `scan_enable` rises into its bottom, every other pin (one with no
+role included) runs past it to the flop (`scanPinGroup()`); the word-level
 operators SystemVerilog lowers to (`NLDB0::isAddSub()`/`isSubtract()`,
 `isMultiply()`, `isShift()` + `getShiftSignature()`, `isDivMod()`) are
 boxes with a circled operator glyph (`isOperatorSymbol()`,
@@ -918,7 +924,8 @@ CLIs: `--title`, `--caption`, `--legend`, `--hide-ui-glyphs`.
 "address", else "data"), read from the sparse `"role"` on term and
 occurrence entries: naja's `SNLDesignModeling::getTermRole()` in snake
 case (`"clock"`, `"async_reset"`, `"enable"`, `"memory_write_enable"`,
-...), sent only for a non-data role (DataInput/DataOutput/Other: none),
+...), sent for every role but DataOutput and Other (unset); `"data_input"`
+groups as "data",
 from the `SNLInstTerm` on occurrences (parameter-driven roles) --
 `termRoleName()`/`setTermRole()` in `LocalSNLProvider.cpp`,
 `term_role()`/`with_clock()` in `protocol.py`, kept in step (shared

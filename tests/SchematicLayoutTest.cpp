@@ -290,6 +290,53 @@ TEST(Symbols, BoxPinsRunDownFromTheTopAndItsWidthFitsTheirNames) {
   EXPECT_GT(wide.w, narrow.w);
 }
 
+TEST(Symbols, ScanPinsGoByRoleNeverByName) {
+  EXPECT_EQ(scanPinGroup("data_input"), ScanPinGroup::MuxInput);
+  EXPECT_EQ(scanPinGroup("scan_input"), ScanPinGroup::MuxInput);
+  EXPECT_EQ(scanPinGroup("scan_enable"), ScanPinGroup::Select);
+  EXPECT_EQ(scanPinGroup("clock"), ScanPinGroup::Other);
+  EXPECT_EQ(scanPinGroup("async_reset"), ScanPinGroup::Other);
+  // A pin naja gives no role (a reset it doesn't model as one) is never
+  // put on the mux.
+  EXPECT_EQ(scanPinGroup(""), ScanPinGroup::Other);
+}
+
+TEST(Symbols, ScanFlopIsAMuxFeedingAFlop) {
+  using G = ScanPinGroup;
+  // Pins in term order, as a cell lists them: the mux's go first anyway.
+  auto g = symbolGeometry(PrimitiveType::ScanDff, {"CK", "SE", "D", "RN", "SI"}, {"Q", "QN"},
+                          {G::Other, G::Select, G::MuxInput, G::Other, G::MuxInput});
+  ASSERT_TRUE(g.scanMux);
+  const auto& m = *g.scanMux;
+  // D and SI on the mux, SE under it, then CK and RN.
+  EXPECT_EQ(g.leftY, (std::vector<float>{80.f, 60.f, 20.f, 100.f, 40.f}));
+  EXPECT_EQ(g.rightY, (std::vector<float>{20.f, 40.f}));
+  EXPECT_EQ(g.h, 6.f * kPinPitch);
+  // The mux spans its inputs' rows, the select's row is below it.
+  EXPECT_LT(m.top, 20.f);
+  EXPECT_GT(m.bottom, 40.f);
+  EXPECT_LT(m.bottom, 60.f);
+  // The select's riser is under the mux; the flop is past the mux and past
+  // the select's name, and the outputs' names fit in it.
+  EXPECT_GT(m.selectX, 0.f);
+  EXPECT_LT(m.selectX, m.right);
+  EXPECT_GT(m.flopX, m.right);
+  EXPECT_GT(m.flopX, m.selectX);
+  EXPECT_GT(g.w, m.flopX + 3.f * kGrid);
+  EXPECT_TRUE(onGrid(g.w) && onGrid(g.h));
+  for (float y : g.leftY) EXPECT_TRUE(onGrid(y));
+}
+
+TEST(Symbols, ScanFlopMuxSpansTwoRowsWithOneInputShown) {
+  using G = ScanPinGroup;
+  auto g = symbolGeometry(PrimitiveType::ScanDff, {"SE", "D"}, {"Q"}, {G::Select, G::MuxInput});
+  ASSERT_TRUE(g.scanMux);
+  EXPECT_EQ(g.leftY, (std::vector<float>{60.f, 20.f}));  // SE under the two mux rows
+  EXPECT_GT(g.scanMux->bottom - g.scanMux->top, 1.5f * kPinPitch);
+  // Other types have no mux.
+  EXPECT_FALSE(symbolGeometry(PrimitiveType::Dff, {"D", "CK"}, {"Q"}).scanMux);
+}
+
 TEST(Symbols, GateWithSeveralOutputsIsDrawnAsABox) {
   EXPECT_TRUE(isGateSymbol(PrimitiveType::Xor));
   EXPECT_FALSE(isGateSymbol(PrimitiveType::Dff));

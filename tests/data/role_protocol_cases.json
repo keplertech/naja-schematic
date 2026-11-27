@@ -4,9 +4,10 @@
     "same from both backends: run by python/tests/test_render.py against",
     "protocol.py and by tests/provider/LocalSNLProviderProtocolTest.cpp",
     "against LocalSNLProvider. Same format as anonymous_protocol_cases.json;",
-    "a primitive's `roles` gives its terms' roles by wire name, and an",
-    "expected value \"$absent\" means the key must not be there (a data pin",
-    "sends no \"role\")."
+    "a primitive's `roles` gives its terms' roles by wire name, its",
+    "`clock_arcs` makes it sequential ({clock, inputs, outputs}), and an",
+    "expected value \"$absent\" means the key must not be there (a",
+    "DataOutput pin, or one with no role, sends no \"role\")."
   ],
   "design": {
     "primitives": [
@@ -14,13 +15,22 @@
       {"name": "FF", "terms": [["D", "input"], ["CK", "input"], ["R", "input"],
                                ["S", "input"], ["E", "input"], ["Q", "output"]],
        "roles": {"D": "data_input", "CK": "clock", "R": "async_reset",
-                 "S": "sync_set", "E": "enable", "Q": "data_output"}}
+                 "S": "sync_set", "E": "enable", "Q": "data_output"}},
+      {"name": "SFF", "terms": [["D", "input"], ["SI", "input"], ["SE", "input"],
+                                ["CK", "input"], ["Q", "output"]],
+       "roles": {"D": "data_input", "SI": "scan_input", "SE": "scan_enable",
+                 "CK": "clock", "Q": "data_output"},
+       "clock_arcs": {"clock": "CK", "inputs": ["D", "SI", "SE"], "outputs": ["Q"]}},
+      {"name": "SIFF", "terms": [["D", "input"], ["SI", "input"], ["CK", "input"],
+                                 ["Q", "output"]],
+       "roles": {"SI": "scan_input"},
+       "clock_arcs": {"clock": "CK", "inputs": ["D", "SI"], "outputs": ["Q"]}}
     ],
     "designs": [
       {"name": "top",
        "terms": [["a", "input"]],
        "instances": [["drv", "DRV"], ["f_ck", "FF"], ["f_r", "FF"], ["f_s", "FF"],
-                     ["f_e", "FF"], ["f_d", "FF"]],
+                     ["f_e", "FF"], ["f_d", "FF"], ["f_scan", "SFF"], ["f_si", "SIFF"]],
        "nets": [{"name": "a", "term": "a", "pins": [[0, "A"]]},
                 {"name": "n", "pins": [[0, "Y"], [1, "CK"], [2, "R"], [3, "S"],
                                        [4, "E"], [5, "D"]]}]}
@@ -28,7 +38,7 @@
     "top": "top"
   },
   "cases": [
-    {"name": "each receiving pin carries its naja role, a data pin none",
+    {"name": "each receiving pin carries its naja role, a data input too",
      "request": {"request": "load_equipotential", "path": [0], "term_id": 1},
      "expect": [{"response": "equipotential_response",
                  "occurrences": [
@@ -37,18 +47,33 @@
                    {"path": [["f_r", 2, "FF"]], "name": "R", "role": "async_reset"},
                    {"path": [["f_s", 3, "FF"]], "name": "S", "role": "sync_set"},
                    {"path": [["f_e", 4, "FF"]], "name": "E", "role": "enable"},
-                   {"path": [["f_d", 5, "FF"]], "name": "D", "role": "$absent"}]}],
+                   {"path": [["f_d", 5, "FF"]], "name": "D", "role": "data_input"}]}],
      "unordered": ["occurrences"]},
 
     {"name": "an instance's pins carry their roles too",
      "request": {"request": "resolve_instance", "id_path": [1]},
      "expect": [{"response": "instance_resolved", "found": true,
                  "instance": {"terms": [
-                   {"name": "D", "role": "$absent"},
+                   {"name": "D", "role": "data_input"},
                    {"name": "CK", "role": "clock"},
                    {"name": "R", "role": "async_reset"},
                    {"name": "S", "role": "sync_set"},
                    {"name": "E", "role": "enable"},
-                   {"name": "Q", "role": "$absent"}]}}]}
+                   {"name": "Q", "role": "$absent"}]}}]},
+
+    {"name": "a flop with a scan input and a scan enable is a scan flop",
+     "request": {"request": "resolve_instance", "id_path": [6]},
+     "expect": [{"response": "instance_resolved", "found": true,
+                 "instance": {"primitive_type": "scan_dff", "terms": [
+                   {"name": "D", "role": "data_input"},
+                   {"name": "SI", "role": "scan_input"},
+                   {"name": "SE", "role": "scan_enable"},
+                   {"name": "CK", "role": "clock"},
+                   {"name": "Q", "role": "$absent"}]}}]},
+
+    {"name": "a scan input alone, with no scan enable, is a plain flop",
+     "request": {"request": "resolve_instance", "id_path": [7]},
+     "expect": [{"response": "instance_resolved", "found": true,
+                 "instance": {"primitive_type": "dff"}}]}
   ]
 }

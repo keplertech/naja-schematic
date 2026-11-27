@@ -454,9 +454,14 @@ static float portLy(int i, int n) {
 // make room for nested internals.
 static void applySymbolGeometry(InstanceShape& inst, float extraH) {
     std::vector<std::string> left, right;
-    for (const auto& p : inst.ports) (p.lx < 0.f ? left : right).push_back(p.name);
-    const SymbolGeometry g = symbolGeometry(inst.primitiveType, left, right);
+    std::vector<ScanPinGroup> leftGroups;
+    for (const auto& p : inst.ports) {
+        (p.lx < 0.f ? left : right).push_back(p.name);
+        if (p.lx < 0.f) leftGroups.push_back(scanPinGroup(p.role));
+    }
+    const SymbolGeometry g = symbolGeometry(inst.primitiveType, left, right, leftGroups);
     inst.w = g.w;
+    inst.scanMux = g.scanMux;
     // Room for the bracket of an expanded bus, inside the box before its
     // bits' names (SchematicView's drawBusBrackets()).
     if (!isGateSymbol(inst.primitiveType) &&
@@ -715,6 +720,7 @@ std::vector<EquipotentialView::ExpandedPort> EquipotentialView::portsFromJson(co
         ep.name    = displayPinLabel(t.value("name", std::string("")), ep.childId);
         if (t.contains("bit") && !t["bit"].is_null()) ep.bit = t["bit"].get<int>();
         ep.clock   = t.value("clock", false);
+        ep.role    = t.value("role", std::string());
         ep.unconnected = t.value("unconnected", false);
         int dirInt   = t.value("direction", 0);
         ep.direction = dirInt == 1 ? Direction::Output
@@ -1142,6 +1148,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
         unsigned              termChildId;
         std::optional<int>    termBit;
         bool                  clock = false;
+        std::string           role;
         std::vector<unsigned> pathIds;
     };
     struct MInst {
@@ -1258,6 +1265,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                     ps.termChildId = item.termChildId;
                     ps.termBit     = item.termBit;
                     ps.clock       = item.clock;
+                    ps.role        = item.role;
                     ps.pathIds     = item.pathIds;
                     mi.ports.push_back(std::move(ps));
                     g_portEquiByPortId[pid] = { item.pathIds, item.termChildId, item.termBit };
@@ -1472,6 +1480,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                     p.id   = row.members[0]->pid;
                     p.name = row.members[0]->ep->name;
                     p.clock = row.members[0]->ep->clock;
+                    p.role  = row.members[0]->ep->role;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->ep->name));
                     if (row.isExpandedBusBit) {
                         g_expandedBusGroupByPortId[p.id] = row.groupKey;
@@ -1547,6 +1556,7 @@ void EquipotentialView::renderSchematic(const std::vector<Equipotential*>& shown
                     p.id   = row.members[0]->portId;
                     p.name = row.members[0]->name;
                     p.clock = row.members[0]->clock;
+                    p.role  = row.members[0]->role;
                     p.color = DiagnosisStore::netColor(key, stripBusIndex(row.members[0]->name));
                     if (row.isExpandedBusBit) {
                         g_expandedBusGroupByPortId[p.id] = row.groupKey;

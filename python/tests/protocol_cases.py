@@ -49,6 +49,13 @@ def build_design(spec):
         _create_terms(d, p["terms"])
         for term, role in p.get("roles", {}).items():
             d.getScalarTerm(term).setRole(getattr(naja.SNLTermRole, _ROLES[role]))
+        # "clock_arcs": a sequential cell, its inputs sampled on its clock
+        # and its outputs launched from it.
+        arcs = p.get("clock_arcs")
+        if arcs:
+            clock = d.getScalarTerm(arcs["clock"])
+            d.addInputsToClockArcs([d.getScalarTerm(t) for t in arcs["inputs"]], clock)
+            d.addClockToOutputsArcs(clock, [d.getScalarTerm(t) for t in arcs["outputs"]])
         designs[p["name"]] = d
     lib = naja.NLLibrary.create(db, "case_work")
     for spec_d in spec["designs"]:

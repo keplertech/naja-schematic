@@ -107,6 +107,19 @@ std::map<std::string, SNLDesign*> buildDesign(NLDB* db, const json& spec) {
     const json roles = p.value("roles", json::object());  // (kept alive: items() refers to it)
     for (const auto& [term, role] : roles.items())
       SNLDesignModeling::setTermRole(d->getScalarTerm(NLName(term)), termRole(role.get<std::string>()));
+    // "clock_arcs": a sequential cell, its inputs sampled on its clock and
+    // its outputs launched from it.
+    if (p.contains("clock_arcs")) {
+      const json& arcs = p["clock_arcs"];
+      auto* clock = d->getScalarTerm(NLName(arcs["clock"].get<std::string>()));
+      auto terms = [&](const json& names) {
+        SNLDesignModeling::BitTerms bits;
+        for (const auto& n : names) bits.push_back(d->getScalarTerm(NLName(n.get<std::string>())));
+        return bits;
+      };
+      SNLDesignModeling::addInputsToClockArcs(terms(arcs["inputs"]), clock);
+      SNLDesignModeling::addClockToOutputsArcs(clock, terms(arcs["outputs"]));
+    }
     designs[p["name"]] = d;
   }
   auto* lib = NLLibrary::create(db, NLName("case_work"));

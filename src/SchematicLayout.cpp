@@ -316,9 +316,55 @@ bool isGateSymbol(PrimitiveType type) {
     }
 }
 
+ScanPinGroup scanPinGroup(const std::string& role) {
+    if (role == "scan_enable") return ScanPinGroup::Select;
+    if (role == "data_input" || role == "scan_input") return ScanPinGroup::MuxInput;
+    return ScanPinGroup::Other;
+}
+
+namespace {
+SymbolGeometry scanFlopGeometry(const std::vector<std::string>& leftNames,
+                                const std::vector<std::string>& rightNames,
+                                const std::vector<ScanPinGroup>& leftGroups) {
+    SymbolGeometry g;
+    const size_t nL = leftNames.size(), nR = rightNames.size();
+    auto groupOf = [&](size_t i) { return i < leftGroups.size() ? leftGroups[i] : ScanPinGroup::Other; };
+    std::vector<std::string> muxNames, selNames, otherNames;
+    for (size_t i = 0; i < nL; ++i)
+        (groupOf(i) == ScanPinGroup::MuxInput ? muxNames
+         : groupOf(i) == ScanPinGroup::Select ? selNames : otherNames).push_back(leftNames[i]);
+    const size_t muxRows = std::max<size_t>(2, muxNames.size());
+    const size_t rows = std::max(muxRows + selNames.size() + otherNames.size(), nR);
+    g.h = kPinPitch * float(rows + 1);
+    size_t mi = 0, si = 0, oi = 0;
+    for (size_t i = 0; i < nL; ++i) {
+        const size_t row = groupOf(i) == ScanPinGroup::MuxInput ? 1 + mi++
+                         : groupOf(i) == ScanPinGroup::Select   ? muxRows + 1 + si++
+                                                                : muxRows + selNames.size() + 1 + oi++;
+        g.leftY.push_back(kPinPitch * float(row));
+    }
+    for (size_t i = 0; i < nR; ++i) g.rightY.push_back(kPinPitch * float(i + 1));
+    ScanMuxGeometry m;
+    m.top     = 0.5f * kPinPitch;
+    m.bottom  = kPinPitch * (float(muxRows) + 0.5f);
+    m.right   = snapUp(std::max(3.f * kGrid, labelWidth(muxNames) + 2.f * kGrid), kGrid);
+    // The select lead rises into the middle of the mux's bottom; its pin's
+    // name is drawn right of it, before the flop.
+    m.selectX = 0.5f * m.right;
+    m.flopX   = std::max(m.right + 2.f * kGrid,
+                         selNames.empty() ? 0.f : snapUp(m.selectX + labelWidth(selNames) + 1.5f * kGrid, kGrid));
+    const float flopW = std::max(4.f * kGrid, labelWidth(otherNames) + labelWidth(rightNames) + 3.f * kGrid);
+    g.w = snapUp(m.flopX + flopW, kGrid);
+    g.scanMux = m;
+    return g;
+}
+} // namespace
+
 SymbolGeometry symbolGeometry(PrimitiveType type,
                               const std::vector<std::string>& leftNames,
-                              const std::vector<std::string>& rightNames) {
+                              const std::vector<std::string>& rightNames,
+                              const std::vector<ScanPinGroup>& leftGroups) {
+    if (type == PrimitiveType::ScanDff) return scanFlopGeometry(leftNames, rightNames, leftGroups);
     SymbolGeometry g;
     const size_t nL = leftNames.size(), nR = rightNames.size();
     if (isGateSymbol(type) && nR <= 1) {
